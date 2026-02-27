@@ -1,0 +1,11 @@
+[package]
+name = "unilii-clock"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+unilii-core = { path = "../../core" }
+iced.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+chrono = "0.4"

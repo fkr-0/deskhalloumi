@@ -1,0 +1,10 @@
+[package]
+name = "unilii-battery"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+unilii-core = { path = "../../core" }
+iced.workspace = true
+tokio.workspace = true
+async-trait.workspace = true

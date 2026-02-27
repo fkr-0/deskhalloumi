@@ -8,8 +8,21 @@ name = "unilii"
 path = "src/main.rs"
 
 [dependencies]
-unilii-core.workspace = true
-unilii-lib.workspace = true
 iced.workspace = true
 tokio.workspace = true
 serde.workspace = true
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+unilii-core = { path = "../core" }
+unilii-lib = { path = "../lib" }
+
+# Plugin modules (enabled via features)
+unilii-clock = { path = "../plugins/Clock", optional = true }
+unilii-battery = { path = "../plugins/Battery", optional = true }
+
+[features]
+default = ["clock", "battery"]
+clock = ["unilii-clock"]
+battery = ["unilii-battery"]
