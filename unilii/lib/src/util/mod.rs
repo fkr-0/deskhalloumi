@@ -3,6 +3,7 @@
 //! various modules in dealing with asynchronous udev streams and
 //! stream combinators.
 
+use futures::Future;
 pub(crate) mod udev;
 
 /// Simple wrapper around `tokio::fs::ReadDir` to make it a stream.

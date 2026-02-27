@@ -1,5 +1,5 @@
 [package]
-name = "unilii"
+name = "unilii-bin"
 version.workspace = true
 edition.workspace = true
 
@@ -11,16 +11,16 @@ path = "src/main.rs"
 iced.workspace = true
 tokio.workspace = true
 serde.workspace = true
-toml = "0.8"
-tracing = "0.1"
-tracing-subscriber = "0.3"
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
-unilii-core = { path = "../core" }
-unilii-lib = { path = "../lib" }
+unilii-core.workspace = true
+unilii-lib.workspace = true
 
 # Plugin modules (enabled via features)
-unilii-clock = { path = "../plugins/Clock", optional = true }
-unilii-battery = { path = "../plugins/Battery", optional = true }
+unilii-clock = { workspace = true, optional = true }
+unilii-battery = { workspace = true, optional = true }
 
 [features]
 default = ["clock", "battery"]

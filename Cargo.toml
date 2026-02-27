@@ -2,9 +2,35 @@
 resolver = "2"
 members = [
     "unilii",
+    "unilii/core",
+    "unilii/lib",
+    "unilii/bin",
+    "unilii/plugins/Clock",
+    "unilii/plugins/Battery",
 ]
 
-# The workspace root only manages members.  The actual crates live in
-# subdirectories.  Having a workspace makes it easier to share the
-# library crate with our application crate.  If you run `cargo build`
-# from the root of this project, both crates will be compiled.
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["unilii contributors"]
+
+[workspace.dependencies]
+# Core dependencies
+iced = { git = "https://github.com/VirtCode/iced.git", features = ["advanced", "tokio", "winit"] }
+tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+async-trait = "0.1"
+
+# Additional dependencies
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+chrono = "0.4"
+
+# Internal crates
+unilii-lib = { path = "unilii/lib" }
+unilii-core = { path = "unilii/core" }
+unilii-clock = { path = "unilii/plugins/Clock" }
+unilii-battery = { path = "unilii/plugins/Battery" }

@@ -7,4 +7,4 @@ edition.workspace = true
 iced.workspace = true
 tokio.workspace = true
 serde.workspace = true
-async-trait = "0.1"
+async-trait.workspace = true

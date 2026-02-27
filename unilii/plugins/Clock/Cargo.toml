@@ -4,8 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-unilii-core = { path = "../../core" }
+unilii-core.workspace = true
 iced.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
-chrono = "0.4"
+chrono.workspace = true

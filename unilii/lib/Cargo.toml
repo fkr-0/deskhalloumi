@@ -12,7 +12,7 @@ edition.workspace = true
 
 [dependencies]
 # Async runtime and utilities
-tokio = { version = "1.48", features = ["net", "fs", "io-util", "sync", "macros"] }
+tokio.workspace = true
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 futures = "0.3"
 futures-core = "0.3"
