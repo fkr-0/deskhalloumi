@@ -1,0 +1,15 @@
+[package]
+name = "unilii"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "unilii"
+path = "src/main.rs"
+
+[dependencies]
+unilii-core.workspace = true
+unilii-lib.workspace = true
+iced.workspace = true
+tokio.workspace = true
+serde.workspace = true

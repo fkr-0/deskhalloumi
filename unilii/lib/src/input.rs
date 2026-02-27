@@ -47,7 +47,7 @@ pub fn read_keyboard_devices() -> Vec<Device> {
 }
 
 /// Helper function to convert an evdev device into a stream of KeyEvents.
-fn device_to_keyevent_stream(mut dev: Device) -> Option<StaticStream<KeyEvent>> {
+fn device_to_keyevent_stream(dev: Device) -> Option<StaticStream<KeyEvent>> {
     match dev.into_event_stream() {
         Ok(ev_stream) => {
             // Use unfold to convert the evdev stream into a futures stream

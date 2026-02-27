@@ -1,42 +1,20 @@
-[package]
-name = "unilii"
+[workspace]
+members = ["core", "bin", "plugins/*", "lib"]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+authors = ["unilii contributors"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[workspace.dependencies]
+# Core dependencies
+iced = { git = "https://github.com/VirtCode/iced.git", features = ["advanced", "tokio", "winit"] }
+tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
-[dependencies]
-anyhow = "1.0"
-chrono = "0.4"
-tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "time", "sync"] }
-x11rb = "0.13"
-
-clap = { version = "4.5.49", features = [ "derive" ] }
-log = "0.4.28"
-env_logger = "0.11.7"
-
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
-toml = "0.8.23"
-indexmap = "2.11.4"
-
-lucide-icons = "0.545.0"
-
-notify-rust = { version = "4.11.7", features = ["d"] }
-iced = { git = "https://github.com/VirtCode/iced.git", features = ["advanced", "tokio", "winit", "wayland", "multi-window"] }
-iced_winit = { git = "https://github.com/VirtCode/iced.git", features = ["wayland", "multi-window"], default-features = false }
-
-tiny-skia = "0.11"
-# stuff used for abstraction
-downcast = "0.11.0"
-dyn-clone = "1.0.20"
-async-trait = "0.1.89"
-tokio-stream = { version = "0.1.17", features = ["sync"] }
-futures = "0.3.31"
-
-unilii-lib = { path = "lib", default-features = true }
-
-# 2D rendering.  tiny-skia is a CPU‑only renderer based on the
-# algorithms of Skia.  It is considered the fastest software
-# renderer in the Rust ecosystem and produces high‑quality results
-#【970102790483411†L94-L99】.
+# Internal
+unilii-lib = { path = "lib" }
+unilii-core = { path = "core" }
