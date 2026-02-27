@@ -1,0 +1,47 @@
+[package]
+name = "unilii-lib"
+version = "0.1.0"
+edition = "2024"
+
+# The unilii-lib crate provides data sources and utilities loosely based on the
+# original `liischte-lib` library.  It exposes asynchronous streams for
+# monitoring system information such as battery state, backlight brightness,
+# running processes and keyboard input.  The implementation avoids any
+# dependency on Wayland and is designed to integrate cleanly with the main
+# `unilii` crate.
+
+[dependencies]
+# Async runtime and utilities
+tokio = { version = "1.48", features = ["net", "fs", "io-util", "sync", "macros"] }
+tokio-stream = { version = "0.1.17", features = ["sync"] }
+futures = "0.3"
+futures-core = "0.3"
+futures-util = "0.3"
+
+# Error handling and logging
+anyhow = "1.0"
+log = "0.4"
+
+# Optional crates used by specific modules
+udev = { version = "0.9.3", features = ["send"], optional = true }
+evdev = { version = "0.13.2", features = ["tokio"], optional = true }
+nix = { version = "0.30.1", default-features = false, features = ["signal"], optional = true }
+pin-project-lite = "0.2"
+
+[features]
+# Battery and AC information via the power_supply sysfs and udev events
+power = ["udev"]
+
+# Backlight information via the backlight sysfs and udev events
+backlight = ["udev"]
+
+# Process information via the procfs
+process = ["nix"]
+
+# Keyboard input monitoring via the evdev subsystem
+input = ["evdev"]
+
+# Enable all supported subsystems by default.  Consumers may opt out of
+# individual subsystems by disabling default features and enabling only what
+# they need.
+default = ["power", "backlight", "process", "input"]

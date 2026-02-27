@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+    "unilii",
+]
+
+# The workspace root only manages members.  The actual crates live in
+# subdirectories.  Having a workspace makes it easier to share the
+# library crate with our application crate.  If you run `cargo build`
+# from the root of this project, both crates will be compiled.
