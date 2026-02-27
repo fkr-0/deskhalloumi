@@ -5,6 +5,8 @@ edition.workspace = true
 
 [dependencies]
 unilii-core.workspace = true
+unilii-lib.workspace = true
 iced.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
+futures = "0.3"

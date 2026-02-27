@@ -9,7 +9,7 @@ pub struct Clock {
 
 #[async_trait::async_trait]
 impl Module for Clock {
-    async fn new(config: &ModuleConfig) -> Result<Self> {
+    async fn new(_config: &ModuleConfig) -> Result<Self> {
         Ok(Self {
             format: "%H:%M:%S".to_string(),
             current_time: String::new(),
@@ -20,7 +20,7 @@ impl Module for Clock {
         "clock"
     }
 
-    fn view(&self) -> Element<ModuleUpdate> {
+    fn view(&self) -> Element<'_, ModuleUpdate> {
         container(text(&self.current_time).size(14))
             .width(Length::Shrink)
             .padding(4)

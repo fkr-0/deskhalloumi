@@ -3370,9 +3370,11 @@ name = "unilii-battery"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures",
  "iced",
  "tokio",
  "unilii-core",
+ "unilii-lib",
 ]
 
 [[package]]
