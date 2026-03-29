@@ -26,6 +26,7 @@ pub enum TrayMenuAction {
     Activate,
     ContextMenu,
     SecondaryActivate,
+    SpawnCommand(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,10 +108,24 @@ pub fn build_menu_items(icon: &TrayIcon) -> Vec<TrayMenuItem> {
         action: TrayMenuAction::SecondaryActivate,
     });
 
+    if is_network_icon(icon) {
+        items.push(TrayMenuItem {
+            label: "Open Network Settings".to_string(),
+            action: TrayMenuAction::SpawnCommand("nm-connection-editor".to_string()),
+        });
+    }
+
     items
 }
 
 pub async fn invoke_menu_action(icon: &TrayIcon, action: TrayMenuAction) {
+    if let TrayMenuAction::SpawnCommand(command) = action {
+        if let Err(error) = spawn_command(command).await {
+            warn!("tray: command spawn failed: {error}");
+        }
+        return;
+    }
+
     let connection = match Connection::session().await {
         Ok(connection) => connection,
         Err(error) => {
@@ -143,6 +158,7 @@ pub async fn invoke_menu_action(icon: &TrayIcon, action: TrayMenuAction) {
         TrayMenuAction::SecondaryActivate => {
             proxy.call_method("SecondaryActivate", &(0i32, 0i32)).await
         }
+        TrayMenuAction::SpawnCommand(_) => return,
     };
 
     if let Err(error) = call_result {
@@ -151,6 +167,21 @@ pub async fn invoke_menu_action(icon: &TrayIcon, action: TrayMenuAction) {
             icon.service, icon.path, action
         );
     }
+}
+
+pub async fn spawn_command(command: String) -> Result<(), String> {
+    let command = command.trim().to_string();
+    if command.is_empty() {
+        return Err("cannot spawn an empty command".to_string());
+    }
+
+    std::process::Command::new("sh")
+        .arg("-lc")
+        .arg(&command)
+        .spawn()
+        .map_err(|error| format!("failed to spawn command '{command}': {error}"))?;
+
+    Ok(())
 }
 
 pub async fn read_network_snapshot(
@@ -400,7 +431,7 @@ fn parse_wifi_networks(output: &str) -> Vec<WifiNetwork> {
 mod tests {
     use super::{
         animate_progress, icon_label_for_name, parse_device_status, parse_wifi_networks,
-        visible_menu_items,
+        spawn_command, visible_menu_items,
     };
 
     #[test]
@@ -445,5 +476,11 @@ mod tests {
         assert_eq!(networks[0].security, "WPA2");
         assert_eq!(networks[1].ssid, "OpenWifi");
         assert_eq!(networks[1].security, "Open");
+    }
+
+    #[tokio::test]
+    async fn rejects_empty_spawn_command() {
+        let result = spawn_command("   ".to_string()).await;
+        assert!(result.is_err());
     }
 }

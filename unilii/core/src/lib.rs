@@ -1,6 +1,7 @@
 //! Core plugin API for unilii status bar modules.
 
 pub mod config;
+pub mod keys;
 
 use async_trait::async_trait;
 use iced::Element;

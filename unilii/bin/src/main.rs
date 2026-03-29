@@ -6,7 +6,7 @@ use iced::{window, Element, Length, Subscription, Task};
 use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{error, info, Level};
-use unilii_core::{config::load_config, ModuleUpdate};
+use unilii_core::{config::load_config, keys::KeybindingDaemon, ModuleUpdate};
 
 mod module_loader;
 mod tray;
@@ -15,9 +15,7 @@ use module_loader::{load_modules, LoadedModule, ModuleReceiver};
 struct UniliiBar {
     modules: HashMap<String, LoadedModule>,
     config: unilii_core::config::Config,
-    last_key: Option<String>,
     shift_held: bool,
-    key_display_mode: KeyDisplayMode,
     module_receivers: Vec<(String, ModuleReceiver)>,
     tray_icons: Vec<tray::TrayIcon>,
     tray_menu: Option<TrayMenuState>,
@@ -30,6 +28,7 @@ struct TrayMenuState {
     progress: f32,
     target: f32,
     content: TrayMenuContent,
+    selected_index: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,28 +54,6 @@ struct Cli {
     tray_poll_ms: u64,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum KeyDisplayMode {
-    Always,
-    ShiftHold,
-}
-
-impl KeyDisplayMode {
-    fn from_env_value(value: &str) -> Self {
-        match value.to_ascii_lowercase().as_str() {
-            "always" => Self::Always,
-            "shift" | "shift-hold" | "shift_hold" => Self::ShiftHold,
-            _ => Self::ShiftHold,
-        }
-    }
-
-    fn from_env() -> Self {
-        let value =
-            std::env::var("UNILII_KEY_DISPLAY_MODE").unwrap_or_else(|_| "shift-hold".to_string());
-        Self::from_env_value(&value)
-    }
-}
-
 fn env_flag(name: &str) -> bool {
     matches!(
         std::env::var(name).ok().as_deref(),
@@ -84,36 +61,6 @@ fn env_flag(name: &str) -> bool {
     )
 }
 
-impl Default for UniliiBar {
-    fn default() -> Self {
-        tracing_subscriber::fmt().with_max_level(Level::INFO).init();
-        info!("Starting unilii status bar");
-
-        // Load configuration
-        let config = load_config();
-        info!(
-            "Loaded window config: {}x{}",
-            config.window.width, config.window.height
-        );
-
-        // Modules will be loaded in run()
-        UniliiBar {
-            modules: HashMap::new(),
-            config,
-            last_key: None,
-            shift_held: false,
-            key_display_mode: KeyDisplayMode::from_env(),
-            module_receivers: Vec::new(),
-            tray_icons: Vec::new(),
-            tray_menu: None,
-            cli: Cli {
-                nmcli_path: "nmcli".to_string(),
-                network_menu: true,
-                tray_poll_ms: 1500,
-            },
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 enum Message {
@@ -134,6 +81,8 @@ enum Message {
     TrayNetworkRefresh(String),
     TrayNetworkToggle(String),
     TrayNetworkToggleDone(String, Result<(), String>),
+    TraySpawnCommand(String, String),
+    TraySpawnCommandDone(String, Result<(), String>),
     TrayAnimateTick,
 }
 
@@ -153,26 +102,76 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                 bar.shift_held = value != 0;
                 info!("shift state changed: held={}", bar.shift_held);
             }
-            bar.last_key = Some(format!("{code} ({value})"));
+            info!("evdev key: {code} ({value})");
         }
         Message::WindowKeyboardInput {
             key,
             pressed,
             is_shift,
         } => {
-            info!(
-                "window keyboard event: key={}, pressed={}, is_shift={}",
-                key, pressed, is_shift
-            );
             if is_shift {
                 bar.shift_held = pressed;
-                info!(
-                    "shift state changed from window event: held={}",
-                    bar.shift_held
-                );
             }
-            let state = if pressed { 1 } else { 0 };
-            bar.last_key = Some(format!("WIN:{key} ({state})"));
+
+            if pressed {
+                // Menu keyboard navigation
+                if let Some(menu) = bar.tray_menu.as_mut() {
+                    match key.as_str() {
+                        "Named(Escape)" => {
+                            menu.target = 0.0;
+                            return Task::none();
+                        }
+                        "Named(ArrowDown)" | "Named(Tab)" => {
+                            if let TrayMenuContent::Generic { items } = &menu.content {
+                                let count = items.len();
+                                if count > 0 {
+                                    menu.selected_index = Some(match menu.selected_index {
+                                        None => 0,
+                                        Some(i) => (i + 1) % count,
+                                    });
+                                }
+                            }
+                            return Task::none();
+                        }
+                        "Named(ArrowUp)" => {
+                            if let TrayMenuContent::Generic { items } = &menu.content {
+                                let count = items.len();
+                                if count > 0 {
+                                    menu.selected_index = Some(match menu.selected_index {
+                                        None => count.saturating_sub(1),
+                                        Some(i) => if i == 0 { count - 1 } else { i - 1 },
+                                    });
+                                }
+                            }
+                            return Task::none();
+                        }
+                        "Named(Enter)" => {
+                            if let TrayMenuContent::Generic { items } = &menu.content {
+                                if let Some(idx) = menu.selected_index {
+                                    if let Some(item) = items.get(idx) {
+                                        let action = item.action.clone();
+                                        let icon_key = menu.icon_key.clone();
+                                        menu.target = 0.0;
+                                        return Task::done(Message::TrayMenuTriggered(icon_key, action));
+                                    }
+                                }
+                            }
+                            return Task::none();
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Shift + digit: open nth tray icon
+                if bar.shift_held {
+                    if let Some(idx) = key_char_digit(&key) {
+                        if let Some(icon) = bar.tray_icons.get(idx) {
+                            let icon_key = icon.key.clone();
+                            return Task::done(Message::TrayIconPressed(icon_key));
+                        }
+                    }
+                }
+            }
         }
         Message::TrayEvent(event) => match event {
             tray::TrayEvent::Icons(icons) => {
@@ -205,6 +204,7 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                             loading: true,
                             error: None,
                         },
+                        selected_index: None,
                     });
                     let nmcli_path = bar.cli.nmcli_path.clone();
                     return Task::perform(
@@ -222,6 +222,7 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                         progress: 0.0,
                         target: 1.0,
                         content: TrayMenuContent::Generic { items },
+                        selected_index: Some(0),
                     });
                 }
             }
@@ -330,6 +331,34 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                 move |result| Message::TrayNetworkSnapshot(icon_key.clone(), result),
             );
         }
+        Message::TraySpawnCommand(icon_key, command) => {
+            if let Some(menu) = bar.tray_menu.as_mut() {
+                if menu.icon_key != icon_key {
+                    return Task::none();
+                }
+                if let TrayMenuContent::Network { loading, error, .. } = &mut menu.content {
+                    *loading = true;
+                    *error = None;
+                }
+            }
+
+            return Task::perform(tray::spawn_command(command), move |result| {
+                Message::TraySpawnCommandDone(icon_key.clone(), result)
+            });
+        }
+        Message::TraySpawnCommandDone(icon_key, result) => {
+            if let Some(menu) = bar.tray_menu.as_mut() {
+                if menu.icon_key != icon_key {
+                    return Task::none();
+                }
+                if let TrayMenuContent::Network { loading, error, .. } = &mut menu.content {
+                    *loading = false;
+                    if let Err(message) = result {
+                        *error = Some(message);
+                    }
+                }
+            }
+        }
         Message::TrayAnimateTick => {
             if let Some(menu) = bar.tray_menu.as_mut() {
                 menu.progress = tray::animate_progress(menu.progress, menu.target, 0.12);
@@ -347,151 +376,195 @@ fn view(bar: &UniliiBar) -> Element<'_, Message> {
     let mut module_names: Vec<_> = bar.modules.keys().collect();
     module_names.sort();
 
-    let mut right_widgets = vec![];
+    let mut right_widgets: Vec<Element<'_, Message>> = vec![];
 
     for name in module_names {
         if let Some(loaded) = bar.modules.get(name) {
-            let view = loaded.module.view();
-            // Map module's internal ModuleUpdate messages to our Message
-            let widget = view.map(move |update| Message::ModuleUpdate(name.clone(), update));
-
+            let widget = loaded.module.view().map({
+                let name = name.clone();
+                move |update| Message::ModuleUpdate(name.clone(), update)
+            });
             right_widgets.push(widget);
         }
     }
 
-    let tray_buttons = bar.tray_icons.iter().fold(
-        row!().spacing(2).align_y(iced::Alignment::Center),
-        |row, icon| {
-            row.push(
-                button(text(tray::icon_label_for(icon)).size(14))
-                    .padding([1, 5])
-                    .on_press(Message::TrayIconPressed(icon.key.clone())),
-            )
+    // Tray icons — show digit hints when shift is held
+    let tray_row = bar.tray_icons.iter().enumerate().fold(
+        row!().spacing(1).align_y(iced::Alignment::Center),
+        |acc_row, (i, icon)| {
+            let label = if bar.shift_held {
+                format!("{}:{}", i + 1, tray::icon_label_for(icon))
+            } else {
+                tray::icon_label_for(icon)
+            };
+            let is_active = bar.tray_menu.as_ref().map(|m| m.icon_key == icon.key).unwrap_or(false);
+            let btn = button(text(label).size(13))
+                .padding([2, 7])
+                .on_press(Message::TrayIconPressed(icon.key.clone()));
+            let btn = if is_active {
+                btn.style(button::primary)
+            } else {
+                btn.style(button::text)
+            };
+            acc_row.push(btn)
         },
     );
+    right_widgets.push(tray_row.into());
 
-    right_widgets.push(tray_buttons.into());
-
-    // Right section (clock, battery, etc.)
-    let mut right_row = row(right_widgets)
-        .spacing(4)
-        .align_y(iced::Alignment::Center);
-
-    let show_key = should_show_key(bar.key_display_mode, bar.shift_held, bar.last_key.as_ref());
-
-    if show_key {
-        if let Some(last_key) = &bar.last_key {
-            right_row = right_row.push(text(format!("Key: {last_key}")).size(12));
-        }
-    }
-
+    // Inline drop menu (animated)
     if let Some(menu) = &bar.tray_menu {
-        let dynamic_padding = ((1.0 - menu.progress) * 8.0).round().clamp(0.0, 8.0) as u16;
-        match &menu.content {
+        let opacity = menu.progress.clamp(0.0, 1.0);
+        let menu_widget: Element<'_, Message> = match &menu.content {
             TrayMenuContent::Generic { items } => {
                 let visible = tray::visible_menu_items(items.len(), menu.progress);
-                let menu_row = items.iter().take(visible).fold(
+                let menu_row = items.iter().enumerate().take(visible).fold(
                     row!().spacing(2).align_y(iced::Alignment::Center),
-                    |row, item| {
-                        row.push(
-                            button(text(item.label.clone()).size(12))
-                                .padding([1, 6])
-                                .on_press(Message::TrayMenuTriggered(
-                                    menu.icon_key.clone(),
-                                    item.action.clone(),
-                                )),
-                        )
+                    |acc, (i, item)| {
+                        let is_sel = menu.selected_index == Some(i);
+                        let btn = button(text(item.label.clone()).size(12))
+                            .padding([2, 8])
+                            .on_press(Message::TrayMenuTriggered(
+                                menu.icon_key.clone(),
+                                item.action.clone(),
+                            ));
+                        let btn = if is_sel { btn.style(button::primary) } else { btn.style(button::text) };
+                        acc.push(btn)
                     },
                 );
-
-                right_row = right_row.push(
-                    container(menu_row)
-                        .padding([0, dynamic_padding])
-                        .style(container::rounded_box),
-                );
+                container(menu_row)
+                    .padding([0, 4])
+                    .style(container::rounded_box)
+                    .into()
             }
-            TrayMenuContent::Network {
-                data,
-                loading,
-                error,
-            } => {
-                let mut network_menu = column![
-                    text("Network").size(12),
-                    button(text(if data.as_ref().map(|d| d.enabled).unwrap_or(false) {
-                        "Disable Wi-Fi"
-                    } else {
-                        "Enable Wi-Fi"
-                    }))
-                    .on_press(Message::TrayNetworkToggle(menu.icon_key.clone())),
-                    button(text("Refresh Networks"))
-                        .on_press(Message::TrayNetworkRefresh(menu.icon_key.clone()))
+            TrayMenuContent::Network { data, loading, error } => {
+                let wifi_label = if data.as_ref().map(|d| d.enabled).unwrap_or(false) {
+                    "Disable Wi-Fi"
+                } else {
+                    "Enable Wi-Fi"
+                };
+                let mut col = column![
+                    button(text(wifi_label).size(12))
+                        .padding([2, 8])
+                        .style(button::text)
+                        .on_press(Message::TrayNetworkToggle(menu.icon_key.clone())),
+                    button(text("Refresh").size(12))
+                        .padding([2, 8])
+                        .style(button::text)
+                        .on_press(Message::TrayNetworkRefresh(menu.icon_key.clone())),
+                    button(text("Settings").size(12))
+                        .padding([2, 8])
+                        .style(button::text)
+                        .on_press(Message::TraySpawnCommand(
+                            menu.icon_key.clone(),
+                            "nm-connection-editor".to_string(),
+                        )),
                 ]
-                .spacing(3);
+                .spacing(1);
 
                 if let Some(snapshot) = data {
-                    network_menu = network_menu
-                        .push(text(format!("{}: {}", snapshot.interface, snapshot.state)));
-                    if snapshot.enabled {
-                        if snapshot.networks.is_empty() {
-                            network_menu = network_menu.push(text("No networks found").size(11));
-                        } else {
-                            for network in &snapshot.networks {
-                                network_menu = network_menu.push(text(format!(
-                                    "{} ({}%) {}",
-                                    network.ssid, network.signal, network.security
-                                )));
-                            }
+                    if snapshot.enabled && !snapshot.networks.is_empty() {
+                        col = col.push(text("─────").size(10));
+                        for network in snapshot.networks.iter().take(6) {
+                            let connected_marker = if snapshot.state == "connected"
+                                && snapshot.interface == network.ssid
+                            {
+                                " ●"
+                            } else {
+                                ""
+                            };
+                            col = col.push(
+                                button(
+                                    text(format!("{}{} {}%", network.ssid, connected_marker, network.signal))
+                                        .size(11),
+                                )
+                                .padding([1, 8])
+                                .style(button::text)
+                                .on_press(Message::TraySpawnCommand(
+                                    menu.icon_key.clone(),
+                                    format!("nmcli device wifi connect \"{}\"", network.ssid),
+                                )),
+                            );
                         }
-                    } else {
-                        network_menu = network_menu.push(text("Wi-Fi is disabled").size(11));
+                    } else if !snapshot.enabled {
+                        col = col.push(text("  Wi-Fi off").size(11));
                     }
                 }
-
                 if *loading {
-                    network_menu = network_menu.push(text("Loading...").size(11));
+                    col = col.push(text("  …").size(11));
                 }
-                if let Some(message) = error {
-                    network_menu = network_menu.push(text(format!("Error: {message}")).size(11));
+                if let Some(msg) = error {
+                    col = col.push(text(format!("  ⚠ {msg}")).size(11));
                 }
 
-                right_row = right_row.push(
-                    container(network_menu)
-                        .padding([2, dynamic_padding])
-                        .style(container::rounded_box),
-                );
+                container(col)
+                    .padding([4, 6])
+                    .style(container::rounded_box)
+                    .into()
             }
-        }
+        };
+        let _ = opacity; // used for future fade; menu already animates via visible_menu_items
+        right_widgets.push(menu_widget);
     }
 
-    // Create the status bar layout
+    let right_row = row(right_widgets)
+        .spacing(6)
+        .align_y(iced::Alignment::Center);
+
     let bar_content = row![horizontal_space(), right_row]
         .spacing(8)
         .align_y(iced::Alignment::Center)
         .width(Length::Fill)
         .height(Length::Shrink);
 
-    // Apply background color from config if available
-    let container_builder = container(bar_content)
-        .style(container::dark)
+    // Apply config background color when available, else fall back to dark theme
+    let bg_color = bar
+        .config
+        .window
+        .background_color
+        .as_deref()
+        .and_then(parse_hex_color);
+
+    let bar_container = container(bar_content)
         .width(Length::Fill)
-        .padding(4);
+        .padding([3, 6]);
 
-    if let Some(_bg_color) = &bar.config.window.background_color {
-        // TODO: Parse hex color and apply to container
-        // For now, we'll use the default iced theme
+    if let Some(color) = bg_color {
+        bar_container
+            .style(move |_theme| container::Style {
+                background: Some(iced::Background::Color(color)),
+                ..Default::default()
+            })
+            .into()
+    } else {
+        bar_container.style(container::dark).into()
     }
-
-    container_builder.into()
 }
 
-fn should_show_key(mode: KeyDisplayMode, shift_held: bool, last_key: Option<&String>) -> bool {
-    if last_key.is_none() {
-        return false;
+/// Returns the 0-based tray index if the key is a digit 1-9 (Character("1") etc.)
+fn key_char_digit(key: &str) -> Option<usize> {
+    // iced Key::Character(SmolStr) formats as: Character("1")
+    if let Some(inner) = key.strip_prefix("Character(\"").and_then(|s| s.strip_suffix("\")")) {
+        if inner.len() == 1 {
+            if let Some(d) = inner.chars().next().and_then(|c| c.to_digit(10)) {
+                if d >= 1 {
+                    return Some(d as usize - 1);
+                }
+            }
+        }
     }
+    None
+}
 
-    match mode {
-        KeyDisplayMode::Always => true,
-        KeyDisplayMode::ShiftHold => shift_held,
+/// Parse a "#rrggbb" hex string into an iced Color.
+fn parse_hex_color(hex: &str) -> Option<iced::Color> {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() == 6 {
+        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+        Some(iced::Color::from_rgb8(r, g, b))
+    } else {
+        None
     }
 }
 
@@ -632,6 +705,21 @@ async fn main() -> iced::Result {
         config.window.position_x,
         config.window.position_y
     );
+
+    if !config.keybindings.is_empty() {
+        let keybindings = config.keybindings.clone();
+        tokio::spawn(async move {
+            let daemon = KeybindingDaemon::new(keybindings);
+            if let Err(error) = daemon.run().await {
+                error!("keybinding daemon exited with error: {}", error);
+            }
+        });
+        info!(
+            "keybinding daemon started with {} bindings",
+            config.keybindings.len()
+        );
+    }
+
     let (modules, module_receivers) = load_modules().await.unwrap_or_else(|e| {
         error!("Failed to load modules: {}", e);
         (HashMap::new(), Vec::new())
@@ -685,9 +773,7 @@ async fn main() -> iced::Result {
                 UniliiBar {
                     modules,
                     config: config.clone(),
-                    last_key: None,
                     shift_held: false,
-                    key_display_mode: KeyDisplayMode::from_env(),
                     module_receivers,
                     tray_icons: Vec::new(),
                     tray_menu: None,
@@ -700,34 +786,26 @@ async fn main() -> iced::Result {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_show_key, KeyDisplayMode};
+    use super::key_char_digit;
 
     #[test]
-    fn key_mode_uses_shift_hold_for_unknown_values() {
-        std::env::set_var("UNILII_KEY_DISPLAY_MODE", "unknown-mode");
-        assert!(matches!(
-            KeyDisplayMode::from_env(),
-            KeyDisplayMode::ShiftHold
-        ));
+    fn digit_1_maps_to_index_0() {
+        assert_eq!(key_char_digit("Character(\"1\")"), Some(0));
     }
 
     #[test]
-    fn key_mode_accepts_shift_alias() {
-        std::env::set_var("UNILII_KEY_DISPLAY_MODE", "shift");
-        assert!(matches!(
-            KeyDisplayMode::from_env(),
-            KeyDisplayMode::ShiftHold
-        ));
+    fn digit_9_maps_to_index_8() {
+        assert_eq!(key_char_digit("Character(\"9\")"), Some(8));
     }
 
     #[test]
-    fn key_visibility_in_shift_mode_requires_shift_pressed() {
-        let key = "KEY_A (1)".to_string();
-        assert!(!should_show_key(
-            KeyDisplayMode::ShiftHold,
-            false,
-            Some(&key)
-        ));
-        assert!(should_show_key(KeyDisplayMode::ShiftHold, true, Some(&key)));
+    fn digit_0_is_not_a_tray_shortcut() {
+        assert_eq!(key_char_digit("Character(\"0\")"), None);
+    }
+
+    #[test]
+    fn non_digit_key_returns_none() {
+        assert_eq!(key_char_digit("Named(Escape)"), None);
+        assert_eq!(key_char_digit("Character(\"a\")"), None);
     }
 }

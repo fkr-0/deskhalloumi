@@ -1,5 +1,6 @@
 //! Configuration loader for unilii status bar.
 
+use crate::keys::KeyBinding;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -12,6 +13,9 @@ pub struct Config {
     pub window: WindowConfig,
     /// Module configurations
     pub modules: Vec<ModuleConfigEntry>,
+    /// Global keybinding daemon configuration
+    #[serde(default)]
+    pub keybindings: Vec<KeyBinding>,
 }
 
 /// Window configuration settings.
@@ -69,6 +73,7 @@ impl Default for Config {
                     update_interval_ms: Some(5000),
                 },
             ],
+            keybindings: Vec::new(),
         }
     }
 }
@@ -174,6 +179,7 @@ mod tests {
         assert_eq!(config.window.width, 800);
         assert_eq!(config.window.height, 24);
         assert_eq!(config.modules.len(), 2);
+        assert!(config.keybindings.is_empty());
         assert_eq!(config.modules[0].name, "clock");
         assert_eq!(config.modules[1].name, "battery");
     }

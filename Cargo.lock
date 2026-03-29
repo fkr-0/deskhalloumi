@@ -3618,11 +3618,13 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "directories",
+ "futures",
  "iced",
  "serde",
  "tokio",
  "toml",
  "tracing",
+ "unilii-lib",
 ]
 
 [[package]]
