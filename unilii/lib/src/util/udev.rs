@@ -32,14 +32,19 @@ impl AsyncMonitorSocket {
     /// [`MonitorSocket`].  Returns an [`io::Error`] if the file
     /// descriptor cannot be registered with the tokio reactor.
     pub fn new(monitor: MonitorSocket) -> io::Result<Self> {
-        Ok(Self { inner: Mutex::new(Inner::new(monitor)?) })
+        Ok(Self {
+            inner: Mutex::new(Inner::new(monitor)?),
+        })
     }
 }
 
 impl Stream for AsyncMonitorSocket {
     type Item = Result<Event, io::Error>;
 
-    fn poll_next(self: Pin<&mut Self>, ctx: &mut std::task::Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(
+        self: Pin<&mut Self>,
+        ctx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
         self.inner.lock().unwrap().poll_receive(ctx)
     }
 }
@@ -50,7 +55,9 @@ struct Inner {
 
 impl Inner {
     fn new(monitor: MonitorSocket) -> io::Result<Self> {
-        Ok(Self { fd: AsyncFd::new(monitor)? })
+        Ok(Self {
+            fd: AsyncFd::new(monitor)?,
+        })
     }
 
     fn poll_receive(

@@ -1,6 +1,9 @@
 use chrono::Local;
+use iced::{
+    widget::{container, text},
+    Alignment, Element, Length,
+};
 use unilii_core::{Module, ModuleConfig, ModuleUpdate, Result};
-use iced::{Element, widget::{text, container}, Length, Alignment};
 
 pub struct Clock {
     format: String,
@@ -32,7 +35,9 @@ impl Module for Clock {
         Ok(())
     }
 
-    async fn subscribe(&mut self) -> Result<Option<tokio::sync::mpsc::UnboundedReceiver<ModuleUpdate>>> {
+    async fn subscribe(
+        &mut self,
+    ) -> Result<Option<tokio::sync::mpsc::UnboundedReceiver<ModuleUpdate>>> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let format = self.format.clone();
 

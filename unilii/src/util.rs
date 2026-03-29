@@ -25,20 +25,7 @@ pub fn build_strut_partial(side: DockSide, width: u32, screen_height: u32) -> [u
             0,
             0,
         ],
-        DockSide::Right => [
-            0,
-            width,
-            0,
-            0,
-            0,
-            0,
-            0,
-            screen_height,
-            0,
-            0,
-            0,
-            0,
-        ],
+        DockSide::Right => [0, width, 0, 0, 0, 0, 0, screen_height, 0, 0, 0, 0],
     }
 }
 

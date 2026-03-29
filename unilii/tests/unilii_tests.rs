@@ -29,7 +29,7 @@ fn test_time_format() {
     // representative date yields the expected pattern.  We avoid
     // asserting specific digits since the actual time will vary; we
     // simply check for the presence of colons and length.
-    use chrono::{NaiveDateTime, TimeZone, Utc};
+    use chrono::{TimeZone, Utc};
     let dt = Utc.with_ymd_and_hms(2026, 2, 27, 13, 45, 59).unwrap();
     let formatted = dt.format("%H:%M:%S").to_string();
     assert_eq!(formatted.len(), 8);

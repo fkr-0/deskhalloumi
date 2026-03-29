@@ -14,8 +14,8 @@ use log::{trace, warn};
 use nix::{sys::signal::kill, unistd::Pid};
 use tokio::{fs, time::Instant};
 
-use crate::{StaticStream, StreamContext};
 use crate::util::ReadDirStream;
+use crate::{StaticStream, StreamContext};
 
 pub use nix::sys::signal::Signal as ProcessSignal;
 
@@ -82,7 +82,10 @@ pub fn listen_running_processes(polling: Duration) -> StaticStream<Vec<ProcessIn
     futures::stream::unfold(interval, async move |mut interval| {
         interval.tick().await;
         trace!("polling running process information");
-        let Some(procs) = read_running_processes().await.stream_log("running processes stream") else {
+        let Some(procs) = read_running_processes()
+            .await
+            .stream_log("running processes stream")
+        else {
             return None;
         };
         Some((procs, interval))

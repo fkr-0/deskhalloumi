@@ -1,6 +1,7 @@
 //! Module loader for dynamically loading and initializing status bar modules.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use tracing::{info, warn};
 use unilii_core::{Module, ModuleConfig, ModuleUpdate, Result};
@@ -9,17 +10,20 @@ use unilii_core::{Module, ModuleConfig, ModuleUpdate, Result};
 pub struct LoadedModule {
     /// The module instance.
     pub module: Box<dyn Module>,
-    /// Channel sender for module updates.
-    pub tx: tokio::sync::mpsc::UnboundedSender<ModuleUpdate>,
 }
+
+pub type ModuleReceiver =
+    Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<ModuleUpdate>>>;
 
 /// Load and initialize all configured modules.
 ///
 /// This function creates module instances based on the default configuration
 /// and sets up their update channels. Returns a HashMap mapping module names
 /// to their loaded instances.
-pub async fn load_modules() -> Result<HashMap<String, LoadedModule>> {
+pub async fn load_modules() -> Result<(HashMap<String, LoadedModule>, Vec<(String, ModuleReceiver)>)>
+{
     let mut modules = HashMap::new();
+    let mut receivers = Vec::new();
 
     // Default module configurations
     let clock_config = ModuleConfig {
@@ -41,8 +45,11 @@ pub async fn load_modules() -> Result<HashMap<String, LoadedModule>> {
     {
         info!("Loading Clock module");
         match create_clock_module(&clock_config).await {
-            Ok((module, tx)) => {
-                modules.insert("clock".to_string(), LoadedModule { module, tx });
+            Ok((module, rx)) => {
+                modules.insert("clock".to_string(), LoadedModule { module });
+                if let Some(rx) = rx {
+                    receivers.push(("clock".to_string(), Arc::new(tokio::sync::Mutex::new(rx))));
+                }
                 info!("Clock module loaded successfully");
             }
             Err(e) => {
@@ -56,8 +63,11 @@ pub async fn load_modules() -> Result<HashMap<String, LoadedModule>> {
     {
         info!("Loading Battery module");
         match create_battery_module(&battery_config).await {
-            Ok((module, tx)) => {
-                modules.insert("battery".to_string(), LoadedModule { module, tx });
+            Ok((module, rx)) => {
+                modules.insert("battery".to_string(), LoadedModule { module });
+                if let Some(rx) = rx {
+                    receivers.push(("battery".to_string(), Arc::new(tokio::sync::Mutex::new(rx))));
+                }
                 info!("Battery module loaded successfully");
             }
             Err(e) => {
@@ -66,45 +76,29 @@ pub async fn load_modules() -> Result<HashMap<String, LoadedModule>> {
         }
     }
 
-    Ok(modules)
+    Ok((modules, receivers))
 }
 
 #[cfg(feature = "clock")]
 async fn create_clock_module(
     config: &ModuleConfig,
-) -> Result<(Box<dyn Module>, tokio::sync::mpsc::UnboundedSender<ModuleUpdate>)> {
+) -> Result<(
+    Box<dyn Module>,
+    Option<tokio::sync::mpsc::UnboundedReceiver<ModuleUpdate>>,
+)> {
     let mut module = unilii_clock::Clock::new(config).await?;
-    let mut rx = module.subscribe().await?.unwrap();
-
-    let (tx, _rx_main) = tokio::sync::mpsc::unbounded_channel();
-
-    // Forward module updates to main channel
-    let tx_clone = tx.clone();
-    tokio::spawn(async move {
-        while let Some(update) = rx.recv().await {
-            let _ = tx_clone.send(update);
-        }
-    });
-
-    Ok((Box::new(module), tx))
+    let rx = module.subscribe().await?;
+    Ok((Box::new(module), rx))
 }
 
 #[cfg(feature = "battery")]
 async fn create_battery_module(
     config: &ModuleConfig,
-) -> Result<(Box<dyn Module>, tokio::sync::mpsc::UnboundedSender<ModuleUpdate>)> {
+) -> Result<(
+    Box<dyn Module>,
+    Option<tokio::sync::mpsc::UnboundedReceiver<ModuleUpdate>>,
+)> {
     let mut module = unilii_battery::Battery::new(config).await?;
-    let mut rx = module.subscribe().await?.unwrap();
-
-    let (tx, _rx_main) = tokio::sync::mpsc::unbounded_channel();
-
-    // Forward module updates to main channel
-    let tx_clone = tx.clone();
-    tokio::spawn(async move {
-        while let Some(update) = rx.recv().await {
-            let _ = tx_clone.send(update);
-        }
-    });
-
-    Ok((Box::new(module), tx))
+    let rx = module.subscribe().await?;
+    Ok((Box::new(module), rx))
 }

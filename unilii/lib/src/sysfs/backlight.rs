@@ -12,8 +12,8 @@ use anyhow::Result;
 use futures::StreamExt;
 use udev::MonitorBuilder;
 
-use crate::{StaticStream, StreamContext};
 use crate::util::udev::AsyncMonitorSocket;
+use crate::{StaticStream, StreamContext};
 
 use super::Device;
 
@@ -32,17 +32,22 @@ impl BacklightDevice {
     /// reading the device list returns [`Err`].
     pub async fn read_all() -> Result<Vec<Self>> {
         let devices = Device::read_devices("backlight").await?;
-        Ok(futures::future::join_all(devices.into_iter().map(|d| async move {
-            if let Ok(max) = d.read_device_attribute_int("max_brightness").await {
-                Some(Self { device: d, max: max as u32 })
-            } else {
-                None
-            }
-        }))
-        .await
-        .into_iter()
-        .filter_map(|o| o)
-        .collect())
+        Ok(
+            futures::future::join_all(devices.into_iter().map(|d| async move {
+                if let Ok(max) = d.read_device_attribute_int("max_brightness").await {
+                    Some(Self {
+                        device: d,
+                        max: max as u32,
+                    })
+                } else {
+                    None
+                }
+            }))
+            .await
+            .into_iter()
+            .filter_map(|o| o)
+            .collect(),
+        )
     }
 
     /// Read the current brightness as a fraction in the range 0–1.
@@ -57,7 +62,9 @@ impl BacklightDevice {
     /// stream of brightness values.  Whenever an event for this
     /// device is received the brightness is read and emitted.
     pub fn listen_brightness(self) -> Result<StaticStream<f64>> {
-        let socket = MonitorBuilder::new()?.match_subsystem("backlight")?.listen()?;
+        let socket = MonitorBuilder::new()?
+            .match_subsystem("backlight")?
+            .listen()?;
         let device_name = self.device.name.clone();
         let device = Arc::new(self);
         const STREAM: &str = "backlight brightness stream";
@@ -67,8 +74,7 @@ impl BacklightDevice {
                 let device_name = device_name.clone();
                 async move {
                     // Filter to events for this device.
-                    if r
-                        .stream_context(STREAM, "received invalid udev event")?
+                    if r.stream_context(STREAM, "received invalid udev event")?
                         .sysname()
                         .to_string_lossy()
                         == device_name

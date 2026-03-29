@@ -1,7 +1,9 @@
 //! Core plugin API for unilii status bar modules.
 
-use iced::Element;
+pub mod config;
+
 use async_trait::async_trait;
+use iced::Element;
 
 /// Result type for plugin operations.
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -58,7 +60,9 @@ pub trait Module: Send + Sync {
 
     /// Subscribe to async events (called once at startup).
     /// Returns a stream of updates or None if not needed.
-    async fn subscribe(&mut self) -> Result<Option<tokio::sync::mpsc::UnboundedReceiver<ModuleUpdate>>> {
+    async fn subscribe(
+        &mut self,
+    ) -> Result<Option<tokio::sync::mpsc::UnboundedReceiver<ModuleUpdate>>> {
         Ok(None)
     }
 

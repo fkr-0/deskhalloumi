@@ -12,3 +12,8 @@ unilii-lib.workspace = true
 [lib]
 name = "unilii"
 path = "src/lib.rs"
+
+[dev-dependencies]
+chrono.workspace = true
+tokio.workspace = true
+futures-util = "0.3"

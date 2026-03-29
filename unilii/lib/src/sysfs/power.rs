@@ -17,8 +17,8 @@ use log::trace;
 use tokio::time::Instant;
 use udev::MonitorBuilder;
 
-use crate::{StaticStream, StreamContext};
 use crate::util::udev::AsyncMonitorSocket;
+use crate::{StaticStream, StreamContext};
 
 use super::Device;
 
@@ -61,15 +61,17 @@ impl PowerDevice {
     /// both AC and battery devices.
     pub async fn read_all() -> Result<Vec<Self>> {
         let devices = Device::read_devices("power_supply").await?;
-        Ok(futures::future::join_all(devices.into_iter().map(|d| async move {
-            let kind = if let Ok(kind_str) = d.read_device_attribute_string("type").await {
-                PowerDeviceKind::parse(&kind_str)
-            } else {
-                PowerDeviceKind::Unknown
-            };
-            Self { device: d, kind }
-        }))
-        .await)
+        Ok(
+            futures::future::join_all(devices.into_iter().map(|d| async move {
+                let kind = if let Ok(kind_str) = d.read_device_attribute_string("type").await {
+                    PowerDeviceKind::parse(&kind_str)
+                } else {
+                    PowerDeviceKind::Unknown
+                };
+                Self { device: d, kind }
+            }))
+            .await,
+        )
     }
 }
 
@@ -106,8 +108,7 @@ impl MainsPowerDevice {
                 let device_name = device_name.clone();
                 async move {
                     // Filter events to those concerning our device.
-                    if r
-                        .context("invalid udev event")
+                    if r.context("invalid udev event")
                         .stream_log("ac online stream")?
                         .sysname()
                         .to_string_lossy()
@@ -170,8 +171,14 @@ impl BatteryPowerDevice {
                 let mut next = last;
                 while (next - last).abs() < f64::EPSILON {
                     interval.tick().await;
-                    trace!("polling battery charge for device `{}`", device.0.device.name);
-                    if let Some(charge) = device.read_charge().await.stream_log("battery charge stream")
+                    trace!(
+                        "polling battery charge for device `{}`",
+                        device.0.device.name
+                    );
+                    if let Some(charge) = device
+                        .read_charge()
+                        .await
+                        .stream_log("battery charge stream")
                     {
                         next = charge;
                     }

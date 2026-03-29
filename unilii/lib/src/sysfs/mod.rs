@@ -47,13 +47,20 @@ impl Device {
     async fn read_devices(class: &str) -> Result<Vec<Self>> {
         let devices = fs::read_dir(PathBuf::from("/sys/class").join(class))
             .await
-            .context(format!("`{class}` sysfs is required for `{class}` information"))?;
+            .context(format!(
+                "`{class}` sysfs is required for `{class}` information"
+            ))?;
         Ok(ReadDirStream::new(devices)
             .filter_map(async |result| result.ok())
             .filter_map(async |entry| {
                 let path = entry.path();
-                let Some(name) = path.file_name() else { return None; };
-                Some(Self { name: name.to_string_lossy().to_string(), path })
+                let Some(name) = path.file_name() else {
+                    return None;
+                };
+                Some(Self {
+                    name: name.to_string_lossy().to_string(),
+                    path,
+                })
             })
             .collect::<Vec<_>>()
             .await)
@@ -70,10 +77,12 @@ impl Device {
     /// Read a sysfs device attribute as an integer.  Returns an error
     /// with context on failure or parse error.
     pub async fn read_device_attribute_int(&self, attribute: &str) -> Result<i64> {
-        self.read_device_attribute_string(attribute).await.and_then(|s| {
-            s.trim().parse::<i64>().with_context(|| {
-                format!("could not parse `{attribute}` for device `{}`", self.name)
+        self.read_device_attribute_string(attribute)
+            .await
+            .and_then(|s| {
+                s.trim().parse::<i64>().with_context(|| {
+                    format!("could not parse `{attribute}` for device `{}`", self.name)
+                })
             })
-        })
     }
 }

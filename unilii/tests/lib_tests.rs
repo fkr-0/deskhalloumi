@@ -4,28 +4,32 @@
 //! container we do not assert on specific values; instead we simply
 //! verify that calls succeed.
 
-use unilii_lib::sysfs::power::PowerDevice;
-use unilii_lib::sysfs::backlight::BacklightDevice;
+use futures_util::StreamExt;
 use unilii_lib::input;
 use unilii_lib::process;
-use futures::StreamExt;
+use unilii_lib::sysfs::backlight::BacklightDevice;
+use unilii_lib::sysfs::power::PowerDevice;
 
 /// Ensure that the power device enumeration does not panic and
 /// returns a vector (possibly empty) of devices.
 #[tokio::test]
 async fn test_power_device_enumeration() {
-    let _ = PowerDevice::read_all().await.expect("reading power devices");
+    let _ = PowerDevice::read_all()
+        .await
+        .expect("reading power devices");
 }
 
 /// Ensure that backlight devices can be read without panicking.
 #[tokio::test]
 async fn test_backlight_enumeration() {
-    let _ = BacklightDevice::read_all().await.expect("reading backlight devices");
+    let _ = BacklightDevice::read_all()
+        .await
+        .expect("reading backlight devices");
 }
 
 /// Ensure that the keyboard event listener can be constructed.
-#[test]
-fn test_keyboard_listener() {
+#[tokio::test]
+async fn test_keyboard_listener() {
     let _ = input::listen_keyboard_events().expect("constructing keyboard listener");
 }
 

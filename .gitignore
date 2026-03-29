@@ -1,0 +1,63 @@
+.DS_Store
+.idea
+*.log
+tmp/
+
+*.py[cod]
+*.egg
+build
+htmlcov
+
+ 
+# Generated files
+# Generated files
+/target/
+//target/
+/**/*.rs.bk
+
+**/*.rs.bk
+
+# If you have a Cargo.lock file, ignore it if you're building a library
+# If you have a Cargo.lock file, ignore it if you're building a library
+# Otherwise, if you're building an application, you should commit it
+# Otherwise, if you're building an application, you should commit it
+# Uncomment the following line if you want to ignore Cargo.lock
+# Uncomment the following line if you want to ignore Cargo.lock
+# Cargo.lock
+
+# Cargo.lock
+
+# IDEs and editors
+# IDEs and editors
+.idea/
+.idea/
+.vscode/
+.vscode/
+*.swp
+*.swp
+*.swo
+
+*.swo
+
+# Byebug
+# Byebug
+.byebug_history
+
+.byebug_history
+
+# Node.js modules (if applicable)
+# Node.js modules (if applicable)
+node_modules/
+
+node_modules/
+
+# MacOS files
+# MacOS files
+.DS_Store
+
+.DS_Store
+
+# Linux files
+# Linux files
+*.lock
+*.lock
