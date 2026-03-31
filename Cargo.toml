@@ -1,24 +1,95 @@
 [workspace]
 resolver = "2"
 members = [
-    "unilii",
-    "unilii/core",
-    "unilii/lib",
-    "unilii/bin",
-    "unilii/plugins/Clock",
-    "unilii/plugins/Battery",
+  "unilii",
+  "unilii/core",
+  "unilii/lib",
+  "unilii/bin",
+  "unilii/plugins/Clock",
+  "unilii/plugins/Battery",
 ]
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 authors = ["unilii contributors"]
 
 [workspace.dependencies]
-# Core dependencies
-iced = { git = "https://github.com/VirtCode/iced.git", features = ["advanced", "tokio", "winit"] }
-tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+iced = { version = "0.14", features = [
+  "advanced",
+  "advanced-shaping",
+  "basic-shaping",
+  "canvas",
+  "crisp",
+  "debug",
+  "default",
+  "fira-sans",
+  "highlighter",
+  "hot",
+  "iced_highlighter",
+  "image",
+  "image-without-codecs",
+  "lazy",
+  "linux-theme-detection",
+  "markdown",
+  "qr_code",
+  "selector",
+  "sipper",
+  "smol",
+  "strict-assertions",
+  "svg",
+  "sysinfo",
+  "tester",
+  "thread-pool",
+  "time-travel",
+  "tiny-skia",
+  "tokio",
+  "unconditional-rendering",
+  "wayland",
+  "web-colors",
+  "webgl",
+  "wgpu",
+  "wgpu-bare",
+  "x11",
+] }
+
+# { version = "0.14", features = [
+#   "tokio",
+#   "advanced",
+#   "wgpu",
+#   "image",
+#   "winit",
+#   "svg",
+#   "canvas",
+#   "advanced-shaping",
+#   "basic-shaping",
+#   "crisp",
+#   "debug",
+#   "fira-sans",
+#   "highlighter",
+#   "hot",
+#   "iced_highlighter",
+# ] }
+
+#{# git = "https://github.com/MalpenZibo/iced", rev = "ba37674a834b0c9fe67a09a96b80a3a3d0dd75ef", features = [
+#   "tokio",
+#   "multi-window",
+#   "advanced",
+#   "wgpu",
+#   "winit",
+#   "wayland",
+#   "image",
+#   "svg",
+#   "canvas",
+# ] }
+tokio = { version = "1.49", features = [
+  "rt-multi-thread",
+  "macros",
+  "time",
+  "sync",
+  "net",
+] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 async-trait = "0.1"
@@ -37,3 +108,4 @@ unilii-lib = { path = "unilii/lib" }
 unilii-core = { path = "unilii/core" }
 unilii-clock = { path = "unilii/plugins/Clock" }
 unilii-battery = { path = "unilii/plugins/Battery" }
+# Core dependencies
