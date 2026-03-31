@@ -1,4 +1,5 @@
-use clap::Parser;
+mod cli;
+use cli::{Cli, Commands, RunOptions, verbose_to_level};
 use iced::futures::{SinkExt, StreamExt};
 use iced::keyboard::{self, key, Key, Modifiers};
 use iced::widget::{button, column, container, horizontal_space, row, text};
@@ -19,7 +20,7 @@ struct UniliiBar {
     module_receivers: Vec<(String, ModuleReceiver)>,
     tray_icons: Vec<tray::TrayIcon>,
     tray_menu: Option<TrayMenuState>,
-    cli: Cli,
+    run_options: RunOptions,
 }
 
 #[derive(Debug, Clone)]
@@ -42,25 +43,6 @@ enum TrayMenuContent {
         error: Option<String>,
     },
 }
-
-#[derive(Debug, Clone, Parser)]
-#[command(name = "unilii", about = "unilii status bar")]
-struct Cli {
-    #[arg(long, default_value = "nmcli")]
-    nmcli_path: String,
-    #[arg(long, default_value_t = true)]
-    network_menu: bool,
-    #[arg(long, default_value_t = 1500)]
-    tray_poll_ms: u64,
-}
-
-fn env_flag(name: &str) -> bool {
-    matches!(
-        std::env::var(name).ok().as_deref(),
-        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES")
-    )
-}
-
 
 #[derive(Debug, Clone)]
 enum Message {
@@ -679,9 +661,34 @@ fn map_window_key_release(key: Key, _modifiers: Modifiers) -> Option<Message> {
 #[tokio::main]
 async fn main() -> iced::Result {
     let cli = Cli::parse();
+    let run_options = cli.command.clone().unwrap_or(Commands::Run {
+        no_tray: false,
+        no_network_menu: false,
+        nmcli_path: "nmcli".to_string(),
+        tray_poll_ms: 1500,
+        debug_focus: false,
+    }).run_options().unwrap_or_default();
+
+    let log_level = verbose_to_level(cli.verbose);
     let _ = tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
+        .with_max_level(log_level)
         .try_init();
+
+    // Handle subcommands that don't run the bar
+    match &cli.command {
+        Some(Commands::ListModules) => {
+            println!("Available modules:");
+            println!("  - clock    : Display current time");
+            println!("  - battery  : Display battery status");
+            return Ok(());
+        }
+        Some(Commands::Version) => {
+            println!("unilii {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        _ => {}
+    }
+
     info!("unilii startup: begin");
 
     // Load configuration and modules at startup
@@ -745,20 +752,19 @@ async fn main() -> iced::Result {
 
     #[cfg(target_os = "linux")]
     {
-        let debug_focus_mode = env_flag("UNILII_WINDOW_DEBUG_FOCUS");
         window_settings.platform_specific = window::settings::PlatformSpecific {
             application_id: "com.unilii.bar".to_string(),
-            override_redirect: !debug_focus_mode,
+            override_redirect: !run_options.debug_focus,
         };
-        if debug_focus_mode {
+        if run_options.debug_focus {
             window_settings.decorations = true;
             window_settings.resizable = true;
             window_settings.level = window::Level::Normal;
         }
         info!(
             "linux window settings: application_id=com.unilii.bar, override_redirect={}, debug_focus_mode={}",
-            !debug_focus_mode,
-            debug_focus_mode
+            !run_options.debug_focus,
+            run_options.debug_focus
         );
     }
 
@@ -777,7 +783,7 @@ async fn main() -> iced::Result {
                     module_receivers,
                     tray_icons: Vec::new(),
                     tray_menu: None,
-                    cli,
+                    run_options,
                 },
                 Task::none(),
             )
