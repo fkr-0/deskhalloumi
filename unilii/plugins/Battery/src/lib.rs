@@ -63,11 +63,10 @@ impl Module for Battery {
         match message {
             ModuleUpdate::Text(text) => {
                 // Parse percentage from text
-                if let Some(pct_str) = text.strip_suffix('%') {
-                    if let Ok(pct) = pct_str.parse::<f32>() {
+                if let Some(pct_str) = text.strip_suffix('%')
+                    && let Ok(pct) = pct_str.parse::<f32>() {
                         self.percentage = pct;
                     }
-                }
             }
             ModuleUpdate::ProgressBar(value) => {
                 self.percentage = value * 100.0;

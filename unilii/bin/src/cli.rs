@@ -51,7 +51,7 @@ pub enum Commands {
         tray_poll_ms: u64,
 
         /// Enable debug focus mode (show window decorations, allow resizing)
-        #[arg(long, env = "UNILII_WINDOW_DEBUG_FOCUS")]
+        #[arg(long)]
         debug_focus: bool,
     },
 
