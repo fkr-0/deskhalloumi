@@ -45,7 +45,7 @@ impl BacklightDevice {
             }))
             .await
             .into_iter()
-            .filter_map(|o| o)
+            .flatten()
             .collect(),
         )
     }

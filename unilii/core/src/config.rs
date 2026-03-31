@@ -119,7 +119,7 @@ pub fn create_default_config() -> std::io::Result<PathBuf> {
     // Write default config
     let default_config = Config::default();
     let toml_string = toml::to_string_pretty(&default_config)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
 
     fs::write(&config_path, toml_string)?;
     info!("Created default config at: {:?}", config_path);

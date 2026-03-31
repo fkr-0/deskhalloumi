@@ -70,7 +70,7 @@ impl Module for Battery {
                 }
             }
             ModuleUpdate::ProgressBar(value) => {
-                self.percentage = (value * 100.0) as f32;
+                self.percentage = value * 100.0;
             }
             ModuleUpdate::Icon(icon) => {
                 self.is_charging = icon == "charging";
