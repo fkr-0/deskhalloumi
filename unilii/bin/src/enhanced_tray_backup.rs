@@ -1,22 +1,25 @@
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet}; 
-use tokio::sync::mpsc::UnboundedSender;
-use tokio::time::{sleep, Duration};
-use tracing::warn;
-use zbus::{zvariant::{OwnedObjectPath, OwnedValue}, Connection, Proxy};
+//! Enhanced tray system with hierarchical menus and DBus integration
+//!
+//! This module provides a completely refactored tray system following idiomatic
+//! Iced 0.14 patterns for better maintainability and testing.
 
-const WATCHER_SERVICE: &str = "org.kde.StatusNotifierWatcher";
-const WATCHER_PATH: &str = "/StatusNotifierWatcher";
-const WATCHER_INTERFACE: &str = "org.kde.StatusNotifierWatcher";
-const ITEM_INTERFACE: &str = "org.kde.StatusNotifierItem";
-const MENU_INTERFACE: &str = "com.canonical.dbusmenu";
-const TRAY_HOST_NAME: &str = "org.freedesktop.StatusNotifierHost-unilii";
+pub mod core;
+pub mod dbus; 
+pub mod rendering;
+pub mod state;
 
-// == Enhanced Core Data Structures ==
+// Re-export key types for convenience
+pub use core::*;
+pub use dbus::*;
+pub use rendering::*;
+pub use state::*;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrayIcon {
-    pub key: String,
+// Re-export from legacy tray for compatibility
+pub use crate::tray::{
+    read_network_snapshot, set_wifi_enabled, 
+    spawn_command, is_network_icon,
+    TrayIcon as LegacyTrayIcon
+};
     pub service: String,
     pub path: String,
     pub id: String,

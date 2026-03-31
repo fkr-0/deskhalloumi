@@ -1125,7 +1125,7 @@ fn render_enhanced_tray_menu(tray_state: &EnhancedTrayState) -> Element<'_, Mess
                 let visible_count = (app.menu_items.len() as f32 * tray_state.animation_progress).ceil() as usize;
                 let menu_row = app.menu_items.iter().enumerate().take(visible_count).fold(
                     row!().spacing(2).align_y(iced::Alignment::Center),
-                    |acc, (i, item)| {
+                    |mut acc: iced::widget::Row<'_, Message>, (i, item)| {
                         let is_sel = tray_state.selected_index == Some(i);
                         let btn = button(text(item.label.clone()).size(12))
                             .padding([2, 8])
@@ -1160,7 +1160,7 @@ fn render_enhanced_tray_menu(tray_state: &EnhancedTrayState) -> Element<'_, Mess
             let visible_count = (items.len() as f32 * tray_state.animation_progress).ceil() as usize;
             let menu_col = items.iter().enumerate().take(visible_count).take(8).fold( // Limit to 8 items
                 column!().spacing(1),
-                |acc, (i, item)| {
+                |mut acc: iced::widget::Column<'_, Message>, (i, item)| {
                     let is_sel = tray_state.selected_index == Some(i);
                     let btn = button(text(format!("{} → {}", item.app_id, item.label)).size(11))
                         .padding([1, 6])
@@ -1188,7 +1188,7 @@ fn render_enhanced_tray_menu(tray_state: &EnhancedTrayState) -> Element<'_, Mess
             let visible_count = (items.len() as f32 * tray_state.animation_progress).ceil() as usize;
             let menu_col = items.iter().enumerate().take(visible_count).fold(
                 column!().spacing(1),
-                |acc, (i, item)| {
+                |mut acc: iced::widget::Column<'_, Message>, (i, item)| {
                     let is_sel = tray_state.selected_index == Some(i);
                     let btn = button(text(format!("⭐ {} → {}", item.app_id, item.label)).size(11))
                         .padding([1, 6])
