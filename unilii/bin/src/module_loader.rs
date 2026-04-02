@@ -14,8 +14,10 @@ pub struct LoadedModule {
 /// Container for module subscription receiver channels.
 pub struct ModuleSubscription {
     /// The module name.
+    #[allow(dead_code)]
     pub name: String,
     /// The receiver for module updates.
+    #[allow(dead_code)]
     pub receiver: tokio::sync::mpsc::UnboundedReceiver<ModuleUpdate>,
 }
 
@@ -28,14 +30,17 @@ impl ModuleManager {
     /// Create a new module manager with all available modules registered.
     pub fn new() -> Self {
         let mut registry = DefaultModuleRegistry::new();
-        
+
         // Register available modules
         #[cfg(feature = "clock")]
         register_module!(registry, "clock", unilii_clock::Clock);
-        
+
         #[cfg(feature = "battery")]
         register_module!(registry, "battery", unilii_battery::Battery);
-        
+
+        #[cfg(feature = "tmux")]
+        register_module!(registry, "tmux", unilii_tmux::Tmux);
+
         Self { registry }
     }
     
@@ -159,6 +164,7 @@ impl ModuleManager {
     }
     
     /// Get the default configuration for all available modules.
+    #[allow(dead_code)]
     pub fn default_config(&self) -> HashMap<String, ModuleConfig> {
         let mut configs = HashMap::new();
         
@@ -185,6 +191,7 @@ impl ModuleManager {
     }
     
     /// List all registered modules.
+    #[allow(dead_code)]
     pub fn list_available_modules(&self) -> Vec<String> {
         self.registry.list_modules()
     }

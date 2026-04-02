@@ -150,15 +150,14 @@ impl TrayStateManager {
     fn handle_navigate_left(state: &mut EnhancedTrayState) -> Task<TrayMessage> {
         if let TrayViewState::SingleApp { app_id, .. } = &state.current_view.clone() {
             let navigation = state.tree.get_app_navigation(app_id);
-            if navigation.can_go_left {
-                if let Some(new_app_id) = navigation.app_order.get(navigation.current_app_index - 1) {
+            if navigation.can_go_left
+                && let Some(new_app_id) = navigation.app_order.get(navigation.current_app_index - 1) {
                     let new_navigation = state.tree.get_app_navigation(new_app_id);
                     state.current_view = TrayViewState::SingleApp {
                         app_id: new_app_id.clone(),
                         navigation: new_navigation,
                     };
                 }
-            }
         }
         Task::none()
     }
@@ -166,15 +165,14 @@ impl TrayStateManager {
     fn handle_navigate_right(state: &mut EnhancedTrayState) -> Task<TrayMessage> {
         if let TrayViewState::SingleApp { app_id, .. } = &state.current_view.clone() {
             let navigation = state.tree.get_app_navigation(app_id);
-            if navigation.can_go_right {
-                if let Some(new_app_id) = navigation.app_order.get(navigation.current_app_index + 1) {
+            if navigation.can_go_right
+                && let Some(new_app_id) = navigation.app_order.get(navigation.current_app_index + 1) {
                     let new_navigation = state.tree.get_app_navigation(new_app_id);
                     state.current_view = TrayViewState::SingleApp {
                         app_id: new_app_id.clone(),
                         navigation: new_navigation,
                     };
                 }
-            }
         }
         Task::none()
     }
@@ -270,12 +268,11 @@ impl TrayStateManager {
     ) -> Task<TrayMessage> {
         // Check if clicking on the same icon - if so, close the menu
         if let TrayViewState::SingleApp { app_id: current_app_id, .. } | 
-           TrayViewState::Network { app_id: current_app_id, .. } = &state.current_view {
-            if current_app_id == app_id {
+           TrayViewState::Network { app_id: current_app_id, .. } = &state.current_view
+            && current_app_id == app_id {
                 state.hide();
                 return Task::none();
             }
-        }
 
         // Show menu for the clicked app
         if state.tree.apps.contains_key(app_id) {
@@ -376,8 +373,8 @@ impl TrayStateManager {
         app_id: &str,
         result: Result<crate::tray::NetworkSnapshot, String>
     ) -> Task<TrayMessage> {
-        if let TrayViewState::Network { app_id: current_app_id, data, loading, error } = &mut state.current_view {
-            if current_app_id == app_id {
+        if let TrayViewState::Network { app_id: current_app_id, data, loading, error } = &mut state.current_view
+            && current_app_id == app_id {
                 *loading = false;
                 match result {
                     Ok(snapshot) => {
@@ -389,7 +386,6 @@ impl TrayStateManager {
                     }
                 }
             }
-        }
         Task::none()
     }
 
@@ -397,8 +393,8 @@ impl TrayStateManager {
         state: &mut EnhancedTrayState,
         app_id: &str
     ) -> Task<TrayMessage> {
-        if let TrayViewState::Network { app_id: current_app_id, loading, error, .. } = &mut state.current_view {
-            if current_app_id == app_id {
+        if let TrayViewState::Network { app_id: current_app_id, loading, error, .. } = &mut state.current_view
+            && current_app_id == app_id {
                 *loading = true;
                 *error = None;
                 
@@ -413,7 +409,6 @@ impl TrayStateManager {
                     |msg| msg
                 );
             }
-        }
         Task::none()
     }
 
@@ -421,8 +416,8 @@ impl TrayStateManager {
         state: &mut EnhancedTrayState,
         app_id: &str
     ) -> Task<TrayMessage> {
-        if let TrayViewState::Network { app_id: current_app_id, data, loading, error } = &mut state.current_view {
-            if current_app_id == app_id {
+        if let TrayViewState::Network { app_id: current_app_id, data, loading, error } = &mut state.current_view
+            && current_app_id == app_id {
                 let desired_state = data.as_ref()
                     .map(|snapshot| !snapshot.enabled)
                     .unwrap_or(true);
@@ -447,7 +442,6 @@ impl TrayStateManager {
                     |msg| msg
                 );
             }
-        }
         Task::none()
     }
 
@@ -590,7 +584,7 @@ mod tests {
         };
 
         // Test navigate right
-        TrayStateManager::handle_navigate_right(&mut state);
+        let _ = TrayStateManager::handle_navigate_right(&mut state);
         if let TrayViewState::SingleApp { app_id, .. } = &state.current_view {
             assert_eq!(app_id, "app2");
         } else {
@@ -598,7 +592,7 @@ mod tests {
         }
 
         // Test navigate left
-        TrayStateManager::handle_navigate_left(&mut state);
+        let _ = TrayStateManager::handle_navigate_left(&mut state);
         if let TrayViewState::SingleApp { app_id, .. } = &state.current_view {
             assert_eq!(app_id, "app1");
         } else {
@@ -611,7 +605,7 @@ mod tests {
         let mut state = create_test_state();
         
         // Test show aggregated
-        TrayStateManager::handle_show_aggregated(&mut state);
+        let _ = TrayStateManager::handle_show_aggregated(&mut state);
         if let TrayViewState::Aggregated { items, filter } = &state.current_view {
             assert!(filter.is_none());
             // Items will be empty since we haven't added menu items to the test apps
@@ -628,11 +622,11 @@ mod tests {
         let item_id = "test_item";
         
         // Toggle favorite on
-        TrayStateManager::handle_toggle_favorite(&mut state, "app1", item_id);
+        let _ = TrayStateManager::handle_toggle_favorite(&mut state, "app1", item_id);
         assert!(state.tree.favorites.contains(item_id));
         
         // Test show favorites
-        TrayStateManager::handle_show_favorites(&mut state);
+        let _ = TrayStateManager::handle_show_favorites(&mut state);
         if let TrayViewState::Favorites { items } = &state.current_view {
             // Items will be empty since the test item doesn't exist in the menu tree
             assert!(items.is_empty());
@@ -652,7 +646,7 @@ mod tests {
         };
 
         // Update filter
-        TrayStateManager::handle_filter_update(&mut state, "test filter".to_string());
+        let _ = TrayStateManager::handle_filter_update(&mut state, "test filter".to_string());
         
         assert_eq!(state.filter_text, "test filter");
         if let TrayViewState::Aggregated { filter, .. } = &state.current_view {
@@ -667,17 +661,17 @@ mod tests {
         let mut state = create_test_state();
         
         // Test show
-        TrayStateManager::update(&mut state, TrayMessage::Show);
+        let _ = TrayStateManager::update(&mut state, TrayMessage::Show);
         assert_eq!(state.animation_target, 1.0);
         
         // Test hide  
-        TrayStateManager::update(&mut state, TrayMessage::Hide);
+        let _ = TrayStateManager::update(&mut state, TrayMessage::Hide);
         assert_eq!(state.animation_target, 0.0);
         
         // Test animation tick
         state.animation_target = 1.0;
         state.animation_progress = 0.0;
-        TrayStateManager::handle_animation_tick(&mut state);
+        let _ = TrayStateManager::handle_animation_tick(&mut state);
         assert!(state.animation_progress > 0.0);
     }
 
@@ -686,7 +680,7 @@ mod tests {
         let mut state = create_test_state();
         
         // Test clicking on app1
-        TrayStateManager::handle_icon_clicked(&mut state, "app1");
+        let _ = TrayStateManager::handle_icon_clicked(&mut state, "app1");
         
         if let TrayViewState::SingleApp { app_id, .. } = &state.current_view {
             assert_eq!(app_id, "app1");
@@ -698,7 +692,7 @@ mod tests {
         assert_eq!(state.selected_index, Some(0));
         
         // Test clicking on same app again (should close)
-        TrayStateManager::handle_icon_clicked(&mut state, "app1");
+        let _ = TrayStateManager::handle_icon_clicked(&mut state, "app1");
         assert_eq!(state.animation_target, 0.0);
     }
 

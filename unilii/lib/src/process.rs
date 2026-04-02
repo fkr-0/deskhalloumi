@@ -82,12 +82,9 @@ pub fn listen_running_processes(polling: Duration) -> StaticStream<Vec<ProcessIn
     futures::stream::unfold(interval, async move |mut interval| {
         interval.tick().await;
         trace!("polling running process information");
-        let Some(procs) = read_running_processes()
+        let procs = read_running_processes()
             .await
-            .stream_log("running processes stream")
-        else {
-            return None;
-        };
+            .stream_log("running processes stream")?;
         Some((procs, interval))
     })
     .boxed()

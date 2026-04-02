@@ -1,24 +1,26 @@
 //! Subscription management for coordinating module updates with Iced subscriptions.
 
 use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 use unilii_core::ModuleUpdate;
 
 use crate::module_loader::ModuleSubscription;
 
 /// Registry of active module update streams that Iced subscriptions can tap into.
+#[allow(dead_code)]
 struct ModuleUpdateRegistry {
     clock_updates: Option<Arc<Mutex<Option<ModuleUpdate>>>>,
     battery_updates: Option<Arc<Mutex<Option<ModuleUpdate>>>>,
 }
 
+#[allow(dead_code)]
 static MODULE_REGISTRY: Mutex<ModuleUpdateRegistry> = Mutex::new(ModuleUpdateRegistry {
     clock_updates: None,
     battery_updates: None,
 });
 
 /// Initialize with module subscriptions and start update threads with error recovery.
+#[allow(dead_code)]
 pub fn initialize_global_subscriptions(module_subscriptions: Vec<ModuleSubscription>) {
     // Initialize the registry with error handling
     {
@@ -94,6 +96,7 @@ pub fn initialize_global_subscriptions(module_subscriptions: Vec<ModuleSubscript
 }
 
 /// Store a module update in the global registry with error handling.
+#[allow(dead_code)]
 fn store_module_update_safe(module_name: &str, update: ModuleUpdate) -> Result<(), String> {
     let registry = MODULE_REGISTRY.lock()
         .map_err(|e| format!("Failed to acquire registry lock: {}", e))?;
@@ -126,29 +129,29 @@ fn store_module_update_safe(module_name: &str, update: ModuleUpdate) -> Result<(
 }
 
 /// Store a module update in the global registry.
+#[allow(dead_code)]
 pub fn store_module_update(module_name: &str, update: ModuleUpdate) {
     let registry = MODULE_REGISTRY.lock().unwrap();
     
     match module_name {
         "clock" => {
-            if let Some(ref storage) = registry.clock_updates {
-                if let Ok(mut stored) = storage.lock() {
+            if let Some(ref storage) = registry.clock_updates
+                && let Ok(mut stored) = storage.lock() {
                     *stored = Some(update);
                 }
-            }
         }
         "battery" => {
-            if let Some(ref storage) = registry.battery_updates {
-                if let Ok(mut stored) = storage.lock() {
+            if let Some(ref storage) = registry.battery_updates
+                && let Ok(mut stored) = storage.lock() {
                     *stored = Some(update);
                 }
-            }
         }
         _ => {}
     }
 }
 
 /// Get the latest update for a module with error handling.
+#[allow(dead_code)]
 pub fn get_latest_module_update(module_name: &str) -> Option<ModuleUpdate> {
     let registry = match MODULE_REGISTRY.lock() {
         Ok(reg) => reg,
@@ -177,6 +180,7 @@ pub fn get_latest_module_update(module_name: &str) -> Option<ModuleUpdate> {
 }
 
 /// Check if a module has any stored updates with error handling.
+#[allow(dead_code)]
 pub fn has_module_updates(module_name: &str) -> bool {
     let registry = match MODULE_REGISTRY.lock() {
         Ok(reg) => reg,
@@ -192,6 +196,6 @@ pub fn has_module_updates(module_name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
     include!("subscription_manager_tests.rs");
 }

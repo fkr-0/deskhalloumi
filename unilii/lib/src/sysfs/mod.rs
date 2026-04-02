@@ -54,9 +54,7 @@ impl Device {
             .filter_map(async |result| result.ok())
             .filter_map(async |entry| {
                 let path = entry.path();
-                let Some(name) = path.file_name() else {
-                    return None;
-                };
+                let name = path.file_name()?;
                 Some(Self {
                     name: name.to_string_lossy().to_string(),
                     path,

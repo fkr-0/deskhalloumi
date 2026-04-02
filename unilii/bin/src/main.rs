@@ -19,6 +19,7 @@ use unilii_core::{config::load_config, keys::KeybindingDaemon, ModuleUpdate};
 
 use module_loader::{LoadedModule, ModuleManager};
 use subscription_manager::{initialize_global_subscriptions, get_latest_module_update, has_module_updates};
+use enhanced_tray::TrayViewState;
 
 struct UniliiBar {
     modules: HashMap<String, LoadedModule>,
@@ -26,41 +27,8 @@ struct UniliiBar {
     app_config: AppConfig,
     shift_held: bool,
     tray_icons: Vec<tray::TrayIcon>,
-    enhanced_tray: Option<EnhancedTrayState>, // Enhanced tray state
+    enhanced_tray: Option<enhanced_tray::EnhancedTrayState>, // Enhanced tray state
     run_options: RunOptions,
-}
-
-// Enhanced tray state with hierarchical menu support
-#[derive(Debug, Clone)]
-struct EnhancedTrayState {
-    tree: enhanced_tray::TrayMenuTree,
-    current_view: TrayViewState,
-    animation_progress: f32,
-    animation_target: f32,
-    selected_index: Option<usize>,
-    filter_text: String,
-}
-
-// View modes for the enhanced tray system
-#[derive(Debug, Clone)]
-enum TrayViewState {
-    SingleApp {
-        app_id: String,
-        navigation: enhanced_tray::TrayMenuNavigation,
-    },
-    Aggregated {
-        items: Vec<enhanced_tray::TrayMenuItem>,
-        filter: Option<String>,
-    },
-    Favorites {
-        items: Vec<enhanced_tray::TrayMenuItem>,
-    },
-    Network {
-        app_id: String,
-        data: Option<crate::tray::NetworkSnapshot>,
-        loading: bool,
-        error: Option<String>,
-    },
 }
 
 #[derive(Debug, Clone)]
@@ -249,7 +217,7 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                     };
                     tree.update_app(enhanced_icon);
                     
-                    bar.enhanced_tray = Some(EnhancedTrayState {
+                    bar.enhanced_tray = Some(enhanced_tray::EnhancedTrayState {
                         tree,
                         current_view: TrayViewState::Network {
                             app_id: icon.id.clone(),
@@ -287,7 +255,7 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                 tree.update_app(enhanced_icon);
                 
                 let navigation = tree.get_app_navigation(&icon.id);
-                bar.enhanced_tray = Some(EnhancedTrayState {
+                bar.enhanced_tray = Some(enhanced_tray::EnhancedTrayState {
                     tree,
                     current_view: TrayViewState::SingleApp {
                         app_id: icon.id.clone(),
@@ -596,9 +564,9 @@ fn view(bar: &UniliiBar) -> Element<'_, Message> {
     // Apply config background color when available, else fall back to dark theme
     let bg_color = bar
         .config
-        .window
-        .background_color
-        .as_deref()
+        .panels
+        .first()
+        .and_then(|p| p.background_color.as_deref())
         .and_then(parse_hex_color);
 
     let bar_container = container(bar_content)
@@ -865,8 +833,7 @@ fn map_window_key_release(key: Key, _modifiers: Modifiers) -> Option<Message> {
     })
 }
 
-#[tokio::main]
-async fn main() -> iced::Result {
+fn main() -> iced::Result {
     let cli = Cli::parse();
     let run_options = cli.command.clone().unwrap_or(Commands::Run {
         no_tray: false,
@@ -898,85 +865,108 @@ async fn main() -> iced::Result {
 
     info!("unilii startup: begin");
 
-    // Load configuration and modules at startup
-    let config = load_config();
-    let scan = unilii_lib::input::scan_keyboard_device_stats();
-    if scan.total_devices == 0 {
-        error!(
-            "keyboard diagnostics: /dev/input appears inaccessible (total_devices=0). \
-             Keyboard events will not work until device access is available."
-        );
-    } else {
-        info!(
-            "keyboard diagnostics: total_devices={}, keyboard_candidates={}",
-            scan.total_devices, scan.keyboard_candidates
-        );
-    }
-    info!(
-        "config loaded: size={}x{}, pos=({}, {})",
-        config.window.width,
-        config.window.height,
-        config.window.position_x,
-        config.window.position_y
-    );
+    // Run async initialization in a tokio runtime
+    let runtime = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
 
-    if !config.keybindings.is_empty() {
-        let keybindings = config.keybindings.clone();
-        tokio::spawn(async move {
-            let daemon = KeybindingDaemon::new(keybindings);
-            if let Err(error) = daemon.run().await {
-                error!("keybinding daemon exited with error: {}", error);
+    let (config, loaded_app_config, run_options) = runtime.block_on(async {
+        // Load configuration and modules at startup
+        let config = load_config();
+        let scan = unilii_lib::input::scan_keyboard_device_stats();
+        if scan.total_devices == 0 {
+            error!(
+                "keyboard diagnostics: /dev/input appears inaccessible (total_devices=0). \
+                 Keyboard events will not work until device access is available."
+            );
+        } else {
+            info!(
+                "keyboard diagnostics: total_devices={}, keyboard_candidates={}",
+                scan.total_devices, scan.keyboard_candidates
+            );
+        }
+        info!(
+            "config loaded: {} panels, first panel size={}x{}, pos=({}, {})",
+            config.panels.len(),
+            config.panels.first().map(|p| p.width).unwrap_or(1024),
+            config.panels.first().map(|p| p.height).unwrap_or(24),
+            config.panels.first().map(|p| p.position_x).unwrap_or(0),
+            config.panels.first().map(|p| p.position_y).unwrap_or(0)
+        );
+
+        if !config.keybindings.is_empty() {
+            let keybindings = config.keybindings.clone();
+            tokio::spawn(async move {
+                let daemon = KeybindingDaemon::new(keybindings);
+                if let Err(error) = daemon.run().await {
+                    error!("keybinding daemon exited with error: {}", error);
+                }
+            });
+            info!(
+                "keybinding daemon started with {} bindings",
+                config.keybindings.len()
+            );
+        }
+
+        // Load application configuration with fallback to defaults
+        let loaded_app_config = match load_app_config(None) {
+            config if config.modules.is_empty() => {
+                warn!("Loaded configuration has no modules, using defaults");
+                AppConfig::default()
             }
-        });
-        info!(
-            "keybinding daemon started with {} bindings",
-            config.keybindings.len()
-        );
-    }
+            config => {
+                info!("Loaded application configuration with {} module configs", config.modules.len());
+                config
+            }
+        };
 
-    // Load application configuration with fallback to defaults
-    let app_config = match load_app_config(None) {
-        config if config.modules.is_empty() => {
-            warn!("Loaded configuration has no modules, using defaults");
-            AppConfig::default()
-        }
-        config => {
-            info!("Loaded application configuration with {} module configs", config.modules.len());
-            config
-        }
-    };
-    
-    // Initialize module manager and load modules with comprehensive error handling
-    let module_manager = ModuleManager::new();
-    
-    let (modules, module_subscriptions) = match module_manager.load_modules(app_config.modules.clone()).await {
-        Ok((modules, subs)) => {
-            info!("Successfully loaded {} modules with {} subscriptions", modules.len(), subs.len());
-            (modules, subs)
-        }
-        Err(e) => {
-            error!("Module loading failed: {}", e);
-            warn!("Falling back to empty module set - application will continue with limited functionality");
-            (HashMap::new(), Vec::new())
-        }
-    };
-    
-    // Initialize the global subscription manager with error isolation
-    if !module_subscriptions.is_empty() {
-        initialize_global_subscriptions(module_subscriptions);
-        info!("Subscription system initialized successfully");
-    } else {
-        warn!("No module subscriptions available, continuing without real-time updates");
-    }
+        // Initialize module manager and load modules with comprehensive error handling
+        let module_manager = ModuleManager::new();
 
-    // Get window settings from config
+        let (modules, module_subscriptions) = match module_manager.load_modules(loaded_app_config.modules.clone()).await {
+            Ok((modules, subs)) => {
+                info!("Successfully loaded {} modules with {} subscriptions", modules.len(), subs.len());
+                (modules, subs)
+            }
+            Err(e) => {
+                error!("Module loading failed: {}", e);
+                warn!("Falling back to empty module set - application will continue with limited functionality");
+                (HashMap::new(), Vec::new())
+            }
+        };
+
+        // Initialize the global subscription manager with error isolation
+        if !module_subscriptions.is_empty() {
+            initialize_global_subscriptions(module_subscriptions);
+            info!("Subscription system initialized successfully");
+        } else {
+            warn!("No module subscriptions available, continuing without real-time updates");
+        }
+
+        Ok((config, loaded_app_config, run_options))
+    }).map_err(|e: Box<dyn std::error::Error>| {
+        eprintln!("Runtime initialization error: {:?}", e);
+        std::process::exit(1);
+    }).unwrap();
+
+    // Get window settings from first panel config
+    let first_panel = config.panels.first().cloned().unwrap_or_else(|| {
+        unilii_core::config::PanelConfig {
+            name: "default".to_string(),
+            width: 1024,
+            height: 24,
+            position_x: 0,
+            position_y: 0,
+            background_color: Some("#1e1e1e".to_string()),
+            text_color: Some("#ffffff".to_string()),
+        }
+    });
+
     let window_position = iced::window::Position::Specific(iced::Point {
-        x: config.window.position_x as f32,
-        y: config.window.position_y as f32,
+        x: first_panel.position_x as f32,
+        y: first_panel.position_y as f32,
     });
 
     let mut window_settings = window::Settings {
-        size: iced::Size::new(config.window.width as f32, config.window.height as f32),
+        size: iced::Size::new(first_panel.width as f32, first_panel.height as f32),
         position: window_position,
         resizable: false,
         decorations: false,
@@ -1005,9 +995,9 @@ async fn main() -> iced::Result {
     info!("unilii startup: load finished, launching iced application");
 
     let _initial_state = UniliiBar {
-        modules,
+        modules: HashMap::new(), // Modules will be loaded in the application
         config: config.clone(),
-        app_config: app_config.clone(),
+        app_config: loaded_app_config.clone(),
         shift_held: false,
         tray_icons: Vec::new(),
         enhanced_tray: None,
@@ -1115,7 +1105,7 @@ fn animate_progress(current: f32, target: f32, rate: f32) -> f32 {
 }
 
 /// Render the enhanced tray menu view
-fn render_enhanced_tray_menu(tray_state: &EnhancedTrayState) -> Element<'_, Message> {
+fn render_enhanced_tray_menu(tray_state: &enhanced_tray::EnhancedTrayState) -> Element<'_, Message> {
     let opacity = tray_state.animation_progress.clamp(0.0, 1.0);
     
     match &tray_state.current_view {
@@ -1266,11 +1256,4 @@ fn render_enhanced_tray_menu(tray_state: &EnhancedTrayState) -> Element<'_, Mess
     }
 }
 
-impl TrayViewState {
-    fn get_navigation(&self) -> Option<&enhanced_tray::TrayMenuNavigation> {
-        match self {
-            TrayViewState::SingleApp { navigation, .. } => Some(navigation),
-            _ => None,
-        }
-    }
-}
+

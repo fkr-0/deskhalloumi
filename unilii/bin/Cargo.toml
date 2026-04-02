@@ -29,6 +29,7 @@ unilii-lib.workspace = true
 # Plugin modules (enabled via features)
 unilii-clock = { workspace = true, optional = true }
 unilii-battery = { workspace = true, optional = true }
+unilii-tmux = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3.13"
@@ -38,3 +39,4 @@ serde_json.workspace = true
 default = ["clock", "battery"]
 clock = ["unilii-clock"]
 battery = ["unilii-battery"]
+tmux = ["unilii-tmux"]

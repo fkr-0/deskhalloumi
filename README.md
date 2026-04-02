@@ -1,4 +1,4 @@
-# unilii – an X11 port of the liischte bar
+# unilii – an X11 port of the liischte panel
 
 This repository contains **unilii**, a minimalist rewrite of the
 original [liischte](https://github.com/VirtCode/liischte) Wayland bar for

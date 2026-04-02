@@ -1,5 +1,5 @@
-use super::{ModuleManager, LoadedModule, ModuleSubscription};
-use unilii_core::{ModuleConfig, ModulePosition, ModuleRegistry, DefaultModuleRegistry, create_module_creator};
+use super::ModuleManager;
+use unilii_core::{ModuleConfig, ModulePosition, ModuleRegistry, DefaultModuleRegistry};
 use std::collections::HashMap;
 
 #[tokio::test]
@@ -58,7 +58,7 @@ async fn test_module_loading_with_enabled_modules() {
 
 #[tokio::test]
 async fn test_default_module_registry() {
-    let mut registry = DefaultModuleRegistry::new();
+    let registry = DefaultModuleRegistry::new();
     
     // Test empty registry
     assert_eq!(registry.list_modules().len(), 0);

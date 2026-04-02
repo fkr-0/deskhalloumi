@@ -1,0 +1,248 @@
+# unilii example configuration with multi-panel support
+#
+# This is an example configuration file for unilii that demonstrates
+# multi-panel support and the keybinding system. Copy this file to
+# ~/.config/unilii.toml and customize it for your needs.
+
+# Panel configurations (multiple panels supported)
+# You can define as many panels as you want on your screen
+
+# Example 1: Top bar panel
+[[panels]]
+name = "top_bar"
+width = 1920
+height = 24
+position_x = 0
+position_y = 0
+background_color = "#1e1e1e"
+text_color = "#ffffff"
+
+# Example 2: Bottom bar panel (uncomment to use)
+# [[panels]]
+# name = "bottom_bar"
+# width = 1920
+# height = 24
+# position_x = 0
+# position_y = 1076
+# background_color = "#282828"
+# text_color = "#ebdbb2"
+
+# Example 3: Left side panel (uncomment to use)
+# [[panels]]
+# name = "side_panel_left"
+# width = 200
+# height = 600
+# position_x = 0
+# position_y = 100
+# background_color = "#1e1e1e"
+# text_color = "#ebdbb2"
+
+# Example 4: Right side panel (uncomment to use)
+# [[panels]]
+# name = "side_panel_right"
+# width = 200
+# height = 600
+# position_x = 1720
+# position_y = 100
+# background_color = "#1e1e1e"
+# text_color = "#ebdbb2"
+
+# Module configuration
+# Modules are shared across all panels (future versions may support per-panel modules)
+
+[[modules]]
+name = "clock"
+enabled = true
+position = "right"
+update_interval_ms = 1000
+
+[[modules]]
+name = "battery"
+enabled = true
+position = "right"
+update_interval_ms = 5000
+
+# Uncomment to enable tmux module (requires tmux feature)
+# [[modules]]
+# name = "tmux"
+# enabled = true
+# position = "right"
+# update_interval_ms = 2000
+
+# Keybinding configuration
+#
+# Each keybinding has:
+# - name: A descriptive name for the keybinding
+# - keysym: The key combination in X11 keysym format (e.g., "Super+c", "Ctrl+Alt+t")
+# - type: The type of action (shell, bar, tray, widget)
+# - command: The command to execute (depends on type)
+# - release: (optional) If true, execute on key release (release-to-confirm)
+#
+# Supported types:
+# - shell: Execute a shell command (default)
+# - bar: Internal bar actions
+# - tray: Internal tray actions
+# - widget: Widget actions (future)
+
+# Shell command examples
+
+# Launch a terminal with Super+Enter
+[[keybindings]]
+name = "launch_terminal"
+keysym = "Super+Enter"
+type = "shell"
+command = "alacritty"
+
+# Launch a file manager with Super+f
+[[keybindings]]
+name = "launch_file_manager"
+keysym = "Super+f"
+type = "shell"
+command = "nautilus"
+
+# Toggle mute with Super+m
+[[keybindings]]
+name = "toggle_mute"
+keysym = "Super+m"
+command = "amixer set Master toggle"
+
+# Volume up with Super+Up
+[[keybindings]]
+name = "volume_up"
+keysym = "Super+Up"
+command = "amixer set Master 5%+"
+
+# Volume down with Super+Down
+[[keybindings]]
+name = "volume_down"
+keysym = "Super+Down"
+command = "amixer set Master 5%-"
+
+# Lock screen with Super+l
+[[keybindings]]
+name = "lock_screen"
+keysym = "Super+l"
+command = "xscreensaver-command -lock"
+
+# Take screenshot with Print
+[[keybindings]]
+name = "screenshot"
+keysym = "Print"
+command = "scrot '%Y-%m-%d_%H-%M-%S_screenshot.png'"
+
+# Bar action examples
+
+# Toggle the clock module with Super+c
+[[keybindings]]
+name = "toggle_clock"
+keysym = "Super+c"
+type = "bar"
+command = "toggle-module clock"
+
+# Toggle the battery module with Super+b
+[[keybindings]]
+name = "toggle_battery"
+keysym = "Super+b"
+type = "bar"
+command = "toggle-module battery"
+
+# Reload the configuration with Super+r
+[[keybindings]]
+name = "reload_config"
+keysym = "Super+r"
+type = "bar"
+command = "reload-config"
+
+# Quit unilii with Super+q (immediate)
+[[keybindings]]
+name = "quit"
+keysym = "Super+q"
+type = "bar"
+command = "quit"
+
+# Quit with confirmation (release-to-confirm)
+# This shows a confirmation when Alt+Delete is pressed,
+# and only executes when the key is released
+[[keybindings]]
+name = "quit_with_confirm"
+keysym = "Alt+Delete"
+type = "bar"
+command = "quit"
+release = true
+
+# Tray action examples
+
+# Open tray menu for first icon with Super+1
+[[keybindings]]
+name = "open_tray_menu_1"
+keysym = "Super+1"
+type = "tray"
+command = "open-menu 0"
+
+# Open tray menu for second icon with Super+2
+[[keybindings]]
+name = "open_tray_menu_2"
+keysym = "Super+2"
+type = "tray"
+command = "open-menu 1"
+
+# Close all tray menus with Escape
+[[keybindings]]
+name = "close_tray_menus"
+keysym = "Escape"
+type = "tray"
+command = "close-menu"
+
+# Show aggregated tray view with Super+t
+[[keybindings]]
+name = "show_aggregated_view"
+keysym = "Super+t"
+type = "tray"
+command = "show-aggregated"
+
+# Show favorites tray view with Super+y
+[[keybindings]]
+name = "show_favorites_view"
+keysym = "Super+y"
+type = "tray"
+command = "show-favorites"
+
+# Advanced examples
+
+# Chain multiple commands with shell
+[[keybindings]]
+name = "chain_commands"
+keysym = "Super+Shift+e"
+command = "notify-send 'System' 'Shutting down...' && shutdown -h now"
+
+# Launch specific applications
+[[keybindings]]
+name = "launch_browser"
+keysym = "Super+w"
+command = "firefox"
+
+[[keybindings]]
+name = "launch_email"
+keysym = "Super+e"
+command = "thunderbird"
+
+[[keybindings]]
+name = "launch_music"
+keysym = "Super+m"
+command = "spotify"
+
+# Workspace navigation example (requires i3 or similar)
+[[keybindings]]
+name = "workspace_1"
+keysym = "Super+1"
+command = "i3-msg workspace 1"
+
+[[keybindings]]
+name = "workspace_2"
+keysym = "Super+2"
+command = "i3-msg workspace 2"
+
+[[keybindings]]
+name = "workspace_3"
+keysym = "Super+3"
+command = "i3-msg workspace 3"

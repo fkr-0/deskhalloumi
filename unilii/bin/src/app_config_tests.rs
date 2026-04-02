@@ -1,6 +1,5 @@
-use super::{AppConfig, load_app_config, save_app_config, ApplicationSettings, ThemeSettings};
-use unilii_core::{ModuleConfig, ModulePosition};
-use std::collections::HashMap;
+use super::{AppConfig, load_app_config, save_app_config};
+use unilii_core::ModulePosition;
 use tempfile::NamedTempFile;
 
 #[test]
@@ -54,7 +53,7 @@ fn test_save_and_load_config_roundtrip() {
     // Load it back
     let loaded_config = load_app_config(Some(path));
     
-    assert_eq!(loaded_config.app.verbose, true);
+    assert!(loaded_config.app.verbose);
     assert_eq!(loaded_config.app.refresh_rate_ms, 100);
     assert_eq!(loaded_config.modules["clock"].update_interval_ms, Some(2000));
 }

@@ -9,8 +9,8 @@ use tracing::{info, warn};
 /// Main configuration structure for unilii.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
-    /// Window configuration
-    pub window: WindowConfig,
+    /// Panel configurations (multiple panels supported)
+    pub panels: Vec<PanelConfig>,
     /// Module configurations
     pub modules: Vec<ModuleConfigEntry>,
     /// Global keybinding daemon configuration
@@ -18,16 +18,19 @@ pub struct Config {
     pub keybindings: Vec<KeyBinding>,
 }
 
-/// Window configuration settings.
+/// Panel configuration settings.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct WindowConfig {
-    /// Window width in pixels
+pub struct PanelConfig {
+    /// Panel name (for identification)
+    #[serde(default)]
+    pub name: String,
+    /// Panel width in pixels
     pub width: u32,
-    /// Window height in pixels
+    /// Panel height in pixels
     pub height: u32,
-    /// Window position x coordinate
+    /// Panel position x coordinate
     pub position_x: i32,
-    /// Window position y coordinate
+    /// Panel position y coordinate
     pub position_y: i32,
     /// Background color (hex format)
     pub background_color: Option<String>,
@@ -51,14 +54,17 @@ pub struct ModuleConfigEntry {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            window: WindowConfig {
-                width: 800,
-                height: 24,
-                position_x: 0,
-                position_y: 0,
-                background_color: Some("#1e1e1e".to_string()),
-                text_color: Some("#ffffff".to_string()),
-            },
+            panels: vec![
+                PanelConfig {
+                    name: "top_bar".to_string(),
+                    width: 800,
+                    height: 24,
+                    position_x: 0,
+                    position_y: 0,
+                    background_color: Some("#1e1e1e".to_string()),
+                    text_color: Some("#ffffff".to_string()),
+                },
+            ],
             modules: vec![
                 ModuleConfigEntry {
                     name: "clock".to_string(),
@@ -78,9 +84,10 @@ impl Default for Config {
     }
 }
 
-impl Default for WindowConfig {
+impl Default for PanelConfig {
     fn default() -> Self {
-        WindowConfig {
+        PanelConfig {
+            name: "default".to_string(),
             width: 800,
             height: 24,
             position_x: 0,
@@ -176,8 +183,9 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.window.width, 800);
-        assert_eq!(config.window.height, 24);
+        assert_eq!(config.panels.len(), 1);
+        assert_eq!(config.panels[0].width, 800);
+        assert_eq!(config.panels[0].height, 24);
         assert_eq!(config.modules.len(), 2);
         assert!(config.keybindings.is_empty());
         assert_eq!(config.modules[0].name, "clock");

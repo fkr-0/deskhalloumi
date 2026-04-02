@@ -1,3 +1,7 @@
+// Temporarily mark this module with dead_code allowances since tray functionality
+// is currently disabled for runtime debugging
+#![allow(dead_code)]
+
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{sleep, Duration};
 use tracing::warn;
@@ -82,11 +86,10 @@ pub async fn run_tray_watcher(output: UnboundedSender<TrayEvent>, poll_ms: u64) 
 }
 
 pub fn is_network_icon(icon: &TrayIcon) -> bool {
-    if let Some(icon_name) = &icon.icon_name {
-        if is_network_label(icon_name) {
+    if let Some(icon_name) = &icon.icon_name
+        && is_network_label(icon_name) {
             return true;
         }
-    }
     is_network_label(&icon.id) || is_network_label(&icon.title)
 }
 
@@ -176,7 +179,7 @@ pub async fn spawn_command(command: String) -> Result<(), String> {
     }
 
     std::process::Command::new("sh")
-        .arg("-lc")
+        .arg("-c")
         .arg(&command)
         .spawn()
         .map_err(|error| format!("failed to spawn command '{command}': {error}"))?;
@@ -482,5 +485,80 @@ mod tests {
     async fn rejects_empty_spawn_command() {
         let result = spawn_command("   ".to_string()).await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn icon_label_for_battery_icons() {
+        assert_eq!(icon_label_for_name("battery-full"), "🔋");
+        assert_eq!(icon_label_for_name("battery-low"), "🔋");
+    }
+
+    #[test]
+    fn icon_label_for_audio_icons() {
+        assert_eq!(icon_label_for_name("audio-volume-muted"), "🔊");
+        assert_eq!(icon_label_for_name("audio-input-microphone"), "🔊");
+    }
+
+    #[test]
+    fn icon_label_for_mail_icons() {
+        assert_eq!(icon_label_for_name("mail-unread"), "✉");
+        assert_eq!(icon_label_for_name("email-new"), "✉");
+    }
+
+    #[test]
+    fn icon_label_for_bluetooth_icons() {
+        assert_eq!(icon_label_for_name("bluetooth-active"), "🅱");
+        assert_eq!(icon_label_for_name("bluetooth-disabled"), "🅱");
+    }
+
+    #[test]
+    fn visible_menu_items_clamps_to_valid_range() {
+        assert_eq!(visible_menu_items(10, -0.5), 0);
+        assert_eq!(visible_menu_items(10, 1.5), 10);
+        assert_eq!(visible_menu_items(0, 0.5), 0);
+    }
+
+    #[test]
+    fn animate_progress_handles_edge_cases() {
+        assert_eq!(animate_progress(0.0, 0.0, 0.1), 0.0);
+        assert_eq!(animate_progress(1.0, 1.0, 0.1), 1.0);
+        assert_eq!(animate_progress(0.5, 0.5, 0.1), 0.5);
+    }
+
+    #[test]
+    fn parse_device_status_handles_no_wifi_interface() {
+        let input = "lo:loopback:unmanaged\neth0:ethernet:connected\n";
+        let parsed = parse_device_status(input);
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn parse_wifi_networks_removes_duplicates() {
+        let input = "TestNet:50:WPA2\nTestNet:50:WPA2\nOtherNet:75:WEP\n";
+        let networks = parse_wifi_networks(input);
+        assert_eq!(networks.len(), 2);
+        // After sorting by signal descending, OtherNet (75) comes first
+        assert_eq!(networks[0].ssid, "OtherNet");
+        assert_eq!(networks[1].ssid, "TestNet");
+    }
+
+    #[test]
+    fn parse_wifi_networks_sorts_by_signal_then_ssid() {
+        let input = "NetA:50:WPA2\nNetB:75:WPA2\nNetC:75:Open\nNetD:25:Open\n";
+        let networks = parse_wifi_networks(input);
+        assert_eq!(networks.len(), 4);
+        // Sorted by signal descending, then SSID ascending
+        assert_eq!(networks[0].ssid, "NetB"); // 75, B < C
+        assert_eq!(networks[1].ssid, "NetC"); // 75, C > B
+        assert_eq!(networks[2].ssid, "NetA"); // 50
+        assert_eq!(networks[3].ssid, "NetD"); // 25
+    }
+
+    #[test]
+    fn parse_wifi_networks_handles_empty_ssid() {
+        let input = ":75:WPA2\nValidNet:50:Open\n";
+        let networks = parse_wifi_networks(input);
+        assert_eq!(networks.len(), 1);
+        assert_eq!(networks[0].ssid, "ValidNet");
     }
 }

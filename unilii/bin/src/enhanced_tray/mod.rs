@@ -4,7 +4,7 @@
 //! Iced 0.14 patterns for better maintainability and testing.
 
 pub mod core;
-pub mod dbus; 
+pub mod dbus;
 pub mod rendering;
 pub mod state;
 
@@ -12,14 +12,14 @@ pub mod state;
 #[cfg(test)]
 mod dbus_tests;
 
-// Re-export key types for convenience
+// Re-export core types for convenience
 pub use core::{
-    TrayIcon, TrayMenuAction, TrayMenuItem, TrayApp, TrayMenuTree, 
+    TrayIcon, TrayMenuAction, TrayMenuItem, TrayMenuTree,
     TrayViewState, TrayMenuNavigation, EnhancedTrayState, TrayEvent
 };
 
 // Re-export from legacy tray for compatibility
 pub use crate::tray::{
-    read_network_snapshot, set_wifi_enabled, 
+    read_network_snapshot, set_wifi_enabled,
     spawn_command, is_network_icon
 };

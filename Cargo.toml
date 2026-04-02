@@ -7,6 +7,7 @@ members = [
   "unilii/bin",
   "unilii/plugins/Clock",
   "unilii/plugins/Battery",
+  "unilii/plugins/Tmux",
 ]
 
 [workspace.package]
@@ -109,4 +110,5 @@ unilii-lib = { path = "unilii/lib" }
 unilii-core = { path = "unilii/core" }
 unilii-clock = { path = "unilii/plugins/Clock" }
 unilii-battery = { path = "unilii/plugins/Battery" }
+unilii-tmux = { path = "unilii/plugins/Tmux" }
 # Core dependencies

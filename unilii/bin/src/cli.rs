@@ -15,6 +15,7 @@ use std::path::PathBuf;
 #[command(author = "unilii contributors")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "A modular status bar for Linux", long_about = None)]
+#[derive(Default)]
 pub struct Cli {
     /// Path to configuration file (default: ~/.config/com/unilii/unilii.toml)
     #[arg(long, short = 'c', value_name = "FILE")]
@@ -83,18 +84,10 @@ pub enum Commands {
     Version,
 }
 
-impl Default for Cli {
-    fn default() -> Self {
-        Self {
-            config: None,
-            verbose: 0,
-            command: None,
-        }
-    }
-}
 
 impl Commands {
     /// Check if this is the default run command
+    #[allow(dead_code)]
     pub fn is_run(&self) -> bool {
         matches!(self, Commands::Run { .. })
     }
@@ -123,9 +116,13 @@ impl Commands {
 /// Options for running the status bar
 #[derive(Debug, Clone)]
 pub struct RunOptions {
+    #[allow(dead_code)]
     pub no_tray: bool,
+    #[allow(dead_code)]
     pub no_network_menu: bool,
+    #[allow(dead_code)]
     pub nmcli_path: String,
+    #[allow(dead_code)]
     pub tray_poll_ms: u64,
     pub debug_focus: bool,
 }

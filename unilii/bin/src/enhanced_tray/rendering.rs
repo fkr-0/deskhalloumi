@@ -242,21 +242,21 @@ fn render_menu_items<'a>(
         menu_col = menu_col.push(item_widget);
     }
     
-    let limited_items = if items.len() > 8 {
+    
+    
+    if items.len() > 8 {
         scrollable(menu_col)
             .height(Length::Fixed(200.0))
             .into()
     } else {
         menu_col.into()
-    };
-    
-    limited_items
+    }
 }
 
 /// Render a single menu item
 fn render_menu_item<'a>(
     item: &'a TrayMenuItem,
-    is_selected: bool,
+    _is_selected: bool,
     app_id: &'a str,
 ) -> Element<'a, TrayMessage> {
     if item.is_separator {
@@ -280,14 +280,8 @@ fn render_menu_item<'a>(
     let btn = button(text(label).size(12))
         .padding([2, 8])
         .width(Length::Fill);
-    
-    let styled_btn = if is_selected {
-        btn// .style() removed for compatibility
-    } else if !item.enabled {
-        btn// .style() removed for compatibility // Disabled style
-    } else {
-        btn// .style() removed for compatibility
-    };
+
+    let styled_btn = btn;
     
     if item.enabled {
         styled_btn.on_press(TrayMessage::MenuItemClicked(
@@ -480,19 +474,20 @@ impl container::Catalog for TrayContainerStyle {
     }
     
     fn style(&self, _class: &Self::Class<'_>) -> container::Style {
-        let mut style = container::Style::default();
-        style.background = Some(iced::Background::Color([0.1, 0.1, 0.1, self.opacity].into()));
-        style.border = iced::Border {
-            radius: 4.0.into(),
-            width: 1.0,
-            color: [0.3, 0.3, 0.3, self.opacity].into(),
-        };
-        style.shadow = iced::Shadow {
-            color: [0.0, 0.0, 0.0, self.opacity * 0.5].into(),
-            offset: iced::Vector::new(0.0, 2.0),
-            blur_radius: 4.0,
-        };
-        style
+        container::Style {
+            background: Some(iced::Background::Color([0.1, 0.1, 0.1, self.opacity].into())),
+            border: iced::Border {
+                radius: 4.0.into(),
+                width: 1.0,
+                color: [0.3, 0.3, 0.3, self.opacity].into(),
+            },
+            shadow: iced::Shadow {
+                color: [0.0, 0.0, 0.0, self.opacity * 0.5].into(),
+                offset: iced::Vector::new(0.0, 2.0),
+                blur_radius: 4.0,
+            },
+            ..Default::default()
+        }
     }
 }
 

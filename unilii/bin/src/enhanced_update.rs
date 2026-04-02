@@ -1,5 +1,5 @@
 // Enhanced update function for the new tray system
-fn enhanced_update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
+fn enhanced_update(bar: &mut UniliiPanel, message: Message) -> Task<Message> {
     match message {
         Message::ModuleUpdate(name, update) => {
             info!("module update: {name} -> {:?}", update);

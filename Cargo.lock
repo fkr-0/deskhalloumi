@@ -4914,6 +4914,7 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
+ "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",
@@ -5260,6 +5261,7 @@ dependencies = [
  "unilii-clock",
  "unilii-core",
  "unilii-lib",
+ "unilii-tmux",
  "zbus 4.4.0",
 ]
 
@@ -5305,6 +5307,19 @@ dependencies = [
  "tokio-stream",
  "tokio-udev",
  "udev",
+]
+
+[[package]]
+name = "unilii-tmux"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "iced",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "unilii-core",
 ]
 
 [[package]]

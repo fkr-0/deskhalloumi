@@ -152,6 +152,7 @@ fn validate_app_config(config: &AppConfig) -> Result<(), String> {
 }
 
 /// Save configuration to file.
+#[allow(dead_code)]
 pub fn save_app_config(config: &AppConfig, path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let contents = toml::to_string_pretty(config)?;
     std::fs::write(path, contents)?;

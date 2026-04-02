@@ -6,12 +6,37 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use tracing::{error, info, warn};
 
+/// Command type for keybinding execution.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CommandType {
+    /// Execute command via shell (default)
+    #[default]
+    Shell,
+    /// Internal bar action (e.g., toggle-module, reload-config)
+    Bar,
+    /// Tray menu action (e.g., open-menu, close-menu)
+    Tray,
+    /// Widget/action (future)
+    Widget,
+}
+
 /// Global keybinding configuration.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct KeyBinding {
     pub name: String,
     pub keysym: String,
     pub command: String,
+    #[serde(default = "default_command_type")]
+    #[serde(rename = "type")]
+    pub command_type: CommandType,
+    /// Trigger on key release instead of press (for release-to-confirm)
+    #[serde(default)]
+    pub release: bool,
+}
+
+fn default_command_type() -> CommandType {
+    CommandType::Shell
 }
 
 #[derive(Debug, Clone)]
@@ -22,14 +47,43 @@ struct ParsedBinding {
     required_groups: Vec<Vec<String>>,
 }
 
+/// Result of executing a keybinding.
+#[derive(Debug, Clone)]
+pub enum KeybindingResult {
+    /// Successfully executed shell command
+    ShellCommand(String),
+    /// Internal bar action that should be handled by the application
+    BarAction(String),
+    /// Internal tray action that should be handled by the application
+    TrayAction(String),
+    /// Widget action (future)
+    WidgetAction(String),
+    /// Unknown or invalid action
+    Unknown,
+}
+
 /// Keybinding manager using unilii-lib evdev keyboard streams.
 pub struct KeybindingDaemon {
     bindings: Vec<ParsedBinding>,
+    action_sender: Option<tokio::sync::mpsc::UnboundedSender<KeybindingResult>>,
 }
 
 impl KeybindingDaemon {
     pub fn new(bindings: Vec<KeyBinding>) -> Self {
-        let parsed = bindings
+        Self {
+            bindings: Self::parse_bindings(bindings),
+            action_sender: None,
+        }
+    }
+
+    /// Set a sender for internal actions (bar/tray actions).
+    /// This allows the daemon to communicate internal actions back to the application.
+    pub fn set_action_sender(&mut self, sender: tokio::sync::mpsc::UnboundedSender<KeybindingResult>) {
+        self.action_sender = Some(sender);
+    }
+
+    fn parse_bindings(bindings: Vec<KeyBinding>) -> Vec<ParsedBinding> {
+        bindings
             .into_iter()
             .filter_map(|binding| match parse_binding(binding.clone()) {
                 Ok(parsed) => Some(parsed),
@@ -41,9 +95,7 @@ impl KeybindingDaemon {
                     None
                 }
             })
-            .collect();
-
-        Self { bindings: parsed }
+            .collect()
     }
 
     pub async fn run(&self) -> Result<()> {
@@ -64,18 +116,25 @@ impl KeybindingDaemon {
         let mut stream = listener;
         let mut pressed_keys: HashSet<String> = HashSet::new();
         let mut already_triggered: HashSet<usize> = HashSet::new();
+        // Track bindings that are ready for release-to-confirm
+        let mut release_ready: HashSet<usize> = HashSet::new();
 
         while let Some(event) = stream.next().await {
             let key_name = format!("{:?}", event.code);
 
             match event.value {
                 1 => {
+                    // Key press
                     pressed_keys.insert(key_name);
-                    self.check_bindings(&pressed_keys, &mut already_triggered)?;
+                    self.check_bindings(&pressed_keys, &mut already_triggered, &mut release_ready)?;
                 }
                 0 => {
+                    // Key release
                     pressed_keys.remove(&key_name);
+                    // Execute release bindings and clear their ready state
+                    self.execute_release_bindings(&mut release_ready)?;
                     already_triggered.retain(|index| self.matches_binding(*index, &pressed_keys));
+                    release_ready.retain(|index| self.matches_binding(*index, &pressed_keys));
                 }
                 _ => {}
             }
@@ -88,13 +147,33 @@ impl KeybindingDaemon {
         &self,
         pressed: &HashSet<String>,
         already_triggered: &mut HashSet<usize>,
+        release_ready: &mut HashSet<usize>,
     ) -> Result<()> {
         for index in 0..self.bindings.len() {
             let matches = self.matches_binding(index, pressed);
-            if matches && !already_triggered.contains(&index) {
-                self.execute_binding(index)?;
-                already_triggered.insert(index);
+            let binding = &self.bindings[index].binding;
+
+            if binding.release {
+                // Release-to-confirm: mark as ready if not already triggered
+                if matches && !release_ready.contains(&index) {
+                    release_ready.insert(index);
+                }
+            } else {
+                // Normal: execute immediately if not already triggered
+                if matches && !already_triggered.contains(&index) {
+                    self.execute_binding(index)?;
+                    already_triggered.insert(index);
+                }
             }
+        }
+        Ok(())
+    }
+
+    fn execute_release_bindings(&self, release_ready: &mut HashSet<usize>) -> Result<()> {
+        let bindings_to_execute: Vec<usize> = release_ready.iter().copied().collect();
+        for index in bindings_to_execute {
+            self.execute_binding(index)?;
+            release_ready.remove(&index);
         }
         Ok(())
     }
@@ -113,22 +192,46 @@ impl KeybindingDaemon {
             return Ok(());
         }
 
-        std::process::Command::new("sh")
-            .arg("-lc")
-            .arg(command)
-            .spawn()
-            .map_err(|error| {
-                error!(
-                    "hotkeys: failed to execute binding '{}' command='{}': {}",
-                    binding.name, command, error
-                );
-                Box::new(error) as Box<dyn std::error::Error + Send + Sync>
-            })?;
+        match &binding.command_type {
+            CommandType::Shell => {
+                std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(command)
+                    .spawn()
+                    .map_err(|error| {
+                        error!(
+                            "hotkeys: failed to execute binding '{}' command='{}': {}",
+                            binding.name, command, error
+                        );
+                        Box::new(error) as Box<dyn std::error::Error + Send + Sync>
+                    })?;
 
-        info!(
-            "hotkeys: executed binding '{}' keysym='{}'",
-            binding.name, binding.keysym
-        );
+                info!(
+                    "hotkeys: executed shell binding '{}' keysym='{}'",
+                    binding.name, binding.keysym
+                );
+            }
+            CommandType::Bar | CommandType::Tray | CommandType::Widget => {
+                let result = match &binding.command_type {
+                    CommandType::Bar => KeybindingResult::BarAction(command.to_string()),
+                    CommandType::Tray => KeybindingResult::TrayAction(command.to_string()),
+                    CommandType::Widget => KeybindingResult::WidgetAction(command.to_string()),
+                    _ => KeybindingResult::Unknown,
+                };
+
+                if let Some(sender) = &self.action_sender {
+                    if sender.send(result).is_err() {
+                        error!("hotkeys: failed to send internal action '{}'", command);
+                    }
+                }
+
+                info!(
+                    "hotkeys: executed internal binding '{}' type={:?} command='{}'",
+                    binding.name, binding.command_type, command
+                );
+            }
+        }
+
         Ok(())
     }
 }
