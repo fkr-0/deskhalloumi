@@ -2,6 +2,9 @@
 
 pub mod sysmonitor;
 pub mod wifi;
+pub mod audio;
+pub mod video;
+pub mod power;
 
 use crate::app::Message;
 use crate::module_loader::LoadedModule;
@@ -15,6 +18,9 @@ pub enum WidgetMessage {
     SysMonitor(String),
     Wifi(String),
     Tray(String),
+    Audio(String),
+    Video(String),
+    Power(String),
 }
 
 /// Widget trait that all bar widgets must implement
@@ -37,6 +43,9 @@ pub trait Widget: Debug + Send + Sync {
 // Re-export widget implementations
 pub use sysmonitor::SysMonitor;
 pub use wifi::Wifi;
+pub use audio::Audio;
+pub use video::Video;
+pub use power::Power;
 
 /// Render modules as widgets in status bar
 pub fn render_modules(
