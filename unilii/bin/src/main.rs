@@ -1,69 +1,31 @@
+mod app;
 mod app_config;
 mod cli;
 mod module_loader;
 mod subscription_manager;
 mod tray;
-mod enhanced_tray; // New enhanced tray system
+mod enhanced_tray;
+mod widgets;
 
 use app_config::{load_app_config, AppConfig};
+use app::{Message, UniliiBar};
 use cli::{Cli, Commands, RunOptions, verbose_to_level};
 use clap::Parser;
 use iced::futures::{SinkExt, StreamExt};
 use iced::keyboard::{key, Key, Modifiers};
-use iced::widget::{button, column, container, row, text, Space};
-use iced::{window, Element, Length, Subscription, Task};
+use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
+use iced::{window, Alignment, Element, Length, Subscription, Task};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::Duration;
 use tracing::{error, info, warn};
-use unilii_core::{config::load_config, keys::KeybindingDaemon, ModuleUpdate};
+use unilii_core::{config::{load_config, load_config_with_path}, keys::KeybindingDaemon, ModuleUpdate};
 
-use module_loader::{LoadedModule, ModuleManager};
+use module_loader::{LoadedModule, ModuleManager, ModuleSubscription};
 use subscription_manager::{initialize_global_subscriptions, get_latest_module_update, has_module_updates};
-use enhanced_tray::TrayViewState;
-
-struct UniliiBar {
-    modules: HashMap<String, LoadedModule>,
-    config: unilii_core::config::Config,
-    app_config: AppConfig,
-    shift_held: bool,
-    tray_icons: Vec<tray::TrayIcon>,
-    enhanced_tray: Option<enhanced_tray::EnhancedTrayState>, // Enhanced tray state
-    run_options: RunOptions,
-}
-
-#[derive(Debug, Clone)]
-enum Message {
-    ModuleUpdate(String, ModuleUpdate),
-    KeyboardInput {
-        code: String,
-        value: i32,
-    },
-    WindowKeyboardInput {
-        key: String,
-        pressed: bool,
-        is_shift: bool,
-    },
-    // Enhanced tray events
-    EnhancedTrayEvent(enhanced_tray::TrayEvent),
-    TrayIconPressed(String),
-    TrayMenuTriggered(String, enhanced_tray::TrayMenuAction),
-    TrayNavigateLeft,
-    TrayNavigateRight,
-    TrayShowAggregated,
-    TrayShowFavorites,
-    TrayToggleFavorite(String, String), // (app_id, item_id)
-    TrayFilterUpdate(String),
-    TrayNetworkSnapshot(String, Result<tray::NetworkSnapshot, String>),
-    TrayNetworkRefresh(String),
-    TrayNetworkToggle(String),
-    TrayNetworkToggleDone(String, Result<(), String>),
-    TraySpawnCommand(String, String),
-    TraySpawnCommandDone(String, Result<(), String>),
-    TrayAnimateTick,
-    
-    // Legacy tray events (keep for compatibility during transition)
-    TrayEvent(tray::TrayEvent),
-}
+use enhanced_tray::{TrayViewState, TrayMenuAction, EnhancedTrayState};
+use widgets::{key_char_digit, render_modules};
 
 fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
     match message {
@@ -496,21 +458,7 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
 }
 
 fn view(bar: &UniliiBar) -> Element<'_, Message> {
-    // Collect module views ordered by name
-    let mut module_names: Vec<_> = bar.modules.keys().collect();
-    module_names.sort();
-
-    let mut right_widgets: Vec<Element<'_, Message>> = vec![];
-
-    for name in module_names {
-        if let Some(loaded) = bar.modules.get(name) {
-            let widget = loaded.module.view().map({
-                let name = name.clone();
-                move |update| Message::ModuleUpdate(name.clone(), update)
-            });
-            right_widgets.push(widget);
-        }
-    }
+    let mut right_widgets: Vec<Element<'_, Message>> = render_modules(&bar.modules);
 
     // Tray icons — show digit hints when shift is held
     let tray_row = bar.tray_icons.iter().enumerate().fold(
@@ -530,18 +478,19 @@ fn view(bar: &UniliiBar) -> Element<'_, Message> {
             } else {
                 false
             };
-            let btn = button(text(label).size(13))
+            let mut btn = button(text(label).size(13))
                 .padding([2, 7])
                 .on_press(Message::TrayIconPressed(icon.key.clone()));
-            let btn = if is_active {
-                btn.style(button::primary)
+            if is_active {
+                btn = btn.style(button::primary);
             } else {
-                btn.style(button::text)
-            };
+                btn = btn.style(button::text);
+            }
             acc_row.push(btn)
         },
     );
     right_widgets.push(tray_row.into());
+    tracing::info!("layout: tray icons count={}, total widgets in right_row={}", bar.tray_icons.len(), right_widgets.len());
 
     // Enhanced tray menu (animated)
     if let Some(tray_state) = &bar.enhanced_tray {
@@ -552,65 +501,12 @@ fn view(bar: &UniliiBar) -> Element<'_, Message> {
     }
 
     let right_row = row(right_widgets)
-        .spacing(6)
-        .align_y(iced::Alignment::Center);
-
-    let bar_content = row![Space::new(), right_row]
-        .spacing(8)
+        .spacing(0)
         .align_y(iced::Alignment::Center)
         .width(Length::Fill)
         .height(Length::Shrink);
 
-    // Apply config background color when available, else fall back to dark theme
-    let bg_color = bar
-        .config
-        .panels
-        .first()
-        .and_then(|p| p.background_color.as_deref())
-        .and_then(parse_hex_color);
-
-    let bar_container = container(bar_content)
-        .width(Length::Fill)
-        .padding([3, 6]);
-
-    if let Some(color) = bg_color {
-        bar_container
-            .style(move |_theme| container::Style {
-                background: Some(iced::Background::Color(color)),
-                ..Default::default()
-            })
-            .into()
-    } else {
-        bar_container.style(container::dark).into()
-    }
-}
-
-/// Returns the 0-based tray index if the key is a digit 1-9 (Character("1") etc.)
-fn key_char_digit(key: &str) -> Option<usize> {
-    // iced Key::Character(SmolStr) formats as: Character("1")
-    if let Some(inner) = key.strip_prefix("Character(\"").and_then(|s| s.strip_suffix("\")")) {
-        if inner.len() == 1 {
-            if let Some(d) = inner.chars().next().and_then(|c| c.to_digit(10)) {
-                if d >= 1 {
-                    return Some(d as usize - 1);
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Parse a "#rrggbb" hex string into an iced Color.
-fn parse_hex_color(hex: &str) -> Option<iced::Color> {
-    let hex = hex.trim_start_matches('#');
-    if hex.len() == 6 {
-        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-        Some(iced::Color::from_rgb8(r, g, b))
-    } else {
-        None
-    }
+    right_row.into()
 }
 
 fn subscribe(bar: &UniliiBar) -> Subscription<Message> {
@@ -868,9 +764,14 @@ fn main() -> iced::Result {
     // Run async initialization in a tokio runtime
     let runtime = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
 
-    let (config, loaded_app_config, run_options) = runtime.block_on(async {
+    let (config, loaded_app_config, run_options, modules): (
+        unilii_core::config::Config,
+        app_config::AppConfig,
+        cli::RunOptions,
+        std::collections::HashMap<String, module_loader::LoadedModule>,
+    ) = runtime.block_on(async {
         // Load configuration and modules at startup
-        let config = load_config();
+        let config = load_config_with_path(cli.config.clone());
         let scan = unilii_lib::input::scan_keyboard_device_stats();
         if scan.total_devices == 0 {
             error!(
@@ -907,7 +808,8 @@ fn main() -> iced::Result {
         }
 
         // Load application configuration with fallback to defaults
-        let loaded_app_config = match load_app_config(None) {
+        let config_path_str = cli.config.as_ref().and_then(|p| p.to_str());
+        let loaded_app_config = match load_app_config(config_path_str) {
             config if config.modules.is_empty() => {
                 warn!("Loaded configuration has no modules, using defaults");
                 AppConfig::default()
@@ -941,7 +843,7 @@ fn main() -> iced::Result {
             warn!("No module subscriptions available, continuing without real-time updates");
         }
 
-        Ok((config, loaded_app_config, run_options))
+        Ok((config, loaded_app_config, run_options, modules))
     }).map_err(|e: Box<dyn std::error::Error>| {
         eprintln!("Runtime initialization error: {:?}", e);
         std::process::exit(1);
@@ -994,32 +896,36 @@ fn main() -> iced::Result {
 
     info!("unilii startup: load finished, launching iced application");
 
-    let _initial_state = UniliiBar {
-        modules: HashMap::new(), // Modules will be loaded in the application
-        config: config.clone(),
-        app_config: loaded_app_config.clone(),
-        shift_held: false,
-        tray_icons: Vec::new(),
-        enhanced_tray: None,
-        run_options: run_options.clone(),
+    // Wrap pre-loaded data in Rc<RefCell<>> for Fn-compatible closure
+    let modules = Rc::new(RefCell::new(Some(modules)));
+    let config = Rc::new(RefCell::new(Some(config)));
+    let app_config = Rc::new(RefCell::new(Some(loaded_app_config)));
+    let run_options = Rc::new(RefCell::new(Some(run_options)));
+
+    // Create closure that can be called multiple times (Fn requirement)
+    let initial_state = move || -> (UniliiBar, Task<Message>) {
+        let modules = modules.borrow_mut().take().unwrap_or_default();
+        let config = config.borrow_mut().take().unwrap_or_default();
+        let app_config = app_config.borrow_mut().take().unwrap_or_default();
+        let run_options = run_options.borrow_mut().take().unwrap_or_default();
+
+        (
+            UniliiBar {
+                modules,
+                config,
+                app_config,
+                shift_held: false,
+                tray_icons: Vec::new(),
+                enhanced_tray: None,
+                run_options,
+            },
+            Task::none(),
+        )
     };
-    
+
     // Run the iced application with the loaded modules
     iced::application(
-        || {
-            (
-                UniliiBar {
-                    modules: HashMap::new(), // Start with empty, modules will be loaded later
-                    config: unilii_core::config::Config::default(),
-                    app_config: AppConfig::default(),
-                    shift_held: false,
-                    tray_icons: Vec::new(),
-                    enhanced_tray: None,
-                    run_options: RunOptions::default(),
-                },
-                Task::none(),
-            )
-        },
+        initial_state,
         update,
         view,
     )
@@ -1030,7 +936,7 @@ fn main() -> iced::Result {
 
 #[cfg(test)]
 mod tests {
-    use super::key_char_digit;
+    use super::widgets::key_char_digit;
 
     #[test]
     fn digit_1_maps_to_index_0() {
@@ -1105,155 +1011,405 @@ fn animate_progress(current: f32, target: f32, rate: f32) -> f32 {
 }
 
 /// Render the enhanced tray menu view
-fn render_enhanced_tray_menu(tray_state: &enhanced_tray::EnhancedTrayState) -> Element<'_, Message> {
-    let opacity = tray_state.animation_progress.clamp(0.0, 1.0);
-    
-    match &tray_state.current_view {
-        TrayViewState::SingleApp { app_id, .. } => {
-            // Get the app's menu items
-            if let Some(app) = tray_state.tree.apps.get(app_id) {
-                let visible_count = (app.menu_items.len() as f32 * tray_state.animation_progress).ceil() as usize;
-                let menu_row = app.menu_items.iter().enumerate().take(visible_count).fold(
-                    row!().spacing(2).align_y(iced::Alignment::Center),
-                    |mut acc: iced::widget::Row<'_, Message>, (i, item)| {
-                        let is_sel = tray_state.selected_index == Some(i);
-                        let btn = button(text(item.label.clone()).size(12))
-                            .padding([2, 8])
-                            .on_press(Message::TrayMenuTriggered(
-                                app_id.clone(),
-                                item.action.clone(),
-                            ));
-                        let btn = if is_sel { btn.style(button::primary) } else { btn.style(button::text) };
-                        acc.push(btn)
-                    },
-                );
-                
-                // Add navigation hints
-                let mut nav_row = row![menu_row];
-                
-                if tray_state.current_view.get_navigation().map_or(false, |nav| nav.can_go_left) {
-                    nav_row = nav_row.push(text("◀").size(10));
-                }
-                if tray_state.current_view.get_navigation().map_or(false, |nav| nav.can_go_right) {
-                    nav_row = nav_row.push(text("▶").size(10));
-                }
-                
-                container(nav_row)
-                    .padding([0, 4])
-                    .style(container::rounded_box)
-                    .into()
-            } else {
-                text("No menu items").into()
-            }
+fn render_enhanced_tray_menu(tray_state: &EnhancedTrayState) -> Element<'_, Message> {
+    use crate::enhanced_tray::rendering::*;
+
+    if !tray_state.is_visible() {
+        return Space::new().into();
+    }
+
+    let content = match &tray_state.current_view {
+        TrayViewState::SingleApp { app_id, navigation } => {
+            render_single_app_view_with_main_messages(tray_state, app_id, navigation)
         }
-        TrayViewState::Aggregated { items, .. } => {
-            let visible_count = (items.len() as f32 * tray_state.animation_progress).ceil() as usize;
-            let menu_col = items.iter().enumerate().take(visible_count).take(8).fold( // Limit to 8 items
-                column!().spacing(1),
-                |mut acc: iced::widget::Column<'_, Message>, (i, item)| {
-                    let is_sel = tray_state.selected_index == Some(i);
-                    let btn = button(text(format!("{} → {}", item.app_id, item.label)).size(11))
-                        .padding([1, 6])
-                        .on_press(Message::TrayMenuTriggered(
-                            item.app_id.clone(),
-                            item.action.clone(),
-                        ));
-                    let btn = if is_sel { btn.style(button::primary) } else { btn.style(button::text) };
-                    acc.push(btn)
-                },
-            );
-            
-            let header = row![
-                text("All Items").size(11),
-                Space::new(),
-                text("[a]gg [v]favs [f]fav").size(9)
-            ];
-            
-            container(column![header, menu_col])
-                .padding([3, 4])
-                .style(container::rounded_box)
-                .into()
+        TrayViewState::Aggregated { items, filter } => {
+            render_aggregated_view_with_main_messages(tray_state, items, filter)
         }
         TrayViewState::Favorites { items } => {
-            let visible_count = (items.len() as f32 * tray_state.animation_progress).ceil() as usize;
-            let menu_col = items.iter().enumerate().take(visible_count).fold(
-                column!().spacing(1),
-                |mut acc: iced::widget::Column<'_, Message>, (i, item)| {
-                    let is_sel = tray_state.selected_index == Some(i);
-                    let btn = button(text(format!("⭐ {} → {}", item.app_id, item.label)).size(11))
-                        .padding([1, 6])
-                        .on_press(Message::TrayMenuTriggered(
-                            item.app_id.clone(),
-                            item.action.clone(),
-                        ));
-                    let btn = if is_sel { btn.style(button::primary) } else { btn.style(button::text) };
-                    acc.push(btn)
-                },
-            );
-            
-            let header = text("Favorites").size(11);
-            
-            container(column![header, menu_col])
-                .padding([3, 4])
-                .style(container::rounded_box)
-                .into()
+            render_favorites_view_with_main_messages(tray_state, items)
         }
-        TrayViewState::Network { data, loading, error, .. } => {
-            let mut col = column![
-                // Basic network options
-                button(text(if data.as_ref().map(|d| d.enabled).unwrap_or(false) { "Disable Wi-Fi" } else { "Enable Wi-Fi" }).size(12))
-                    .padding([2, 8])
-                    .style(button::text)
-                    .on_press(Message::TrayNetworkToggle("default".to_string())),
-                button(text("Refresh").size(12))
-                    .padding([2, 8])
-                    .style(button::text)
-                    .on_press(Message::TrayNetworkRefresh("default".to_string())),
-                button(text("Settings").size(12))
-                    .padding([2, 8])
-                    .style(button::text)
-                    .on_press(Message::TraySpawnCommand(
-                        "default".to_string(),
-                        "nm-connection-editor".to_string(),
-                    )),
-            ].spacing(1);
+        TrayViewState::Network { app_id, data, loading, error } => {
+            render_network_view_with_main_messages(tray_state, app_id, data, *loading, error)
+        }
+    };
 
-            if let Some(snapshot) = data {
-                if snapshot.enabled && !snapshot.networks.is_empty() {
-                    col = col.push(text("─────").size(10));
-                    for network in snapshot.networks.iter().take(6) {
-                        let connected_marker = if snapshot.state == "connected" { " ●" } else { "" };
-                        col = col.push(
-                            button(
-                                text(format!("{}{} {}%", network.ssid, connected_marker, network.signal))
-                                    .size(11),
-                            )
-                            .padding([1, 8])
-                            .style(button::text)
-                            .on_press(Message::TraySpawnCommand(
-                                "default".to_string(),
-                                format!("nmcli device wifi connect \"{}\"", network.ssid),
-                            )),
-                        );
-                    }
-                } else if !snapshot.enabled {
-                    col = col.push(text("  Wi-Fi off").size(11));
+    let opacity = tray_state.animation_progress.clamp(0.0, 1.0);
+
+    container(content)
+        .padding([4, 8])
+        .style(move |theme| {
+            let mut appearance: container::Style = container::Style::default();
+            appearance.background = Some(iced::Background::Color(theme.palette().background));
+            appearance.background = appearance.background.map(|bg| match bg {
+                iced::Background::Color(mut color) => {
+                    color.a = opacity;
+                    iced::Background::Color(color)
                 }
-            }
-            
-            if *loading {
-                col = col.push(text("  …").size(11));
-            }
-            if let Some(msg) = error {
-                col = col.push(text(format!("  ⚠ {msg}")).size(11));
-            }
+                other => other,
+            });
+            appearance
+        })
+        .into()
+}
 
-            container(col)
-                .padding([4, 6])
-                .style(container::rounded_box)
-                .into()
+fn render_single_app_view_with_main_messages<'a>(
+    state: &'a EnhancedTrayState,
+    app_id: &'a str,
+    navigation: &'a enhanced_tray::TrayMenuNavigation,
+) -> Element<'a, Message> {
+    let app_menu = state.tree.apps.get(app_id);
+
+    let mut content = column!().spacing(2);
+
+    let mut title_row = row!().spacing(4).align_y(iced::Alignment::Center);
+
+    if navigation.can_go_left {
+        title_row = title_row.push(
+            button(text("◀").size(12))
+                .on_press(Message::TrayNavigateLeft)
+        );
+    }
+
+    if let Some(app) = app_menu {
+        title_row = title_row.push(
+            text(&app.icon.title)
+                .size(14)
+        );
+    } else {
+        title_row = title_row.push(text(app_id).size(14));
+    }
+
+    if navigation.can_go_right {
+        title_row = title_row.push(
+            button(text("▶").size(12))
+                .on_press(Message::TrayNavigateRight)
+        );
+    }
+
+    content = content.push(title_row);
+
+    if let Some(app) = app_menu {
+        let menu_items = render_menu_items_with_main_messages(&app.menu_items, state.selected_index, app_id);
+        content = content.push(menu_items);
+    } else {
+        content = content.push(text("No menu available").size(12));
+    }
+
+    content = content.push(render_keyboard_hints_single());
+
+    content.into()
+}
+
+fn render_aggregated_view_with_main_messages<'a>(
+    _state: &'a EnhancedTrayState,
+    items: &'a [enhanced_tray::TrayMenuItem],
+    filter: &'a Option<String>,
+) -> Element<'a, Message> {
+    let mut content = column!().spacing(2);
+
+    content = content.push(
+        text("All Menu Items")
+            .size(14)
+    );
+
+    content = content.push(
+        text_input(
+            "Search menu items...",
+            filter.as_deref().unwrap_or("")
+        )
+        .on_input(Message::TrayFilterUpdate)
+        .size(12)
+        .padding([2, 4])
+    );
+
+    if items.is_empty() {
+        content = content.push(text("No items found").size(12));
+    } else {
+        let items_container = render_aggregated_items_with_main_messages(items);
+        content = content.push(items_container);
+    }
+
+    content = content.push(render_keyboard_hints_aggregated());
+
+    content.into()
+}
+
+fn render_favorites_view_with_main_messages<'a>(
+    _state: &'a EnhancedTrayState,
+    items: &'a [enhanced_tray::TrayMenuItem],
+) -> Element<'a, Message> {
+    let mut content = column!().spacing(2);
+
+    content = content.push(
+        text("Favorite Items ⭐")
+            .size(14)
+    );
+
+    if items.is_empty() {
+        content = content.push(
+            text("No favorites yet. Press 'f' on any menu item to add it here.")
+                .size(12)
+        );
+    } else {
+        let items_container = render_favorite_items_with_main_messages(items);
+        content = content.push(items_container);
+    }
+
+    content = content.push(render_keyboard_hints_favorites());
+
+    content.into()
+}
+
+fn render_network_view_with_main_messages<'a>(
+    _state: &'a EnhancedTrayState,
+    app_id: &'a str,
+    data: &'a Option<crate::tray::NetworkSnapshot>,
+    loading: bool,
+    error: &'a Option<String>,
+) -> Element<'a, Message> {
+    let mut content = column!().spacing(2);
+
+    content = content.push(
+        text("Network Settings")
+            .size(14)
+    );
+
+    if loading {
+        content = content.push(
+            text("⟳ Loading...")
+                .size(12)
+        );
+    } else if let Some(err) = error {
+        content = content.push(
+            text(format!("⚠ Error: {}", err))
+                .size(12)
+        );
+    }
+
+    let controls = render_network_controls_with_main_messages(app_id, data);
+    content = content.push(controls);
+
+    if let Some(snapshot) = data {
+        if snapshot.enabled && !snapshot.networks.is_empty() {
+            let networks = render_network_list_with_main_messages(app_id, snapshot);
+            content = content.push(networks);
+        } else if !snapshot.enabled {
+            content = content.push(text("Wi-Fi is disabled").size(12));
         }
     }
+
+    content = content.push(render_keyboard_hints_network());
+
+    content.into()
+}
+
+fn render_menu_items_with_main_messages<'a>(
+    items: &'a [enhanced_tray::TrayMenuItem],
+    selected_index: Option<usize>,
+    app_id: &'a str,
+) -> Element<'a, Message> {
+    if items.is_empty() {
+        return text("No menu items").size(12).into();
+    }
+
+    let mut menu_col = column!().spacing(1);
+
+    for (index, item) in items.iter().enumerate() {
+        let item_widget = render_menu_item_with_main_messages(item, selected_index == Some(index), app_id);
+        menu_col = menu_col.push(item_widget);
+    }
+
+    if items.len() > 8 {
+        scrollable(menu_col)
+            .height(Length::Fixed(200.0))
+            .into()
+    } else {
+        menu_col.into()
+    }
+}
+
+fn render_menu_item_with_main_messages<'a>(
+    item: &'a enhanced_tray::TrayMenuItem,
+    _is_selected: bool,
+    app_id: &'a str,
+) -> Element<'a, Message> {
+    if item.is_separator {
+        return text("─".repeat(20))
+            .size(10)
+            .into();
+    }
+
+    let mut label = item.label.clone();
+
+    if item.checkable {
+        label = format!("{} {}", if item.checked { "☑" } else { "☐" }, label);
+    }
+
+    if let Some(shortcut) = &item.shortcut {
+        label = format!("{} ({})", label, shortcut);
+    }
+
+    let btn = button(text(label).size(12))
+        .padding([2, 8])
+        .width(Length::Fill);
+
+    if item.enabled {
+        btn.on_press(Message::TrayMenuTriggered(
+            app_id.to_string(),
+            item.action.clone(),
+        )).into()
+    } else {
+        btn.into()
+    }
+}
+
+fn render_aggregated_items_with_main_messages<'a>(items: &'a [enhanced_tray::TrayMenuItem]) -> Element<'a, Message> {
+    let mut items_col = column!().spacing(1);
+
+    for item in items.iter().take(10) {
+        let item_row = row![
+            text("⭐").size(10),
+            text(&item.full_path).size(11),
+            Space::new(),
+            button(text("★").size(10))
+                .on_press(Message::TrayToggleFavorite(
+                    item.app_id.clone(),
+                    item.id.clone()
+                )),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center);
+
+        let item_btn = button(item_row)
+            .padding([2, 4])
+            .width(Length::Fill)
+            .on_press(Message::TrayMenuTriggered(
+                item.app_id.clone(),
+                item.action.clone(),
+            ));
+
+        items_col = items_col.push(item_btn);
+    }
+
+    if items.len() > 10 {
+        items_col = items_col.push(
+            text(format!("... and {} more items", items.len() - 10))
+                .size(10)
+        );
+    }
+
+    scrollable(items_col)
+        .height(Length::Fixed(200.0))
+        .into()
+}
+
+fn render_favorite_items_with_main_messages<'a>(items: &'a [enhanced_tray::TrayMenuItem]) -> Element<'a, Message> {
+    let mut items_col = column!().spacing(1);
+
+    for item in items {
+        let item_row = row![
+            text("⭐").size(10),
+            text(&item.full_path).size(11),
+            button(text("✗").size(10))
+                .on_press(Message::TrayToggleFavorite(
+                    item.app_id.clone(),
+                    item.id.clone()
+                )),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center);
+
+        let item_btn = button(item_row)
+            .padding([2, 4])
+            .width(Length::Fill)
+            .on_press(Message::TrayMenuTriggered(
+                item.app_id.clone(),
+                item.action.clone(),
+            ));
+
+        items_col = items_col.push(item_btn);
+    }
+
+    scrollable(items_col)
+        .height(Length::Fixed(200.0))
+        .into()
+}
+
+fn render_network_controls_with_main_messages<'a>(
+    app_id: &'a str,
+    data: &'a Option<crate::tray::NetworkSnapshot>,
+) -> Element<'a, Message> {
+    let is_enabled = data.as_ref().map(|d| d.enabled).unwrap_or(false);
+
+    row![
+        button(text(if is_enabled { "Disable Wi-Fi" } else { "Enable Wi-Fi" }).size(12))
+            .padding([2, 6])
+            .on_press(Message::TrayNetworkToggle(app_id.to_string())),
+
+        button(text("Settings").size(12))
+            .padding([2, 6])
+            .on_press(Message::TraySpawnCommand(
+                app_id.to_string(),
+                "nm-connection-editor".to_string()
+            )),
+    ]
+    .spacing(4)
+    .into()
+}
+
+fn render_network_list_with_main_messages<'a>(
+    app_id: &'a str,
+    snapshot: &'a crate::tray::NetworkSnapshot,
+) -> Element<'a, Message> {
+    let mut networks_col = column!().spacing(1);
+
+    networks_col = networks_col.push(text("Available Networks:").size(12));
+
+    for network in snapshot.networks.iter().take(6) {
+        let mut label = format!("{} ({}%)", network.ssid, network.signal);
+
+        if snapshot.state == "connected" && snapshot.interface == network.ssid {
+            label = format!("● {}", label);
+        }
+
+        let network_btn = button(text(label).size(11))
+            .padding([1, 4])
+            .width(Length::Fill)
+            .on_press(Message::TraySpawnCommand(
+                app_id.to_string(),
+                format!("nmcli device wifi connect \"{}\"", network.ssid)
+            ));
+
+        networks_col = networks_col.push(network_btn);
+    }
+
+    scrollable(networks_col)
+        .height(Length::Fixed(150.0))
+        .into()
+}
+
+fn render_keyboard_hints_single() -> Element<'static, Message> {
+    text("◀/▶: Navigate apps • a: All items • v: Favorites")
+        .size(10)
+        .into()
+}
+
+fn render_keyboard_hints_aggregated() -> Element<'static, Message> {
+    text("Type: Filter • f: Toggle favorite • v: Favorites only")
+        .size(10)
+        .into()
+}
+
+fn render_keyboard_hints_favorites() -> Element<'static, Message> {
+    text("a: All items • f: Remove favorite")
+        .size(10)
+        .into()
+}
+
+fn render_keyboard_hints_network() -> Element<'static, Message> {
+    text("Click to connect/control • a: All items")
+        .size(10)
+        .into()
 }
 
 

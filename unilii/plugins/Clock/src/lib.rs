@@ -13,9 +13,11 @@ pub struct Clock {
 #[async_trait::async_trait]
 impl Module for Clock {
     async fn new(_config: &ModuleConfig) -> Result<Self> {
+        let format = "%H:%M:%S".to_string();
+        let current_time = Local::now().format(&format).to_string();
         Ok(Self {
-            format: "%H:%M:%S".to_string(),
-            current_time: String::new(),
+            format,
+            current_time,
         })
     }
 
@@ -24,14 +26,13 @@ impl Module for Clock {
     }
 
     fn view(&self) -> Element<'_, ModuleUpdate> {
-        container(text(&self.current_time).size(14))
-            .width(Length::Shrink)
-            .padding(4)
-            .align_x(Alignment::Center)
-            .into()
+        text(&self.current_time).size(14).color(iced::Color::WHITE).into()
     }
 
-    fn update(&mut self, _message: ModuleUpdate) -> Result<()> {
+    fn update(&mut self, message: ModuleUpdate) -> Result<()> {
+        if let ModuleUpdate::Text(time) = message {
+            self.current_time = time;
+        }
         Ok(())
     }
 

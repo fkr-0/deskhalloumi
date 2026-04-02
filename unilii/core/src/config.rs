@@ -136,7 +136,14 @@ pub fn create_default_config() -> std::io::Result<PathBuf> {
 
 /// Load configuration from file, or create default if it doesn't exist.
 pub fn load_config() -> Config {
-    let config_path = match get_config_path() {
+    load_config_with_path(None)
+}
+
+/// Load configuration from a specific path, or create default if it doesn't exist.
+pub fn load_config_with_path(config_path_override: Option<PathBuf>) -> Config {
+    let config_path = config_path_override.or_else(get_config_path);
+
+    let config_path = match config_path {
         Some(path) => path,
         None => {
             warn!("Could not determine config directory, using defaults");

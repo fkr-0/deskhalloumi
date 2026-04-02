@@ -12,8 +12,8 @@
 name = "top_bar"
 width = 1920
 height = 24
-position_x = 0
-position_y = 0
+position_x = 30
+position_y = 30
 background_color = "#1e1e1e"
 text_color = "#ffffff"
 

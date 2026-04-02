@@ -1,0 +1,17 @@
+[package]
+name = "unilii-tmux"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "unilii_tmux"
+path = "src/lib.rs"
+
+[dependencies]
+unilii-core = { path = "../../core" }
+async-trait = "0.1"
+iced = "0.14"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"

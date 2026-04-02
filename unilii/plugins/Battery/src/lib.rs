@@ -50,7 +50,7 @@ impl Module for Battery {
 
     fn view(&self) -> Element<'_, ModuleUpdate> {
         let label = battery_status_label(self.percentage, self.is_charging);
-        let text_elem = text(label).size(12);
+        let text_elem = text(label).size(12).color(iced::Color::WHITE);
 
         container(row![text_elem].spacing(8).align_y(Alignment::Center))
             .width(Length::Shrink)
