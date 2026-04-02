@@ -29,6 +29,15 @@ use widgets::{key_char_digit, render_modules};
 
 fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
     match message {
+        Message::InitializePanels => {
+            info!("InitializePanels message received (single panel mode)");
+        }
+        Message::WindowOpened(_id) => {
+            info!("WindowOpened message received (single panel mode)");
+        }
+        Message::WindowClosed(_id) => {
+            info!("WindowClosed message received (single panel mode)");
+        }
         Message::ModuleUpdate(name, update) => {
             info!("module update: {name} -> {:?}", update);
             if let Some(loaded) = bar.modules.get_mut(&name) {

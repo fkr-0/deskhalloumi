@@ -136,7 +136,7 @@ impl Wifi {
 
         for (network, msg) in networks.iter().zip(connect_messages.iter()) {
             let net_row = row![
-                text(&network.ssid).size(11).color(Color::WHITE),
+                text(network.ssid.clone()).size(11).color(Color::WHITE),
                 text(format!("{}%", network.signal)).size(10).color(Color::WHITE),
             ]
             .spacing(8)

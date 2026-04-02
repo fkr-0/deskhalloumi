@@ -1,7 +1,5 @@
 //! Widget trait and common types for unilii widgets
 
-pub mod clock;
-pub mod battery;
 pub mod sysmonitor;
 pub mod wifi;
 
@@ -14,8 +12,6 @@ use std::fmt::Debug;
 /// Common widget message type
 #[derive(Debug, Clone)]
 pub enum WidgetMessage {
-    Clock(String),
-    Battery(f32, bool),
     SysMonitor(String),
     Wifi(String),
     Tray(String),
@@ -39,12 +35,10 @@ pub trait Widget: Debug + Send + Sync {
 }
 
 // Re-export widget implementations
-pub use clock::Clock;
-pub use battery::Battery;
 pub use sysmonitor::SysMonitor;
 pub use wifi::Wifi;
 
-/// Render modules as widgets in the status bar
+/// Render modules as widgets in status bar
 pub fn render_modules(
     modules: &HashMap<String, LoadedModule>,
 ) -> Vec<Element<'_, Message>> {
