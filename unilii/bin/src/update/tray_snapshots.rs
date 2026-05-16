@@ -136,6 +136,75 @@ pub fn network_toggle_desired_state_and_mark_loading(
     true
 }
 
+pub fn apply_spawn_command_started(
+    enhanced_tray_state: &mut Option<EnhancedTrayState>,
+    icon_key: &str,
+    icon_key_for_app_id: impl FnOnce(&str) -> Option<String>,
+) -> bool {
+    let Some(tray_state) = enhanced_tray_state.as_mut() else {
+        return false;
+    };
+
+    if let TrayViewState::Network {
+        app_id,
+        loading,
+        error,
+        ..
+    } = &mut tray_state.current_view
+    {
+        if icon_key_for_app_id(app_id).as_deref() == Some(icon_key) {
+            *loading = true;
+            *error = None;
+            return true;
+        }
+    }
+
+    false
+}
+
+pub fn apply_spawn_command_done(
+    enhanced_tray_state: &mut Option<EnhancedTrayState>,
+    icon_key: &str,
+    result: Result<(), String>,
+    icon_key_for_app_id: impl FnOnce(&str) -> Option<String>,
+) -> bool {
+    let Some(tray_state) = enhanced_tray_state.as_mut() else {
+        return false;
+    };
+
+    match &mut tray_state.current_view {
+        TrayViewState::Network {
+            app_id,
+            loading,
+            error,
+            ..
+        }
+        | TrayViewState::Mount {
+            app_id,
+            loading,
+            error,
+            ..
+        }
+        | TrayViewState::Calendar {
+            app_id,
+            loading,
+            error,
+            ..
+        } => {
+            if icon_key_for_app_id(app_id).as_deref() == Some(icon_key) {
+                *loading = false;
+                if let Err(message) = result {
+                    *error = Some(message);
+                }
+                return true;
+            }
+        }
+        _ => {}
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,6 +335,41 @@ mod tests {
                 assert!(error.is_none());
             }
             other => panic!("expected network view, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spawn_command_started_marks_network_loading_and_clears_error() {
+        let mut state = state_with_network();
+
+        assert!(apply_spawn_command_started(&mut state, "net-key", |_| Some("net-key".into())));
+
+        match state.unwrap().current_view {
+            TrayViewState::Network { loading, error, .. } => {
+                assert!(loading);
+                assert!(error.is_none());
+            }
+            other => panic!("expected network view, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spawn_command_done_clears_loading_and_records_error_for_special_views() {
+        let mut state = state_with_calendar();
+
+        assert!(apply_spawn_command_done(
+            &mut state,
+            "calendar-key",
+            Err("command failed".into()),
+            |_| Some("calendar-key".into())
+        ));
+
+        match state.unwrap().current_view {
+            TrayViewState::Calendar { loading, error, .. } => {
+                assert!(!loading);
+                assert_eq!(error.as_deref(), Some("command failed"));
+            }
+            other => panic!("expected calendar view, got {other:?}"),
         }
     }
 

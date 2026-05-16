@@ -46,7 +46,7 @@ use update::tray_text_input::{clear_text_input_value, set_text_input_value};
 use update::tray_menu_fetch::{apply_menu_fetch_result, TrayMenuFetchOutcome};
 use update::tray_favorites::toggle_favorite;
 use update::tray_icon_press::{open_tray_icon_state, open_tray_icon_state_with_menu, should_close_current_tray_view, to_enhanced_tray_icon, TrayIconOpenKind};
-use update::tray_snapshots::{apply_calendar_snapshot, apply_mount_snapshot, apply_network_snapshot, mark_special_view_loading, network_toggle_desired_state_and_mark_loading};
+use update::tray_snapshots::{apply_calendar_snapshot, apply_mount_snapshot, apply_network_snapshot, apply_spawn_command_done, apply_spawn_command_started, mark_special_view_loading, network_toggle_desired_state_and_mark_loading};
 use module_loader::ModuleManager;
 use subscription_manager::{
     get_latest_module_update, has_module_updates, initialize_global_subscriptions,
@@ -535,60 +535,24 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             );
         }
         Message::TraySpawnCommand(icon_key, command) => {
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                if let TrayViewState::Network {
-                    app_id,
-                    loading,
-                    error,
-                    ..
-                } = &mut tray_state.current_view
-                {
-                    if let Some(icon) = bar.tray_icons.iter().find(|icon| icon.id == *app_id) {
-                        if icon.key == icon_key {
-                            *loading = true;
-                            *error = None;
-                        }
-                    }
-                }
-            }
+            apply_spawn_command_started(&mut bar.enhanced_tray, &icon_key, |app_id| {
+                bar.tray_icons
+                    .iter()
+                    .find(|icon| icon.id == app_id)
+                    .map(|icon| icon.key.clone())
+            });
 
             return Task::perform(tray::spawn_command(command), move |result| {
                 Message::TraySpawnCommandDone(icon_key.clone(), result)
             });
         }
         Message::TraySpawnCommandDone(icon_key, result) => {
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                match &mut tray_state.current_view {
-                    TrayViewState::Network {
-                        app_id,
-                        loading,
-                        error,
-                        ..
-                    }
-                    | TrayViewState::Mount {
-                        app_id,
-                        loading,
-                        error,
-                        ..
-                    }
-                    | TrayViewState::Calendar {
-                        app_id,
-                        loading,
-                        error,
-                        ..
-                    } => {
-                        if let Some(icon) = bar.tray_icons.iter().find(|icon| icon.id == *app_id) {
-                            if icon.key == icon_key {
-                                *loading = false;
-                                if let Err(message) = result {
-                                    *error = Some(message);
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            apply_spawn_command_done(&mut bar.enhanced_tray, &icon_key, result, |app_id| {
+                bar.tray_icons
+                    .iter()
+                    .find(|icon| icon.id == app_id)
+                    .map(|icon| icon.key.clone())
+            });
         }
         Message::TrayAnimateTick => {
             if let Some(tray_state) = bar.enhanced_tray.as_mut() {
