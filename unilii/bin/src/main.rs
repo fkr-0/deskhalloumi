@@ -40,6 +40,7 @@ use unilii_core::{
 
 use enhanced_tray::{EnhancedTrayState, TrayViewState};
 use update::enhanced_tray_events::apply_enhanced_tray_event;
+use update::tray_animation::apply_animation_tick;
 use update::tray_navigation::{navigate_left, navigate_right};
 use update::tray_view::{enter_submenu, exit_submenu, show_aggregated, show_favorites, update_filter};
 use update::tray_text_input::{clear_text_input_value, set_text_input_value};
@@ -555,16 +556,7 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             });
         }
         Message::TrayAnimateTick => {
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                tray_state.animation_progress = tray::animate_progress(
-                    tray_state.animation_progress,
-                    tray_state.animation_target,
-                    0.12,
-                );
-                if tray_state.animation_progress == 0.0 && tray_state.animation_target == 0.0 {
-                    bar.enhanced_tray = None;
-                }
-            }
+            apply_animation_tick(&mut bar.enhanced_tray);
         }
         Message::EnhancedTrayEvent(event) => {
             apply_enhanced_tray_event(&mut bar.enhanced_tray, event);

@@ -25,8 +25,8 @@ review:
     refactor.'
   - Do not treat compile success as behavioral success; tests and clippy currently disagree.
   last_updated_at: '2026-05-16'
-  last_update_summary: 'T1.1-S9 completed: tray spawn-command state updates extracted from main.rs with focused tests and
-    green workspace gates.'
+  last_update_summary: 'T1.1-S10 completed: tray animation tick extracted from main.rs with focused tests and green workspace
+    gates.'
 actual_bugs:
 - id: BUG-001
   title: unknown tray icon names fall back to initials instead of generic icon
@@ -258,7 +258,7 @@ state_of_tests:
       command: cargo test --workspace
       exit_code: 0
       state: passes
-      summary: workspace tests pass; unilii-bin reports 180 passed, 0 failed, 3 ignored in the main bin test suite
+      summary: workspace tests pass; unilii-bin reports 182 passed, 0 failed, 3 ignored in the main bin test suite
     clippy:
       command: CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
       exit_code: 0
@@ -460,6 +460,8 @@ todo:
     or spawn-command completion branches next.
   - Tray spawn-command loading/completion state updates now have an extracted owner; continue shrinking main.rs by moving
     animation tick or startup/bootstrap next.
+  - Tray animation tick state updates now have an extracted owner; continue shrinking main.rs by moving startup/bootstrap
+    or async task-decision construction next.
   test_cases:
   - Unit tests for Message -> update effects.
   - Menu open/close/focus tests independent of renderer.
@@ -526,6 +528,10 @@ todo:
       mutation directly to main.rs.
     - Command execution Task construction remains in main.rs and should move only after a task-decision model exists.
     - Next T1.1 candidates are TrayAnimateTick extraction and startup/bootstrap extraction.
+    - TrayAnimateTick is now owned by update/tray_animation.rs; do not re-add animation progress mutation directly to main.rs.
+    - Next T1.1 candidate is startup/bootstrap extraction; remaining async Task construction should move only with an explicit
+      task-decision model.
+    - Animation extraction adds another small renderer-free transition boundary for future canonical Message -> state organization.
     priority: P0
     affected_regions:
     - unilii/bin/src/main.rs
@@ -549,6 +555,7 @@ todo:
       lists.
     - Spawn-command loading/completion branches in main.rs are now thin helper calls; remove them from future main.rs extraction
       candidate lists.
+    - TrayAnimateTick branch in main.rs is now a thin helper call; remove it from future main.rs extraction candidate lists.
     test_cases:
     - cargo test --workspace after each extraction.
     - Snapshot existing update behavior before moving logic.
@@ -581,6 +588,8 @@ todo:
     - update::tray_snapshots::tests::snapshot_error_keeps_data_empty_and_records_error
     - update::tray_snapshots::tests::spawn_command_started_marks_network_loading_and_clears_error
     - update::tray_snapshots::tests::spawn_command_done_clears_loading_and_records_error_for_special_views
+    - update::tray_animation::tests::animation_tick_moves_progress_toward_target
+    - update::tray_animation::tests::animation_tick_drops_state_after_close_reaches_zero
     definition_of_done:
     - main.rs contains wiring/bootstrap only.
     - No extracted module creates new behavior without tests.
@@ -743,6 +752,23 @@ todo:
       - unilii/bin/src/update/tray_snapshots.rs
       - unilii/bin/src/main.rs
       - tasks.yml
+    - id: T1.1-S10
+      title: extract tray animation tick helper
+      completed_at: '2026-05-16'
+      description: Moved TrayAnimateTick animation progress and close-at-zero state transition from main.rs into update/tray_animation.rs.
+      verification:
+      - 'RED: cargo test -p unilii-bin tray_animation failed because apply_animation_tick did not exist.'
+      - 'GREEN: cargo test -p unilii-bin tray_animation passed opening-progress and close-at-zero tests after implementation
+        and main.rs wiring.'
+      - tasks.yml and roadmap.yml parsed successfully.
+      - cargo check --workspace exited 0.
+      - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings exited 0.
+      - cargo test --workspace exited 0; unilii-bin main test suite reported 182 passed, 0 failed, 3 ignored.
+      files_changed:
+      - unilii/bin/src/update/mod.rs
+      - unilii/bin/src/update/tray_animation.rs
+      - unilii/bin/src/main.rs
+      - tasks.yml
   - id: T1.2
     title: consolidate tray implementations
     description: Choose one tray state model and remove or archive backup/dead paths.
@@ -769,6 +795,8 @@ todo:
       updates.
     - Spawn-command result state is extracted; tray consolidation can group provider/command result updates before async task
       extraction.
+    - Animation lifecycle now has a pure update helper; tray consolidation can reuse this boundary when replacing ad-hoc lifecycle
+      state.
     priority: P1
     affected_regions:
     - unilii/bin/src/tray.rs
@@ -870,6 +898,7 @@ todo:
       provider/result boundary.
     - Command-result-to-view-state helpers now live beside snapshot-result helpers; shared MenuModel should preserve this
       result/update split.
+    - Animation lifecycle is separated from rendering; shared MenuModel should preserve lifecycle/update separation.
     priority: P0
     affected_regions:
     - /home/user/code/modrelease-2/docs/menu.md
@@ -1544,6 +1573,22 @@ done:
   - cargo test --workspace passed.
   files_changed:
   - unilii/bin/src/update/tray_snapshots.rs
+  - unilii/bin/src/main.rs
+  - tasks.yml
+  copypasted: false
+- id: D28
+  title: extracted tray animation tick update from main
+  description: Moved animation progress update and close-at-zero state removal into update/tray_animation.rs.
+  evidence:
+  - RED focused tray_animation tests failed before helper existed.
+  - Focused tray_animation tests passed after implementation and wiring.
+  - tasks.yml and roadmap.yml parsed.
+  - cargo check --workspace passed.
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings passed.
+  - cargo test --workspace passed.
+  files_changed:
+  - unilii/bin/src/update/mod.rs
+  - unilii/bin/src/update/tray_animation.rs
   - unilii/bin/src/main.rs
   - tasks.yml
   copypasted: false

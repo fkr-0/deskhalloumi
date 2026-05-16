@@ -6,3 +6,4 @@ pub mod tray_text_input;
 pub mod tray_menu_fetch;
 pub mod tray_icon_press;
 pub mod tray_snapshots;
+pub mod tray_animation;
