@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+// FIXME(T6): Custom menu model is planned toolbar/menu integration surface pending canonical MenuModel wiring.
+
 use unilii_core::config::{CustomMenuActionConfig, CustomMenuConfig, CustomMenuItemConfig};
 
 use super::common::{FilterableMenu, QuickjumpMenu};

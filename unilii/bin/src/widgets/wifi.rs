@@ -50,8 +50,8 @@ impl Wifi {
             {
                 let result = String::from_utf8_lossy(&output.stdout);
                 if !result.trim().is_empty() {
-                    let parts: Vec<&str> = result.trim().split_whitespace().collect();
-                    self.connected = parts.get(0).map(|&s| s == "yes").unwrap_or(false);
+                    let parts: Vec<&str> = result.split_whitespace().collect();
+                    self.connected = parts.first().map(|&s| s == "yes").unwrap_or(false);
                     self.ssid = parts.get(1).unwrap_or(&"Unknown").to_string();
                     self.signal = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
                 } else {
@@ -79,16 +79,7 @@ impl Wifi {
             .output()
         {
             let result = String::from_utf8_lossy(&output.stdout);
-            for line in result.lines() {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 3 {
-                    networks.push(NetworkInfo {
-                        ssid: parts[0].to_string(),
-                        signal: parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0),
-                        security: parts[2].to_string(),
-                    });
-                }
-            }
+            networks = parse_nmcli_networks(&result);
         }
 
         networks
@@ -96,9 +87,10 @@ impl Wifi {
 
     pub fn toggle_wifi(&mut self) {
         let new_state = if self.wifi_enabled { "off" } else { "on" };
-        if let Ok(_) = Command::new("nmcli")
+        if Command::new("nmcli")
             .args(["radio", "wifi", new_state])
             .status()
+            .is_ok()
         {
             self.wifi_enabled = !self.wifi_enabled;
             if !self.wifi_enabled {
@@ -115,6 +107,32 @@ pub struct NetworkInfo {
     pub ssid: String,
     pub signal: u8,
     pub security: String,
+}
+
+fn parse_nmcli_networks(output: &str) -> Vec<NetworkInfo> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, ':');
+            let ssid = parts.next().unwrap_or_default().trim();
+            let signal = parts.next().unwrap_or_default().trim();
+            let security = parts.next().unwrap_or_default().trim();
+
+            if ssid.is_empty() || signal.is_empty() {
+                return None;
+            }
+
+            Some(NetworkInfo {
+                ssid: ssid.to_string(),
+                signal: signal.parse().unwrap_or(0),
+                security: if security.is_empty() {
+                    "Open".to_string()
+                } else {
+                    security.to_string()
+                },
+            })
+        })
+        .collect()
 }
 
 impl Widget for Wifi {
@@ -333,6 +351,19 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_nmcli_networks_keeps_fields_and_filters_invalid_rows() {
+        let networks = parse_nmcli_networks("Cafe Net:87:WPA2\nOpenWifi:42:\n:90:WPA3\nBroken\n");
+
+        assert_eq!(networks.len(), 2);
+        assert_eq!(networks[0].ssid, "Cafe Net");
+        assert_eq!(networks[0].signal, 87);
+        assert_eq!(networks[0].security, "WPA2");
+        assert_eq!(networks[1].ssid, "OpenWifi");
+        assert_eq!(networks[1].signal, 42);
+        assert_eq!(networks[1].security, "Open");
+    }
+
+    #[test]
     fn test_wifi_get_networks_when_disabled() {
         let mut wifi = Wifi::new();
         wifi.wifi_enabled = false;
@@ -373,10 +404,8 @@ mod tests {
         let wifi = Wifi::new();
         let networks = wifi.get_networks();
 
-        // This test requires nmcli to be available
-        // Verify we get some network info (may be empty in isolated environment)
-        assert!(networks.len() >= 0);
-
+        // This test requires nmcli to be available.
+        // In isolated environments the list may be empty, but any returned row must be meaningful.
         for network in networks {
             assert!(!network.ssid.is_empty());
             assert!(network.signal <= 100);

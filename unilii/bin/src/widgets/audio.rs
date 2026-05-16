@@ -1,8 +1,8 @@
 //! Audio widget implementation for selecting input/output sources
 
 use super::{Widget, WidgetMessage};
-use iced::widget::{button, column, row, scrollable, text};
-use iced::{Alignment, Color, Element, Length};
+use iced::widget::{button, column, scrollable, text};
+use iced::{Color, Element, Length};
 use std::process::Command;
 
 #[derive(Debug)]
@@ -19,6 +19,22 @@ pub struct AudioDevice {
     pub name: String,
     pub description: String,
     pub is_active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioSelectionAction<'a> {
+    SetOutput(&'a str),
+    SetInput(&'a str),
+}
+
+fn parse_audio_selection_action(action: &str) -> Option<AudioSelectionAction<'_>> {
+    if let Some(device) = action.strip_prefix("set_output:") {
+        return (!device.is_empty()).then_some(AudioSelectionAction::SetOutput(device));
+    }
+    if let Some(device) = action.strip_prefix("set_input:") {
+        return (!device.is_empty()).then_some(AudioSelectionAction::SetInput(device));
+    }
+    None
 }
 
 impl Audio {
@@ -54,7 +70,7 @@ impl Audio {
         }
     }
 
-    fn parse_audio_devices(&self, output: &str, device_type: &str) -> Vec<AudioDevice> {
+    fn parse_audio_devices(&self, output: &str, _device_type: &str) -> Vec<AudioDevice> {
         let mut devices = Vec::new();
         let mut current_name = String::new();
         let mut current_desc = String::new();
@@ -85,9 +101,10 @@ impl Audio {
     }
 
     pub fn set_default_output(&mut self, device_name: &str) {
-        if let Ok(_) = Command::new("pactl")
+        if Command::new("pactl")
             .args(["set-default-sink", device_name])
             .status()
+            .is_ok()
         {
             self.current_output = device_name.to_string();
             self.update_devices();
@@ -95,9 +112,10 @@ impl Audio {
     }
 
     pub fn set_default_input(&mut self, device_name: &str) {
-        if let Ok(_) = Command::new("pactl")
+        if Command::new("pactl")
             .args(["set-default-source", device_name])
             .status()
+            .is_ok()
         {
             self.current_input = device_name.to_string();
             self.update_devices();
@@ -127,16 +145,11 @@ impl Widget for Audio {
                         self.update_devices();
                     }
                 }
-                _ => {
-                    // Handle device selection
-                    if action.starts_with("set_output:") {
-                        let device = action.strip_prefix("set_output:").unwrap();
-                        self.set_default_output(device);
-                    } else if action.starts_with("set_input:") {
-                        let device = action.strip_prefix("set_input:").unwrap();
-                        self.set_default_input(device);
-                    }
-                }
+                _ => match parse_audio_selection_action(&action) {
+                    Some(AudioSelectionAction::SetOutput(device)) => self.set_default_output(device),
+                    Some(AudioSelectionAction::SetInput(device)) => self.set_default_input(device),
+                    None => {}
+                },
             }
         }
     }
@@ -269,6 +282,15 @@ mod tests {
         audio.show_menu = true;
         let element = audio.view();
         drop(element);
+    }
+
+    #[test]
+    fn test_parse_audio_selection_action_rejects_empty_and_malformed_actions() {
+        assert_eq!(parse_audio_selection_action("set_output:alsa_output"), Some(AudioSelectionAction::SetOutput("alsa_output")));
+        assert_eq!(parse_audio_selection_action("set_input:alsa_input"), Some(AudioSelectionAction::SetInput("alsa_input")));
+        assert_eq!(parse_audio_selection_action("set_output:"), None);
+        assert_eq!(parse_audio_selection_action("set_input:"), None);
+        assert_eq!(parse_audio_selection_action("unknown:device"), None);
     }
 
     #[test]

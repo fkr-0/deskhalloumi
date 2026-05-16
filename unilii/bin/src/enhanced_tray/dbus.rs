@@ -2,6 +2,9 @@
 //!
 //! Handles StatusNotifierItem and DBusMenu protocols with proper error handling
 
+#![allow(dead_code)]
+// FIXME(T6): StatusNotifier DBus host/client helpers are integration boundary code; some functions are live-smoke/integration entrypoints.
+
 use crate::enhanced_tray::core::{TrayIcon, TrayMenuAction, TrayMenuItem, TrayWidgetType};
 use std::collections::HashMap;
 use thiserror::Error;

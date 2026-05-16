@@ -33,7 +33,7 @@ impl Power {
         } else {
             "on"
         };
-        if let Ok(_) = Command::new("xset").args(["s", new_state]).status() {
+        if Command::new("xset").args(["s", new_state]).status().is_ok() {
             self.screensaver_enabled = !self.screensaver_enabled;
         }
     }
@@ -101,7 +101,7 @@ impl Widget for Power {
 impl Power {
     fn render_icon(&self) -> Element<'_, WidgetMessage> {
         let icon = "⏻";
-        let label = format!("{}", icon);
+        let label = icon.to_string();
 
         button(text(label).size(14).color(Color::WHITE))
             .padding([2, 8])
@@ -197,8 +197,6 @@ mod tests {
     #[test]
     fn test_power_widget_update_screensaver() {
         let mut power = Power::new();
-        let original_state = power.screensaver_enabled;
-
         power.update(WidgetMessage::Power("toggle_screensaver".to_string()));
         // Should attempt to toggle (actual system call may fail in tests)
     }
@@ -244,8 +242,6 @@ mod tests {
     #[test]
     fn test_power_toggle_screensaver() {
         let mut power = Power::new();
-        let original_state = power.screensaver_enabled;
-
         power.toggle_screensaver();
         // Should attempt to toggle (actual system call may fail in tests)
     }

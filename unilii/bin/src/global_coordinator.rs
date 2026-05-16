@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use unilii_core::ModuleUpdate;
 
 use crate::module_loader::ModuleSubscription;
@@ -21,12 +21,22 @@ struct GlobalCoordinator {
 
 static GLOBAL_COORDINATOR: Mutex<Option<GlobalCoordinator>> = Mutex::new(None);
 
+fn coordinator_guard() -> std::sync::MutexGuard<'static, Option<GlobalCoordinator>> {
+    match GLOBAL_COORDINATOR.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            warn!("Global coordinator mutex was poisoned, attempting recovery");
+            poisoned.into_inner()
+        }
+    }
+}
+
 /// Register an Iced subscription channel to receive global messages.
 pub fn register_subscription_channel() -> mpsc::UnboundedReceiver<GlobalMessage> {
     let (tx, rx) = mpsc::unbounded_channel();
     
     {
-        let mut coordinator = GLOBAL_COORDINATOR.lock().unwrap();
+        let mut coordinator = coordinator_guard();
         if let Some(ref mut coord) = coordinator.as_mut() {
             coord.senders.push(tx);
         } else {
@@ -62,7 +72,7 @@ pub fn initialize_global_coordinator(module_subscriptions: Vec<ModuleSubscriptio
     
     // Update the global coordinator with tasks
     {
-        let mut coordinator = GLOBAL_COORDINATOR.lock().unwrap();
+        let mut coordinator = coordinator_guard();
         if let Some(ref mut coord) = coordinator.as_mut() {
             coord._subscription_tasks = tasks;
         }
@@ -71,7 +81,7 @@ pub fn initialize_global_coordinator(module_subscriptions: Vec<ModuleSubscriptio
 
 /// Broadcast a message to all registered Iced subscription channels.
 fn broadcast_message(message: GlobalMessage) {
-    let mut coordinator = GLOBAL_COORDINATOR.lock().unwrap();
+    let mut coordinator = coordinator_guard();
     if let Some(ref mut coord) = coordinator.as_mut() {
         // Keep only senders that are still connected
         coord.senders.retain(|sender| {

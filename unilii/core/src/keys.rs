@@ -249,10 +249,10 @@ impl KeybindingDaemon {
                     _ => KeybindingResult::Unknown,
                 };
 
-                if let Some(sender) = &self.action_sender {
-                    if sender.send(result).is_err() {
-                        error!("hotkeys: failed to send internal action '{}'", command);
-                    }
+                if let Some(sender) = &self.action_sender
+                    && sender.send(result).is_err()
+                {
+                    error!("hotkeys: failed to send internal action '{}'", command);
                 }
 
                 info!(

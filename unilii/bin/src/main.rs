@@ -1,3 +1,6 @@
+#![allow(clippy::collapsible_if)]
+// FIXME(T1.1/T6): main.rs still owns large tray/menu update chains; collapse or extract during the main.rs split instead of hiding this permanently.
+
 mod action_runner;
 mod app;
 mod app_config;
@@ -7,12 +10,13 @@ mod menus;
 mod module_loader;
 mod subscription_manager;
 mod tray;
+mod update;
 mod widgets;
 
 use app::{Message, UniliiBar};
 use app_config::{AppConfig, load_app_config};
 use clap::Parser;
-use cli::{Cli, Commands, RunOptions, verbose_to_level};
+use cli::{Cli, Commands, verbose_to_level};
 use iced::futures::{SinkExt, StreamExt};
 use iced::keyboard::{Key, Modifiers, key};
 use iced::widget::{
@@ -29,13 +33,19 @@ use std::time::Duration;
 use tracing::{error, info, warn};
 use unilii_core::{
     ModuleUpdate,
-    config::{load_config, load_config_with_path},
+    config::load_config_with_path,
     key_import_sxhkd::import_sxhkd_config,
     keys::{KeyDryRunEvent, KeybindingDaemon, dry_run_bindings},
 };
 
-use enhanced_tray::{EnhancedTrayState, TrayMenuAction, TrayViewState};
-use module_loader::{LoadedModule, ModuleManager, ModuleSubscription};
+use enhanced_tray::{EnhancedTrayState, TrayViewState};
+use update::enhanced_tray_events::apply_enhanced_tray_event;
+use update::tray_navigation::{navigate_left, navigate_right};
+use update::tray_view::{enter_submenu, exit_submenu, show_aggregated, show_favorites, update_filter};
+use update::tray_text_input::{clear_text_input_value, set_text_input_value};
+use update::tray_menu_fetch::{apply_menu_fetch_result, build_simple_visible_menu, TrayMenuFetchOutcome};
+use update::tray_favorites::toggle_favorite;
+use module_loader::ModuleManager;
 use subscription_manager::{
     get_latest_module_update, has_module_updates, initialize_global_subscriptions,
 };
@@ -865,135 +875,35 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                 }
             }
         }
-        Message::EnhancedTrayEvent(_event) => {
-            // TODO: Handle enhanced tray events
+        Message::EnhancedTrayEvent(event) => {
+            apply_enhanced_tray_event(&mut bar.enhanced_tray, event);
         }
         Message::TrayNavigateLeft => {
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                if let TrayViewState::SingleApp {
-                    app_id, navigation, ..
-                } = &tray_state.current_view
-                {
-                    if navigation.can_go_left && navigation.current_app_index > 0 {
-                        let new_index = navigation.current_app_index - 1;
-                        if let Some(new_app_id) = navigation.app_order.get(new_index) {
-                            let new_navigation = tray_state.tree.get_app_navigation(new_app_id);
-                            tray_state.current_view = TrayViewState::SingleApp {
-                                app_id: new_app_id.clone(),
-                                navigation: new_navigation,
-                                submenu_path: Vec::new(),
-                            };
-                        }
-                    }
-                }
-            }
+            navigate_left(&mut bar.enhanced_tray);
         }
         Message::TrayNavigateRight => {
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                if let TrayViewState::SingleApp {
-                    app_id, navigation, ..
-                } = &tray_state.current_view
-                {
-                    if navigation.can_go_right
-                        && navigation.current_app_index
-                            < navigation.app_order.len().saturating_sub(1)
-                    {
-                        let new_index = navigation.current_app_index + 1;
-                        if let Some(new_app_id) = navigation.app_order.get(new_index) {
-                            let new_navigation = tray_state.tree.get_app_navigation(new_app_id);
-                            tray_state.current_view = TrayViewState::SingleApp {
-                                app_id: new_app_id.clone(),
-                                navigation: new_navigation,
-                                submenu_path: Vec::new(),
-                            };
-                        }
-                    }
-                }
-            }
+            navigate_right(&mut bar.enhanced_tray);
         }
         Message::TrayShowAggregated => {
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                tray_state.current_view = TrayViewState::Aggregated {
-                    items: tray_state.tree.get_aggregated_menu(None),
-                    filter: None,
-                };
-            }
+            show_aggregated(&mut bar.enhanced_tray);
         }
         Message::TrayShowFavorites => {
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                tray_state.current_view = TrayViewState::Favorites {
-                    items: tray_state.tree.get_favorites_menu(),
-                };
-            }
+            show_favorites(&mut bar.enhanced_tray);
         }
-        Message::TrayToggleFavorite(app_id, item_id) => {
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                tray_state.tree.toggle_favorite(&item_id);
-                // Update current view if showing favorites
-                if let TrayViewState::Favorites { items } = &mut tray_state.current_view {
-                    *items = tray_state.tree.get_favorites_menu();
-                }
-            }
+        Message::TrayToggleFavorite(_app_id, item_id) => {
+            toggle_favorite(&mut bar.enhanced_tray, &item_id);
         }
         Message::TrayFilterUpdate(filter_text) => {
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                if let TrayViewState::Aggregated { items, filter } = &mut tray_state.current_view {
-                    *filter = if filter_text.is_empty() {
-                        None
-                    } else {
-                        Some(filter_text.clone())
-                    };
-                    *items = tray_state.tree.get_aggregated_menu(filter.as_deref());
-                }
-                tray_state.filter_text = filter_text;
-            }
+            update_filter(&mut bar.enhanced_tray, filter_text);
         }
         Message::TrayEnterSubmenu(app_id, submenu_path) => {
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                if let TrayViewState::SingleApp {
-                    app_id: current_app_id,
-                    navigation,
-                    ..
-                } = &tray_state.current_view
-                {
-                    if *current_app_id == app_id {
-                        tray_state.current_view = TrayViewState::SingleApp {
-                            app_id,
-                            navigation: navigation.clone(),
-                            submenu_path,
-                        };
-                        tray_state.selected_index = Some(0);
-                    }
-                }
-            }
+            enter_submenu(&mut bar.enhanced_tray, &app_id, submenu_path);
         }
         Message::TrayExitSubmenu => {
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                if let TrayViewState::SingleApp {
-                    app_id,
-                    navigation,
-                    submenu_path,
-                } = &tray_state.current_view
-                {
-                    let mut new_path = submenu_path.clone();
-                    new_path.pop();
-                    tray_state.current_view = TrayViewState::SingleApp {
-                        app_id: app_id.clone(),
-                        navigation: navigation.clone(),
-                        submenu_path: new_path,
-                    };
-                    tray_state.selected_index = Some(0);
-                }
-            }
+            exit_submenu(&mut bar.enhanced_tray);
         }
         Message::TrayTextInputChanged(item_id, value) => {
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                for app in tray_state.tree.apps.values_mut() {
-                    if update_menu_item_value(&mut app.menu_items, &item_id, &value) {
-                        break;
-                    }
-                }
-            }
+            set_text_input_value(&mut bar.enhanced_tray, &item_id, &value);
         }
         Message::TrayTextInputFocusGained(item_id) => {
             info!("Text input focus gained: {}", item_id);
@@ -1002,37 +912,21 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             info!("Text input focus lost: {}", item_id);
         }
         Message::TrayTextInputCleared(item_id) => {
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                for app in tray_state.tree.apps.values_mut() {
-                    if update_menu_item_value(&mut app.menu_items, &item_id, "") {
-                        break;
-                    }
-                }
-            }
+            clear_text_input_value(&mut bar.enhanced_tray, &item_id);
         }
         Message::TrayMenuFetched(app_id, result) => {
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                match result {
-                    Ok(menu_items) if !menu_items.is_empty() => {
-                        tray_state.tree.update_app_menu(&app_id, menu_items);
-                        info!("Menu fetched and populated for app: {}", app_id);
-                    }
-                    Ok(_) => {
-                        info!(
-                            "Fetched empty DBus menu for {}; keeping fallback menu",
-                            app_id
-                        );
-                    }
-                    Err(e) => {
-                        if let Some(app) = tray_state.tree.apps.get(&app_id).cloned() {
-                            let fallback_menu = build_simple_visible_menu(&app.icon);
-                            if !fallback_menu.is_empty() {
-                                tray_state.tree.update_app_menu(&app_id, fallback_menu);
-                            }
-                        }
-                        info!("Failed to fetch menu for {}: {}", app_id, e);
-                    }
+            match apply_menu_fetch_result(&mut bar.enhanced_tray, &app_id, result) {
+                TrayMenuFetchOutcome::Populated { .. } => {
+                    info!("Menu fetched and populated for app: {}", app_id);
                 }
+                TrayMenuFetchOutcome::KeptExistingEmptyFetch => {
+                    info!("Fetched empty DBus menu for {}; keeping fallback menu", app_id);
+                }
+                TrayMenuFetchOutcome::FallbackPopulated { error, .. }
+                | TrayMenuFetchOutcome::FetchFailedNoKnownApp { error } => {
+                    info!("Failed to fetch menu for {}: {}", app_id, error);
+                }
+                TrayMenuFetchOutcome::NoState => {}
             }
         }
         Message::LegacyWidget(widget_message) => match widget_message.clone() {
@@ -1476,8 +1370,12 @@ fn main() -> iced::Result {
 
     info!("unilii startup: begin");
 
-    // Run async initialization in a tokio runtime
-    let runtime = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    // Run async initialization in a tokio runtime.
+    let runtime = tokio::runtime::Runtime::new().map_err(|error| {
+        iced::Error::WindowCreationFailed(
+            format!("failed to create tokio runtime during startup: {error}").into(),
+        )
+    })?;
 
     let (config, loaded_app_config, run_options, modules): (
         unilii_core::config::Config,
@@ -1564,10 +1462,11 @@ fn main() -> iced::Result {
         }
 
         Ok((config, loaded_app_config, run_options, modules))
-    }).map_err(|e: Box<dyn std::error::Error>| {
-        eprintln!("Runtime initialization error: {:?}", e);
-        std::process::exit(1);
-    }).unwrap();
+    }).map_err(|error: Box<dyn std::error::Error>| {
+        iced::Error::WindowCreationFailed(
+            format!("runtime initialization failed: {error}").into(),
+        )
+    })?;
 
     // Get window settings from first panel config
     let first_panel =
@@ -1860,52 +1759,6 @@ mod tests {
         ));
     }
     #[test]
-    fn update_menu_item_value_updates_nested_text_input() {
-        let mut items = vec![enhanced_tray::TrayMenuItem {
-            id: "root".into(),
-            label: "Root".into(),
-            action: enhanced_tray::TrayMenuAction::NavigateToSubmenu {
-                item_id: "root".into(),
-                submenu_path: vec!["root".into()],
-            },
-            icon: None,
-            submenu: vec![enhanced_tray::TrayMenuItem {
-                id: "input".into(),
-                label: "Input".into(),
-                action: enhanced_tray::TrayMenuAction::TextInputChanged {
-                    value: String::new(),
-                },
-                icon: None,
-                submenu: vec![],
-                enabled: true,
-                visible: true,
-                checkable: false,
-                checked: false,
-                shortcut: None,
-                is_separator: false,
-                app_id: "app".into(),
-                full_path: "Root → Input".into(),
-                widget_type: enhanced_tray::TrayWidgetType::TextInput,
-                default_value: Some("old".into()),
-                placeholder: Some("enter".into()),
-            }],
-            enabled: true,
-            visible: true,
-            checkable: false,
-            checked: false,
-            shortcut: None,
-            is_separator: false,
-            app_id: "app".into(),
-            full_path: "Root".into(),
-            widget_type: enhanced_tray::TrayWidgetType::SubmenuButton,
-            default_value: None,
-            placeholder: None,
-        }];
-        assert!(update_menu_item_value(&mut items, "input", "new"));
-        assert_eq!(items[0].submenu[0].default_value.as_deref(), Some("new"));
-    }
-
-    #[test]
     fn network_view_count_matches_controls_plus_visible_networks() {
         let mut state = enhanced_tray::EnhancedTrayState::new();
         state.current_view = enhanced_tray::TrayViewState::Network {
@@ -2187,6 +2040,7 @@ fn resolve_current_single_app_items<'a>(
 }
 
 /// Animate progress value towards target
+#[allow(dead_code)]
 fn animate_progress(current: f32, target: f32, rate: f32) -> f32 {
     if (current - target).abs() < 0.001 {
         target
@@ -2195,22 +2049,6 @@ fn animate_progress(current: f32, target: f32, rate: f32) -> f32 {
     }
 }
 
-fn update_menu_item_value(
-    items: &mut [enhanced_tray::TrayMenuItem],
-    item_id: &str,
-    value: &str,
-) -> bool {
-    for item in items {
-        if item.id == item_id {
-            item.default_value = Some(value.to_string());
-            return true;
-        }
-        if update_menu_item_value(&mut item.submenu, item_id, value) {
-            return true;
-        }
-    }
-    false
-}
 fn key_matches_named(key: &str, name: &str) -> bool {
     key.contains(name)
 }
@@ -2879,85 +2717,6 @@ fn parse_key_dry_run_events(input: &str) -> std::result::Result<Vec<KeyDryRunEve
 
     Ok(events)
 }
-fn build_simple_visible_menu(icon: &enhanced_tray::TrayIcon) -> Vec<enhanced_tray::TrayMenuItem> {
-    let app_id = icon.id.clone();
-    vec![
-        enhanced_tray::TrayMenuItem {
-            id: "activate".into(),
-            label: "Activate".into(),
-            action: enhanced_tray::TrayMenuAction::Activate,
-            icon: None,
-            submenu: vec![],
-            enabled: true,
-            visible: true,
-            checkable: false,
-            checked: false,
-            shortcut: None,
-            is_separator: false,
-            app_id: app_id.clone(),
-            full_path: "Activate".into(),
-            widget_type: enhanced_tray::TrayWidgetType::Button,
-            default_value: None,
-            placeholder: None,
-        },
-        enhanced_tray::TrayMenuItem {
-            id: "secondary".into(),
-            label: "Secondary Action".into(),
-            action: enhanced_tray::TrayMenuAction::SecondaryActivate,
-            icon: None,
-            submenu: vec![],
-            enabled: true,
-            visible: true,
-            checkable: false,
-            checked: false,
-            shortcut: None,
-            is_separator: false,
-            app_id: app_id.clone(),
-            full_path: "Secondary Action".into(),
-            widget_type: enhanced_tray::TrayWidgetType::Button,
-            default_value: None,
-            placeholder: None,
-        },
-        enhanced_tray::TrayMenuItem {
-            id: "more".into(),
-            label: "More".into(),
-            action: enhanced_tray::TrayMenuAction::NavigateToSubmenu {
-                item_id: "more".into(),
-                submenu_path: vec!["more".into()],
-            },
-            icon: None,
-            submenu: vec![enhanced_tray::TrayMenuItem {
-                id: "context".into(),
-                label: "Context Menu".into(),
-                action: enhanced_tray::TrayMenuAction::ContextMenu,
-                icon: None,
-                submenu: vec![],
-                enabled: true,
-                visible: true,
-                checkable: false,
-                checked: false,
-                shortcut: None,
-                is_separator: false,
-                app_id: app_id.clone(),
-                full_path: "More → Context Menu".into(),
-                widget_type: enhanced_tray::TrayWidgetType::Button,
-                default_value: None,
-                placeholder: None,
-            }],
-            enabled: true,
-            visible: true,
-            checkable: false,
-            checked: false,
-            shortcut: None,
-            is_separator: false,
-            app_id: app_id.clone(),
-            full_path: "More".into(),
-            widget_type: enhanced_tray::TrayWidgetType::SubmenuButton,
-            default_value: None,
-            placeholder: None,
-        },
-    ]
-}
 enum ThemeIconAsset {
     Raster(PathBuf),
     Svg(PathBuf),
@@ -3105,6 +2864,7 @@ fn menu_panel_style() -> container::Style {
         ..Default::default()
     }
 }
+#[allow(dead_code)]
 fn tray_window_background_style() -> container::Style {
     container::Style {
         background: Some(iced::Background::Color([0.06, 0.07, 0.09, 0.97].into())),
@@ -3186,8 +2946,6 @@ fn render_enhanced_tray_menu<'a>(
     bar: &'a UniliiBar,
     tray_state: &'a EnhancedTrayState,
 ) -> Element<'a, Message> {
-    use crate::enhanced_tray::rendering::*;
-
     let quickjump_labels = if bar.tray_quickjump_active && quickjump_supported_for_view(tray_state)
     {
         crate::menus::common::generate_quickjump_labels(

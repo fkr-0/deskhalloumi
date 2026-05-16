@@ -1,5 +1,8 @@
 //! Application state and message handling for unilii
 
+#![allow(dead_code)]
+// FIXME(T6): Panel/app abstractions are transitional while main.rs is being split; kept to support the architecture migration plan.
+
 use crate::{
     app_config::AppConfig,
     cli::RunOptions,
@@ -8,7 +11,7 @@ use crate::{
     tray,
     widgets::{Audio, Power, SysMonitor, Video, WidgetMessage, Wifi},
 };
-use iced::{Element, Length, Task, Theme, window};
+use iced::{Task, window};
 use std::collections::{BTreeMap, HashMap};
 use tracing::{error, info};
 use unilii_core::{ModuleUpdate, config::Config, keys::KeybindingResult};
@@ -122,7 +125,7 @@ impl UniliiPanel {
                 }
             }
             Message::WindowKeyboardInput {
-                key,
+                key: _,
                 pressed,
                 is_shift,
             } => {

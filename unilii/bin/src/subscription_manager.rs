@@ -143,7 +143,13 @@ fn store_module_update_safe(module_name: &str, update: ModuleUpdate) -> Result<(
 /// Store a module update in the global registry.
 #[allow(dead_code)]
 pub fn store_module_update(module_name: &str, update: ModuleUpdate) {
-    let registry = MODULE_REGISTRY.lock().unwrap();
+    let registry = match MODULE_REGISTRY.lock() {
+        Ok(registry) => registry,
+        Err(poisoned) => {
+            warn!("Registry lock was poisoned while storing module update, attempting recovery");
+            poisoned.into_inner()
+        }
+    };
 
     match module_name {
         "clock" => {

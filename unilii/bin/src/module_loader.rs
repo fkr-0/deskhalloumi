@@ -167,13 +167,13 @@ impl ModuleManager {
             match self.registry.create(name, config).await {
                 Ok(module) => return Ok(module),
                 Err(e) => {
-                    last_error = Some(e);
                     warn!(
                         "Module '{}' creation attempt {} failed: {}",
                         name,
                         attempt + 1,
-                        last_error.as_ref().unwrap()
+                        e
                     );
+                    last_error = Some(e);
                 }
             }
         }

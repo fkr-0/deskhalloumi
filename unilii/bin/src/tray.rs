@@ -293,7 +293,7 @@ pub fn icon_label_for_name(icon_name: &str) -> String {
     } else if lower.contains("calendar") || lower.contains("alarm") || lower.contains("clock") {
         "🕒".to_string()
     } else {
-        initials_label(icon_name).unwrap_or_else(|| "◉".to_string())
+        "◉".to_string()
     }
 }
 

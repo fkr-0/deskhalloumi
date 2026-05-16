@@ -12,7 +12,9 @@ pub mod state;
 #[cfg(test)]
 mod dbus_tests;
 
-// Re-export core types for convenience
+// Re-export core types for convenience. These are used as the module's compatibility surface
+// by the current binary code, even when Clippy cannot see them as public API inside a bin crate.
+#[allow(unused_imports)]
 pub use core::{
     EnhancedTrayState, TrayEvent, TrayIcon, TrayMenuAction, TrayMenuItem, TrayMenuNavigation,
     TrayMenuTree, TrayViewState, TrayWidgetType,
@@ -22,4 +24,5 @@ pub use core::{
 pub use crate::tray::{is_network_icon, read_network_snapshot, set_wifi_enabled, spawn_command};
 
 // Re-export dbus functions for menu fetching and invocation
+#[allow(unused_imports)]
 pub use dbus::{convert_dbus_to_tray_menu, fetch_dbus_menu, invoke_dbus_menu_action};

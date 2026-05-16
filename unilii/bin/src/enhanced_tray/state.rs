@@ -6,6 +6,9 @@
 //! - Clear state transitions
 //! - Separation of update logic from view
 
+#![allow(dead_code)]
+// FIXME(T6): Enhanced tray state manager is a tested architecture slice pending canonical update-path integration.
+
 use crate::enhanced_tray::{core::*, dbus::*};
 use iced::Task;
 use std::collections::HashMap;

@@ -1,5 +1,8 @@
 //! Widget trait and common types for unilii widgets
 
+#![allow(dead_code)]
+// FIXME(T6): Widget trait/message surface includes planned variants during widget-runtime extraction.
+
 pub mod audio;
 pub mod power;
 pub mod sysmonitor;

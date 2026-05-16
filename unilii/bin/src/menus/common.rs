@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+// FIXME(T6): Shared menu traits/helpers are planned MenuModel transition surface and tested in place.
+
 use super::types::MenuLifecycleState;
 
 pub trait SnapshotProvider {

@@ -23,8 +23,6 @@ pub struct TmuxPane {
 pub struct Tmux {
     panes: Vec<TmuxPane>,
     selected_index: Option<usize>,
-    // Track key press/release for release-to-confirm
-    selection_key_pressed: bool,
     tx: Arc<Mutex<Option<mpsc::UnboundedSender<ModuleUpdate>>>>,
 }
 
@@ -95,7 +93,6 @@ impl Module for Tmux {
         Ok(Self {
             panes,
             selected_index: None,
-            selection_key_pressed: false,
             tx,
         })
     }

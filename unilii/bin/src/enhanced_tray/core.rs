@@ -5,6 +5,9 @@
 //! - Serializable structures for persistence
 //! - Single message enum for all UI events
 
+#![allow(dead_code)]
+// FIXME(T6): Enhanced tray domain model is partially production-wired and heavily unit-tested; unused variants remain planned integration surface.
+
 use crate::menus::common::FilterableMenu;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -755,9 +758,9 @@ mod tests {
             _ => panic!("Expected TextInputChanged"),
         }
 
-        let focus_gained = TrayMenuAction::TextInputFocusGained;
-        let focus_lost = TrayMenuAction::TextInputFocusLost;
-        let cleared = TrayMenuAction::TextInputCleared;
+        let _focus_gained = TrayMenuAction::TextInputFocusGained;
+        let _focus_lost = TrayMenuAction::TextInputFocusLost;
+        let _cleared = TrayMenuAction::TextInputCleared;
 
         // Verify Display impl for text input actions
         assert_eq!(

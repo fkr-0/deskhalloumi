@@ -45,7 +45,10 @@ impl Stream for AsyncMonitorSocket {
         self: Pin<&mut Self>,
         ctx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        self.inner.lock().unwrap().poll_receive(ctx)
+        match self.inner.lock() {
+            Ok(mut inner) => inner.poll_receive(ctx),
+            Err(poisoned) => poisoned.into_inner().poll_receive(ctx),
+        }
     }
 }
 

@@ -253,16 +253,14 @@ fn ics_datetime_to_rfc3339(raw: &str) -> String {
     if value.len() >= 15 && value.chars().nth(8) == Some('T') {
         let date = &value[0..8];
         let time = &value[9..15];
-        let suffix = if value.ends_with('Z') { "Z" } else { "Z" };
         return format!(
-            "{}-{}-{}T{}:{}:{}{}",
+            "{}-{}-{}T{}:{}:{}Z",
             &date[0..4],
             &date[4..6],
             &date[6..8],
             &time[0..2],
             &time[2..4],
-            &time[4..6],
-            suffix
+            &time[4..6]
         );
     }
     value.to_string()
@@ -278,8 +276,8 @@ fn html_unescape(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_calendar_query_report_body, extract_calendar_data_blocks, parse_ics_events,
-        rfc3339_to_caldav_utc,
+        build_calendar_query_report_body, extract_calendar_data_blocks, ics_datetime_to_rfc3339,
+        parse_ics_events, rfc3339_to_caldav_utc,
     };
 
     #[test]
@@ -290,6 +288,19 @@ mod tests {
         assert_eq!(events[0].id, "ev-1");
         assert_eq!(events[0].title, "Standup");
         assert_eq!(events[0].start_rfc3339, "2026-04-16T09:00:00Z");
+    }
+
+    #[test]
+    fn normalizes_ics_datetime_values_to_utc_shape() {
+        assert_eq!(
+            ics_datetime_to_rfc3339("20260416T090000Z"),
+            "2026-04-16T09:00:00Z"
+        );
+        assert_eq!(
+            ics_datetime_to_rfc3339("20260416T090000"),
+            "2026-04-16T09:00:00Z"
+        );
+        assert_eq!(ics_datetime_to_rfc3339("20260416"), "2026-04-16T00:00:00Z");
     }
 
     #[test]

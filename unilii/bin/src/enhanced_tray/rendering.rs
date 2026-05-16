@@ -6,6 +6,9 @@
 //! - Proper use of containers, layout, and styling
 //! - Clear separation of concerns
 
+#![allow(dead_code)]
+// FIXME(T6): Renderer helpers are exercised by tests and will be re-wired during tray consolidation.
+
 use crate::enhanced_tray::{core::*, state::TrayMessage};
 use crate::menus::wifi::{WifiMenuConfig, WifiNetworkRow, build_connect_command, build_view_model};
 use iced::{
@@ -318,11 +321,7 @@ fn render_menu_item<'a>(
         ))
     };
 
-    if item.enabled {
-        styled_btn.into()
-    } else {
-        styled_btn.into()
-    }
+    styled_btn.into()
 }
 
 /// Render aggregated menu items with app context

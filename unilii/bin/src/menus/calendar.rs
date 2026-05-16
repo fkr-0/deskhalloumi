@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+// FIXME(T6): Calendar menu model is a planned menu-system slice pending canonical MenuModel integration.
+
 use super::common::{FilterableMenu, QuickjumpMenu};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

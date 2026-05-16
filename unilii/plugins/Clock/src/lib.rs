@@ -1,8 +1,5 @@
 use chrono::Local;
-use iced::{
-    Alignment, Element, Length,
-    widget::{container, text},
-};
+use iced::{widget::text, Element};
 use unilii_core::{Module, ModuleConfig, ModuleUpdate, Result};
 
 pub struct Clock {

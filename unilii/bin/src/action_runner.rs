@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+// FIXME(T6): Transitional action execution API is covered by unit tests and will be wired through the typed action bus task.
+
 use std::{
     ffi::OsString,
     future::Future,
@@ -73,9 +76,26 @@ impl ActionRunner {
         let action = self.action.clone();
         let timeout = self.timeout;
 
-        tokio::task::spawn_blocking(move || run_command_blocking(menu, action, timeout, command))
-            .await
-            .expect("blocking action runner task panicked")
+        let started_at = Instant::now();
+        match tokio::task::spawn_blocking({
+            let menu = menu.clone();
+            let action = action.clone();
+            move || run_command_blocking(menu, action, timeout, command)
+        })
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => ActionOutcome {
+                menu,
+                action,
+                duration_ms: started_at.elapsed().as_millis(),
+                exit_code: None,
+                error_class: Some("task_join_error".to_string()),
+                stdout: String::new(),
+                stderr: String::new(),
+                result: Err(format!("blocking action runner task failed: {error}")),
+            },
+        }
     }
 }
 

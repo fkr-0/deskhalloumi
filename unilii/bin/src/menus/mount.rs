@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+// FIXME(T6): Mount menu model is planned toolbar/menu integration surface pending canonical MenuModel wiring.
+
 use super::common::MenuController;
 use super::common::{FilterableMenu, QuickjumpMenu};
 use super::types::MenuLifecycleState;

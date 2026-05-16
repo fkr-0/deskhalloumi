@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+// FIXME(T6): WiFi menu model is planned toolbar/menu integration surface pending canonical MenuModel wiring.
+
 use super::common::{FilterableMenu, QuickjumpMenu};
 use crate::tray::NetworkSnapshot;
 
