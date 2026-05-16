@@ -25,8 +25,8 @@ review:
     refactor.'
   - Do not treat compile success as behavioral success; tests and clippy currently disagree.
   last_updated_at: '2026-05-16'
-  last_update_summary: 'T1.1-S6 completed: tray menu fetch update behavior extracted from main.rs with focused tests and green
-    workspace gates.'
+  last_update_summary: 'T1.1-S7 completed: tray icon press pure state setup extracted from main.rs with focused tests and
+    green workspace gates.'
 actual_bugs:
 - id: BUG-001
   title: unknown tray icon names fall back to initials instead of generic icon
@@ -258,7 +258,7 @@ state_of_tests:
       command: cargo test --workspace
       exit_code: 0
       state: passes
-      summary: workspace tests pass; unilii-bin reports 168 passed, 0 failed, 3 ignored in the main bin test suite
+      summary: workspace tests pass; unilii-bin reports 172 passed, 0 failed, 3 ignored in the main bin test suite
     clippy:
       command: CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
       exit_code: 0
@@ -454,6 +454,8 @@ todo:
     population next.
   - TrayMenuFetched menu population/fallback now has an extracted update owner; continue shrinking main.rs by moving tray
     icon press/task setup or startup/bootstrap next.
+  - Tray icon press pure state setup now has an extracted owner; continue shrinking main.rs by moving network/mount/calendar
+    snapshot update branches or startup/bootstrap next.
   test_cases:
   - Unit tests for Message -> update effects.
   - Menu open/close/focus tests independent of renderer.
@@ -507,6 +509,11 @@ todo:
       to main.rs.
     - Next T1.1 candidates are tray icon press task setup, network/mount/calendar snapshot update branches, and startup/bootstrap
       extraction.
+    - TrayIconPressed now delegates pure state setup to update/tray_icon_press.rs; do not re-add state construction blocks
+      directly to main.rs.
+    - Async Task construction for TrayIconPressed remains in main.rs and is the next possible extraction boundary if a task-decision
+      model is introduced.
+    - Next T1.1 candidates are network/mount/calendar snapshot update branches and startup/bootstrap extraction.
     priority: P0
     affected_regions:
     - unilii/bin/src/main.rs
@@ -524,6 +531,8 @@ todo:
     - Tray favorite branch in main.rs is now a thin call; remove it from future main.rs extraction candidate lists.
     - Tray view-state branches in main.rs are now thin calls; remove them from future main.rs extraction candidate lists.
     - Tray menu-fetch branch in main.rs is now a thin call; remove it from future main.rs extraction candidate lists.
+    - Tray icon press state construction blocks in main.rs are now thin helper calls; remove them from future main.rs extraction
+      candidate lists.
     test_cases:
     - cargo test --workspace after each extraction.
     - Snapshot existing update behavior before moving logic.
@@ -544,6 +553,10 @@ todo:
     - update::tray_menu_fetch::tests::populated_fetch_replaces_existing_menu
     - update::tray_menu_fetch::tests::empty_fetch_keeps_existing_menu
     - update::tray_menu_fetch::tests::fetch_error_populates_fallback_for_known_app
+    - update::tray_icon_press::tests::network_icon_opens_loading_network_view
+    - update::tray_icon_press::tests::mount_and_calendar_icons_open_loading_specialized_views
+    - update::tray_icon_press::tests::regular_icon_opens_single_app_with_fallback_menu
+    - update::tray_icon_press::tests::clicking_current_single_app_should_close_existing_view
     definition_of_done:
     - main.rs contains wiring/bootstrap only.
     - No extracted module creates new behavior without tests.
@@ -655,6 +668,23 @@ todo:
       - unilii/bin/src/update/tray_menu_fetch.rs
       - unilii/bin/src/main.rs
       - tasks.yml
+    - id: T1.1-S7
+      title: extract tray icon press state setup helper
+      completed_at: '2026-05-16'
+      description: Moved pure tray icon press state setup and current-view close detection from main.rs into update/tray_icon_press.rs
+        while leaving async Task construction in main.rs.
+      verification:
+      - 'RED: cargo test -p unilii-bin tray_icon_press failed before open_tray_icon_state/should_close_current_tray_view existed.'
+      - 'GREEN: cargo test -p unilii-bin tray_icon_press passed network, mount, calendar, regular, and close-current behavior
+        tests after extraction.'
+      - cargo check --workspace exited 0.
+      - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings exited 0.
+      - cargo test --workspace exited 0; unilii-bin main test suite reported 172 passed, 0 failed, 3 ignored.
+      files_changed:
+      - unilii/bin/src/update/mod.rs
+      - unilii/bin/src/update/tray_icon_press.rs
+      - unilii/bin/src/main.rs
+      - tasks.yml
   - id: T1.2
     title: consolidate tray implementations
     description: Choose one tray state model and remove or archive backup/dead paths.
@@ -675,6 +705,8 @@ todo:
       state paths.
     - Tray menu fetch fallback construction is extracted; tray consolidation can decide whether fallback menus belong in enhanced_tray
       core, update, or a menu-model module.
+    - Tray icon press state construction is extracted; tray consolidation can now focus on classifying icon kinds and async
+      task decisions separately.
     priority: P1
     affected_regions:
     - unilii/bin/src/tray.rs
@@ -770,6 +802,8 @@ todo:
       operation.
     - update/tray_menu_fetch.rs now owns fallback menu construction; shared MenuModel work should replace or formalize this
       fallback menu shape.
+    - update/tray_icon_press.rs establishes another renderer-free transition boundary; shared MenuModel work can reuse this
+      pattern for menu-open decisions.
     priority: P0
     affected_regions:
     - /home/user/code/modrelease-2/docs/menu.md
@@ -1399,6 +1433,20 @@ done:
   files_changed:
   - unilii/bin/src/update/mod.rs
   - unilii/bin/src/update/tray_menu_fetch.rs
+  - unilii/bin/src/main.rs
+  - tasks.yml
+  copypasted: false
+- id: D25
+  title: extracted tray icon press state setup from main
+  description: Moved current-view close detection and network/mount/calendar/regular tray state construction into update/tray_icon_press.rs.
+  evidence:
+  - Focused tray_icon_press RED/GREEN tests passed.
+  - cargo check --workspace passed.
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings passed.
+  - cargo test --workspace passed.
+  files_changed:
+  - unilii/bin/src/update/mod.rs
+  - unilii/bin/src/update/tray_icon_press.rs
   - unilii/bin/src/main.rs
   - tasks.yml
   copypasted: false

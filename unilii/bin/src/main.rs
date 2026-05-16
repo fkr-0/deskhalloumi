@@ -43,8 +43,9 @@ use update::enhanced_tray_events::apply_enhanced_tray_event;
 use update::tray_navigation::{navigate_left, navigate_right};
 use update::tray_view::{enter_submenu, exit_submenu, show_aggregated, show_favorites, update_filter};
 use update::tray_text_input::{clear_text_input_value, set_text_input_value};
-use update::tray_menu_fetch::{apply_menu_fetch_result, build_simple_visible_menu, TrayMenuFetchOutcome};
+use update::tray_menu_fetch::{apply_menu_fetch_result, TrayMenuFetchOutcome};
 use update::tray_favorites::toggle_favorite;
+use update::tray_icon_press::{open_tray_icon_state, open_tray_icon_state_with_menu, should_close_current_tray_view, to_enhanced_tray_icon, TrayIconOpenKind};
 use module_loader::ModuleManager;
 use subscription_manager::{
     get_latest_module_update, has_module_updates, initialize_global_subscriptions,
@@ -246,23 +247,13 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             }
         },
         Message::TrayIconPressed(icon_key) => {
-            if let Some(current) = bar.enhanced_tray.as_mut() {
-                // Check if clicking on the same icon - if so, close the menu
-                match &current.current_view {
-                    TrayViewState::SingleApp { app_id, .. }
-                    | TrayViewState::Network { app_id, .. }
-                    | TrayViewState::Mount { app_id, .. }
-                    | TrayViewState::Calendar { app_id, .. } => {
-                        if let Some(icon) = bar.tray_icons.iter().find(|icon| icon.key == icon_key)
-                        {
-                            if icon.id == *app_id {
-                                current.animation_target = 0.0;
-                                return resize_window_task(bar, false);
-                            }
-                        }
-                    }
-                    _ => {}
+            if let Some(icon) = bar.tray_icons.iter().find(|icon| icon.key == icon_key)
+                && should_close_current_tray_view(bar.enhanced_tray.as_ref(), icon)
+            {
+                if let Some(current) = bar.enhanced_tray.as_mut() {
+                    current.animation_target = 0.0;
                 }
+                return resize_window_task(bar, false);
             }
 
             if let Some(icon) = bar.tray_icons.iter().find(|icon| icon.key == icon_key) {
@@ -270,35 +261,7 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                 bar.tray_quickjump_input.clear();
                 // TEMPORARY: Use enhanced tray system for network icons
                 if !bar.run_options.no_network_menu && tray::is_network_icon(icon) {
-                    // Create enhanced tray state for network
-                    let mut tree = enhanced_tray::TrayMenuTree::new();
-                    let enhanced_icon = enhanced_tray::TrayIcon {
-                        key: icon.key.clone(),
-                        service: icon.service.clone(),
-                        path: icon.path.clone(),
-                        id: icon.id.clone(),
-                        title: icon.title.clone(),
-                        icon_name: icon.icon_name.clone(),
-                        icon_pixmap: icon.icon_pixmap.clone(),
-                        status: icon.status.clone(),
-                        has_menu: icon.has_menu,
-                        menu_object_path: None,
-                    };
-                    tree.update_app(enhanced_icon);
-
-                    bar.enhanced_tray = Some(enhanced_tray::EnhancedTrayState {
-                        tree,
-                        current_view: TrayViewState::Network {
-                            app_id: icon.id.clone(),
-                            data: None,
-                            loading: true,
-                            error: None,
-                        },
-                        animation_progress: 0.0,
-                        animation_target: 1.0,
-                        selected_index: Some(0),
-                        filter_text: String::new(),
-                    });
+                    bar.enhanced_tray = Some(open_tray_icon_state(icon, TrayIconOpenKind::Network));
 
                     let nmcli_path = bar.run_options.nmcli_path.clone();
                     let app_id = icon.id.clone();
@@ -313,34 +276,7 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                 }
 
                 if is_mount_icon(icon) {
-                    let mut tree = enhanced_tray::TrayMenuTree::new();
-                    let enhanced_icon = enhanced_tray::TrayIcon {
-                        key: icon.key.clone(),
-                        service: icon.service.clone(),
-                        path: icon.path.clone(),
-                        id: icon.id.clone(),
-                        title: icon.title.clone(),
-                        icon_name: icon.icon_name.clone(),
-                        icon_pixmap: icon.icon_pixmap.clone(),
-                        status: icon.status.clone(),
-                        has_menu: icon.has_menu,
-                        menu_object_path: None,
-                    };
-                    tree.update_app(enhanced_icon);
-
-                    bar.enhanced_tray = Some(enhanced_tray::EnhancedTrayState {
-                        tree,
-                        current_view: TrayViewState::Mount {
-                            app_id: icon.id.clone(),
-                            data: None,
-                            loading: true,
-                            error: None,
-                        },
-                        animation_progress: 0.0,
-                        animation_target: 1.0,
-                        selected_index: Some(0),
-                        filter_text: String::new(),
-                    });
+                    bar.enhanced_tray = Some(open_tray_icon_state(icon, TrayIconOpenKind::Mount));
 
                     let app_id = icon.id.clone();
                     return Task::batch(vec![
@@ -353,34 +289,7 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                 }
 
                 if is_calendar_icon(icon) {
-                    let mut tree = enhanced_tray::TrayMenuTree::new();
-                    let enhanced_icon = enhanced_tray::TrayIcon {
-                        key: icon.key.clone(),
-                        service: icon.service.clone(),
-                        path: icon.path.clone(),
-                        id: icon.id.clone(),
-                        title: icon.title.clone(),
-                        icon_name: icon.icon_name.clone(),
-                        icon_pixmap: icon.icon_pixmap.clone(),
-                        status: icon.status.clone(),
-                        has_menu: icon.has_menu,
-                        menu_object_path: None,
-                    };
-                    tree.update_app(enhanced_icon);
-
-                    bar.enhanced_tray = Some(enhanced_tray::EnhancedTrayState {
-                        tree,
-                        current_view: TrayViewState::Calendar {
-                            app_id: icon.id.clone(),
-                            data: None,
-                            loading: true,
-                            error: None,
-                        },
-                        animation_progress: 0.0,
-                        animation_target: 1.0,
-                        selected_index: Some(0),
-                        filter_text: String::new(),
-                    });
+                    bar.enhanced_tray = Some(open_tray_icon_state(icon, TrayIconOpenKind::Calendar));
 
                     let app_id = icon.id.clone();
                     let calendar_accounts = bar.config.menus.calendar.accounts.clone();
@@ -395,88 +304,22 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                 }
 
                 if is_custom_menu_icon(icon, &bar.config.menus.custom) {
-                    let mut tree = enhanced_tray::TrayMenuTree::new();
-                    let enhanced_icon = enhanced_tray::TrayIcon {
-                        key: icon.key.clone(),
-                        service: icon.service.clone(),
-                        path: icon.path.clone(),
-                        id: icon.id.clone(),
-                        title: icon.title.clone(),
-                        icon_name: icon.icon_name.clone(),
-                        icon_pixmap: icon.icon_pixmap.clone(),
-                        status: icon.status.clone(),
-                        has_menu: false,
-                        menu_object_path: None,
-                    };
-                    let custom_menu =
-                        build_custom_menu_items(&enhanced_icon, &bar.config.menus.custom);
-                    tree.update_app(enhanced_icon);
-                    tree.update_app_menu(&icon.id, custom_menu);
-
-                    let navigation = tree.get_app_navigation(&icon.id);
-                    bar.enhanced_tray = Some(enhanced_tray::EnhancedTrayState {
-                        tree,
-                        current_view: TrayViewState::SingleApp {
-                            app_id: icon.id.clone(),
-                            navigation,
-                            submenu_path: Vec::new(),
-                        },
-                        animation_progress: 0.0,
-                        animation_target: 1.0,
-                        selected_index: Some(0),
-                        filter_text: String::new(),
-                    });
+                    let enhanced_icon = to_enhanced_tray_icon(icon, false);
+                    let custom_menu = build_custom_menu_items(&enhanced_icon, &bar.config.menus.custom);
+                    bar.enhanced_tray = Some(open_tray_icon_state_with_menu(
+                        icon,
+                        TrayIconOpenKind::Regular,
+                        Some(custom_menu),
+                    ));
                     return resize_window_task(bar, true);
                 }
 
                 // Create enhanced tray for regular icons
-                let mut tree = enhanced_tray::TrayMenuTree::new();
-                let enhanced_icon = enhanced_tray::TrayIcon {
-                    key: icon.key.clone(),
-                    service: icon.service.clone(),
-                    path: icon.path.clone(),
-                    id: icon.id.clone(),
-                    title: icon.title.clone(),
-                    icon_name: icon.icon_name.clone(),
-                    icon_pixmap: icon.icon_pixmap.clone(),
-                    status: icon.status.clone(),
-                    has_menu: icon.has_menu,
-                    menu_object_path: icon.menu_object_path.clone(),
-                };
-                let default_menu = build_simple_visible_menu(&enhanced_icon);
-                tree.update_app(enhanced_icon);
-                if !default_menu.is_empty() {
-                    tree.update_app_menu(&icon.id, default_menu);
-                }
-
-                let navigation = tree.get_app_navigation(&icon.id);
-                bar.enhanced_tray = Some(enhanced_tray::EnhancedTrayState {
-                    tree,
-                    current_view: TrayViewState::SingleApp {
-                        app_id: icon.id.clone(),
-                        navigation,
-                        submenu_path: Vec::new(),
-                    },
-                    animation_progress: 0.0,
-                    animation_target: 1.0,
-                    selected_index: Some(0),
-                    filter_text: String::new(),
-                });
+                bar.enhanced_tray = Some(open_tray_icon_state(icon, TrayIconOpenKind::Regular));
 
                 // Fetch menu if the icon has one
                 if icon.has_menu && icon.menu_object_path.is_some() {
-                    let fetch_icon = enhanced_tray::TrayIcon {
-                        key: icon.key.clone(),
-                        service: icon.service.clone(),
-                        path: icon.path.clone(),
-                        id: icon.id.clone(),
-                        title: icon.title.clone(),
-                        icon_name: icon.icon_name.clone(),
-                        icon_pixmap: icon.icon_pixmap.clone(),
-                        status: icon.status.clone(),
-                        has_menu: icon.has_menu,
-                        menu_object_path: icon.menu_object_path.clone(),
-                    };
+                    let fetch_icon = to_enhanced_tray_icon(icon, icon.has_menu);
                     let app_id = icon.id.clone();
                     let app_id_for_result = app_id.clone();
                     return Task::batch(vec![
