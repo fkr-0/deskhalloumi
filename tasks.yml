@@ -25,8 +25,8 @@ review:
     refactor.'
   - Do not treat compile success as behavioral success; tests and clippy currently disagree.
   last_updated_at: '2026-05-16'
-  last_update_summary: 'T1.1-S7 completed: tray icon press pure state setup extracted from main.rs with focused tests and
-    green workspace gates.'
+  last_update_summary: 'T1.1-S8 completed: tray snapshot update behavior extracted from main.rs with focused tests and green
+    workspace gates.'
 actual_bugs:
 - id: BUG-001
   title: unknown tray icon names fall back to initials instead of generic icon
@@ -258,7 +258,7 @@ state_of_tests:
       command: cargo test --workspace
       exit_code: 0
       state: passes
-      summary: workspace tests pass; unilii-bin reports 172 passed, 0 failed, 3 ignored in the main bin test suite
+      summary: workspace tests pass; unilii-bin reports 178 passed, 0 failed, 3 ignored in the main bin test suite
     clippy:
       command: CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
       exit_code: 0
@@ -456,6 +456,8 @@ todo:
     icon press/task setup or startup/bootstrap next.
   - Tray icon press pure state setup now has an extracted owner; continue shrinking main.rs by moving network/mount/calendar
     snapshot update branches or startup/bootstrap next.
+  - Network/mount/calendar snapshot state updates now have an extracted owner; continue shrinking main.rs by moving startup/bootstrap
+    or spawn-command completion branches next.
   test_cases:
   - Unit tests for Message -> update effects.
   - Menu open/close/focus tests independent of renderer.
@@ -514,6 +516,10 @@ todo:
     - Async Task construction for TrayIconPressed remains in main.rs and is the next possible extraction boundary if a task-decision
       model is introduced.
     - Next T1.1 candidates are network/mount/calendar snapshot update branches and startup/bootstrap extraction.
+    - TrayNetworkSnapshot, TrayMountSnapshot, TrayCalendarSnapshot, refresh-loading, and network-toggle desired-state mutation
+      are now owned by update/tray_snapshots.rs.
+    - Async Task construction for snapshot reads remains in main.rs and should move only after a task-decision model exists.
+    - Next T1.1 candidates are spawn-command completion/loading branches and startup/bootstrap extraction.
     priority: P0
     affected_regions:
     - unilii/bin/src/main.rs
@@ -533,6 +539,8 @@ todo:
     - Tray menu-fetch branch in main.rs is now a thin call; remove it from future main.rs extraction candidate lists.
     - Tray icon press state construction blocks in main.rs are now thin helper calls; remove them from future main.rs extraction
       candidate lists.
+    - Snapshot update branches in main.rs are now thin helper calls; remove them from future main.rs extraction candidate
+      lists.
     test_cases:
     - cargo test --workspace after each extraction.
     - Snapshot existing update behavior before moving logic.
@@ -557,6 +565,12 @@ todo:
     - update::tray_icon_press::tests::mount_and_calendar_icons_open_loading_specialized_views
     - update::tray_icon_press::tests::regular_icon_opens_single_app_with_fallback_menu
     - update::tray_icon_press::tests::clicking_current_single_app_should_close_existing_view
+    - update::tray_snapshots::tests::network_snapshot_success_updates_data_and_clears_error
+    - update::tray_snapshots::tests::mount_snapshot_success_updates_data_and_clears_error
+    - update::tray_snapshots::tests::calendar_snapshot_success_updates_data
+    - update::tray_snapshots::tests::refresh_marks_any_special_view_loading_and_clears_error
+    - update::tray_snapshots::tests::network_toggle_computes_desired_state_from_snapshot_and_marks_loading
+    - update::tray_snapshots::tests::snapshot_error_keeps_data_empty_and_records_error
     definition_of_done:
     - main.rs contains wiring/bootstrap only.
     - No extracted module creates new behavior without tests.
@@ -685,6 +699,22 @@ todo:
       - unilii/bin/src/update/tray_icon_press.rs
       - unilii/bin/src/main.rs
       - tasks.yml
+    - id: T1.1-S8
+      title: extract tray snapshot update helpers
+      completed_at: '2026-05-16'
+      description: Moved network, mount, and calendar snapshot state mutations plus special-view loading/toggle state decisions
+        from main.rs into update/tray_snapshots.rs while leaving async Task construction in main.rs.
+      verification:
+      - 'GREEN: cargo test -p unilii-bin tray_snapshots passed six focused snapshot/loading/toggle tests.'
+      - tasks.yml and roadmap.yml parsed successfully.
+      - cargo check --workspace exited 0.
+      - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings exited 0.
+      - cargo test --workspace exited 0; unilii-bin main test suite reported 178 passed, 0 failed, 3 ignored.
+      files_changed:
+      - unilii/bin/src/update/mod.rs
+      - unilii/bin/src/update/tray_snapshots.rs
+      - unilii/bin/src/main.rs
+      - tasks.yml
   - id: T1.2
     title: consolidate tray implementations
     description: Choose one tray state model and remove or archive backup/dead paths.
@@ -707,6 +737,8 @@ todo:
       core, update, or a menu-model module.
     - Tray icon press state construction is extracted; tray consolidation can now focus on classifying icon kinds and async
       task decisions separately.
+    - Special tray snapshot state is extracted; tray consolidation can now separate data-provider async tasks from pure state
+      updates.
     priority: P1
     affected_regions:
     - unilii/bin/src/tray.rs
@@ -804,6 +836,8 @@ todo:
       fallback menu shape.
     - update/tray_icon_press.rs establishes another renderer-free transition boundary; shared MenuModel work can reuse this
       pattern for menu-open decisions.
+    - update/tray_snapshots.rs demonstrates provider-result-to-menu-state transitions; shared MenuModel should use the same
+      provider/result boundary.
     priority: P0
     affected_regions:
     - /home/user/code/modrelease-2/docs/menu.md
@@ -1447,6 +1481,22 @@ done:
   files_changed:
   - unilii/bin/src/update/mod.rs
   - unilii/bin/src/update/tray_icon_press.rs
+  - unilii/bin/src/main.rs
+  - tasks.yml
+  copypasted: false
+- id: D26
+  title: extracted tray snapshot updaters from main
+  description: Moved network/mount/calendar snapshot result handling, refresh loading, and network-toggle desired-state calculation
+    into update/tray_snapshots.rs.
+  evidence:
+  - Focused tray_snapshots tests passed.
+  - tasks.yml and roadmap.yml parsed.
+  - cargo check --workspace passed.
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings passed.
+  - cargo test --workspace passed.
+  files_changed:
+  - unilii/bin/src/update/mod.rs
+  - unilii/bin/src/update/tray_snapshots.rs
   - unilii/bin/src/main.rs
   - tasks.yml
   copypasted: false

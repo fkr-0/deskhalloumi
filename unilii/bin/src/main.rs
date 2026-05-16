@@ -46,6 +46,7 @@ use update::tray_text_input::{clear_text_input_value, set_text_input_value};
 use update::tray_menu_fetch::{apply_menu_fetch_result, TrayMenuFetchOutcome};
 use update::tray_favorites::toggle_favorite;
 use update::tray_icon_press::{open_tray_icon_state, open_tray_icon_state_with_menu, should_close_current_tray_view, to_enhanced_tray_icon, TrayIconOpenKind};
+use update::tray_snapshots::{apply_calendar_snapshot, apply_mount_snapshot, apply_network_snapshot, mark_special_view_loading, network_toggle_desired_state_and_mark_loading};
 use module_loader::ModuleManager;
 use subscription_manager::{
     get_latest_module_update, has_module_updates, initialize_global_subscriptions,
@@ -427,63 +428,20 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             }
         }
         Message::TrayNetworkSnapshot(icon_key, result) => {
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                if let TrayViewState::Network {
-                    app_id,
-                    data,
-                    loading,
-                    error,
-                    ..
-                } = &mut tray_state.current_view
-                {
-                    if let Some(icon) = bar.tray_icons.iter().find(|icon| icon.id == *app_id) {
-                        if icon.key == icon_key {
-                            *loading = false;
-                            match result {
-                                Ok(snapshot) => {
-                                    *data = Some(snapshot);
-                                    *error = None;
-                                }
-                                Err(message) => {
-                                    *error = Some(message);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            apply_network_snapshot(&mut bar.enhanced_tray, &icon_key, result, |app_id| {
+                bar.tray_icons
+                    .iter()
+                    .find(|icon| icon.id == app_id)
+                    .map(|icon| icon.key.clone())
+            });
         }
         Message::TrayNetworkRefresh(icon_key) => {
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                match &mut tray_state.current_view {
-                    TrayViewState::Network {
-                        app_id,
-                        loading,
-                        error,
-                        ..
-                    }
-                    | TrayViewState::Mount {
-                        app_id,
-                        loading,
-                        error,
-                        ..
-                    }
-                    | TrayViewState::Calendar {
-                        app_id,
-                        loading,
-                        error,
-                        ..
-                    } => {
-                        if let Some(icon) = bar.tray_icons.iter().find(|icon| icon.id == *app_id) {
-                            if icon.key == icon_key {
-                                *loading = true;
-                                *error = None;
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            mark_special_view_loading(&mut bar.enhanced_tray, &icon_key, |app_id| {
+                bar.tray_icons
+                    .iter()
+                    .find(|icon| icon.id == app_id)
+                    .map(|icon| icon.key.clone())
+            });
 
             let nmcli_path = bar.run_options.nmcli_path.clone();
             return Task::perform(
@@ -492,27 +450,16 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             );
         }
         Message::TrayNetworkToggle(icon_key) => {
-            let mut desired_state = true;
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                if let TrayViewState::Network {
-                    app_id,
-                    data,
-                    loading,
-                    error,
-                    ..
-                } = &mut tray_state.current_view
-                {
-                    if let Some(icon) = bar.tray_icons.iter().find(|icon| icon.id == *app_id) {
-                        if icon.key == icon_key {
-                            if let Some(snapshot) = data {
-                                desired_state = !snapshot.enabled;
-                            }
-                            *loading = true;
-                            *error = None;
-                        }
-                    }
-                }
-            }
+            let desired_state = network_toggle_desired_state_and_mark_loading(
+                &mut bar.enhanced_tray,
+                &icon_key,
+                |app_id| {
+                    bar.tray_icons
+                        .iter()
+                        .find(|icon| icon.id == app_id)
+                        .map(|icon| icon.key.clone())
+                },
+            );
 
             let nmcli_path = bar.run_options.nmcli_path.clone();
             return Task::perform(
@@ -521,25 +468,20 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             );
         }
         Message::TrayNetworkToggleDone(icon_key, result) => {
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                if let TrayViewState::Network {
-                    app_id,
-                    loading,
-                    error,
-                    ..
-                } = &mut tray_state.current_view
-                {
-                    if let Some(icon) = bar.tray_icons.iter().find(|icon| icon.id == *app_id) {
-                        if icon.key == icon_key {
-                            *loading = true;
-                            if let Err(message) = result {
-                                *loading = false;
-                                *error = Some(message);
-                                return Task::none();
-                            }
-                        }
-                    }
-                }
+            mark_special_view_loading(&mut bar.enhanced_tray, &icon_key, |app_id| {
+                bar.tray_icons
+                    .iter()
+                    .find(|icon| icon.id == app_id)
+                    .map(|icon| icon.key.clone())
+            });
+            if let Err(message) = result {
+                apply_network_snapshot(&mut bar.enhanced_tray, &icon_key, Err(message), |app_id| {
+                    bar.tray_icons
+                        .iter()
+                        .find(|icon| icon.id == app_id)
+                        .map(|icon| icon.key.clone())
+                });
+                return Task::none();
             }
 
             let nmcli_path = bar.run_options.nmcli_path.clone();
@@ -549,101 +491,43 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             );
         }
         Message::TrayMountSnapshot(icon_key, result) => {
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                if let TrayViewState::Mount {
-                    app_id,
-                    data,
-                    loading,
-                    error,
-                    ..
-                } = &mut tray_state.current_view
-                {
-                    if let Some(icon) = bar.tray_icons.iter().find(|icon| icon.id == *app_id) {
-                        if icon.key == icon_key {
-                            *loading = false;
-                            match result {
-                                Ok(snapshot) => {
-                                    *data = Some(snapshot);
-                                    *error = None;
-                                }
-                                Err(message) => {
-                                    *error = Some(message);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            apply_mount_snapshot(&mut bar.enhanced_tray, &icon_key, result, |app_id| {
+                bar.tray_icons
+                    .iter()
+                    .find(|icon| icon.id == app_id)
+                    .map(|icon| icon.key.clone())
+            });
         }
         Message::TrayMountRefresh(icon_key) => {
             let mount_config = bar.config.menus.mount.clone();
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                if let TrayViewState::Mount {
-                    app_id,
-                    loading,
-                    error,
-                    ..
-                } = &mut tray_state.current_view
-                {
-                    if let Some(icon) = bar.tray_icons.iter().find(|icon| icon.id == *app_id) {
-                        if icon.key == icon_key {
-                            *loading = true;
-                            *error = None;
-                        }
-                    }
-                }
-            }
+            mark_special_view_loading(&mut bar.enhanced_tray, &icon_key, |app_id| {
+                bar.tray_icons
+                    .iter()
+                    .find(|icon| icon.id == app_id)
+                    .map(|icon| icon.key.clone())
+            });
             return Task::perform(read_mount_snapshot(mount_config), move |result| {
                 Message::TrayMountSnapshot(icon_key.clone(), result)
             });
         }
         Message::TrayCalendarSnapshot(icon_key, result) => {
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                if let TrayViewState::Calendar {
-                    app_id,
-                    data,
-                    loading,
-                    error,
-                    ..
-                } = &mut tray_state.current_view
-                {
-                    if let Some(icon) = bar.tray_icons.iter().find(|icon| icon.id == *app_id) {
-                        if icon.key == icon_key {
-                            *loading = false;
-                            match result {
-                                Ok(snapshot) => {
-                                    *data = Some(snapshot);
-                                    *error = None;
-                                }
-                                Err(message) => {
-                                    *error = Some(message);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            apply_calendar_snapshot(&mut bar.enhanced_tray, &icon_key, result, |app_id| {
+                bar.tray_icons
+                    .iter()
+                    .find(|icon| icon.id == app_id)
+                    .map(|icon| icon.key.clone())
+            });
         }
         Message::TrayCalendarRefresh(icon_key) => {
             let calendar_accounts = bar.config.menus.calendar.accounts.clone();
             let agenda_days = bar.config.menus.calendar.agenda_days;
 
-            if let Some(tray_state) = bar.enhanced_tray.as_mut() {
-                if let TrayViewState::Calendar {
-                    app_id,
-                    loading,
-                    error,
-                    ..
-                } = &mut tray_state.current_view
-                {
-                    if let Some(icon) = bar.tray_icons.iter().find(|icon| icon.id == *app_id) {
-                        if icon.key == icon_key {
-                            *loading = true;
-                            *error = None;
-                        }
-                    }
-                }
-            }
+            mark_special_view_loading(&mut bar.enhanced_tray, &icon_key, |app_id| {
+                bar.tray_icons
+                    .iter()
+                    .find(|icon| icon.id == app_id)
+                    .map(|icon| icon.key.clone())
+            });
 
             return Task::perform(
                 read_calendar_snapshot(calendar_accounts, agenda_days),
