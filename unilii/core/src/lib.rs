@@ -1,6 +1,8 @@
 //! Core plugin API for unilii status bar modules.
 
 pub mod config;
+pub mod key_engine;
+pub mod key_import_sxhkd;
 pub mod keys;
 
 use async_trait::async_trait;
@@ -80,19 +82,26 @@ pub trait Module: Send + Sync {
 pub trait ModuleRegistry: Send + Sync {
     /// Register a module creator function with the given name.
     fn register(&mut self, name: &str, creator: ModuleCreator);
-    
+
     /// Create a module instance by name with given config.
     async fn create(&self, name: &str, config: &ModuleConfig) -> Result<Box<dyn Module>>;
-    
+
     /// List all registered module names.
     fn list_modules(&self) -> Vec<String>;
-    
+
     /// Check if a module is registered.
     fn has_module(&self, name: &str) -> bool;
 }
 
 /// Function type for creating module instances.
-pub type ModuleCreator = Arc<dyn Fn(&ModuleConfig) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn Module>>> + Send>> + Send + Sync>;
+pub type ModuleCreator = Arc<
+    dyn Fn(
+            &ModuleConfig,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn Module>>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// Default implementation of ModuleRegistry.
 pub struct DefaultModuleRegistry {
@@ -121,26 +130,32 @@ impl ModuleRegistry for DefaultModuleRegistry {
             creators.insert(name.to_string(), creator);
         }
     }
-    
+
     async fn create(&self, name: &str, config: &ModuleConfig) -> Result<Box<dyn Module>> {
         let creator = {
-            let creators = self.creators.read()
+            let creators = self
+                .creators
+                .read()
                 .map_err(|e| format!("Failed to read registry: {}", e))?;
-            creators.get(name).cloned()
+            creators
+                .get(name)
+                .cloned()
                 .ok_or_else(|| format!("Module '{}' not found in registry", name))?
         };
-        
+
         creator(config).await
     }
-    
+
     fn list_modules(&self) -> Vec<String> {
-        self.creators.read()
+        self.creators
+            .read()
             .map(|creators| creators.keys().cloned().collect())
             .unwrap_or_default()
     }
-    
+
     fn has_module(&self, name: &str) -> bool {
-        self.creators.read()
+        self.creators
+            .read()
             .map(|creators| creators.contains_key(name))
             .unwrap_or(false)
     }

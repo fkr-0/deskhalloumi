@@ -105,9 +105,9 @@ mod tests {
         let _child2 = create_dbus_menu_item(2, "Item 2");
 
         let layout = (
-            0i32, // root id
+            0i32,                             // root id
             std::collections::HashMap::new(), // root properties (empty)
-            vec![], // children would be OwnedValue in real usage
+            vec![],                           // children would be OwnedValue in real usage
         );
 
         let result = parse_dbus_menu_layout(layout);

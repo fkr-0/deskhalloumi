@@ -14,12 +14,12 @@ mod dbus_tests;
 
 // Re-export core types for convenience
 pub use core::{
-    TrayIcon, TrayMenuAction, TrayMenuItem, TrayMenuTree,
-    TrayViewState, TrayMenuNavigation, EnhancedTrayState, TrayEvent
+    EnhancedTrayState, TrayEvent, TrayIcon, TrayMenuAction, TrayMenuItem, TrayMenuNavigation,
+    TrayMenuTree, TrayViewState, TrayWidgetType,
 };
 
 // Re-export from legacy tray for compatibility
-pub use crate::tray::{
-    read_network_snapshot, set_wifi_enabled,
-    spawn_command, is_network_icon
-};
+pub use crate::tray::{is_network_icon, read_network_snapshot, set_wifi_enabled, spawn_command};
+
+// Re-export dbus functions for menu fetching and invocation
+pub use dbus::{convert_dbus_to_tray_menu, fetch_dbus_menu, invoke_dbus_menu_action};

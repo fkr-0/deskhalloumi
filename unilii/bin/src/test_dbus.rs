@@ -1,7 +1,9 @@
 use std::env;
 
-mod tray;
+mod action_runner;
 mod enhanced_tray;
+mod menus;
+mod tray;
 
 use enhanced_tray::dbus::test_real_status_notifier_functionality;
 
@@ -14,7 +16,7 @@ async fn main() {
 
     println!("=== StatusNotifier DBus Integration Test ===");
     println!();
-    
+
     if env::args().any(|arg| arg == "--help" || arg == "-h") {
         println!("This program tests the DBus integration with real StatusNotifier applications.");
         println!("Make sure you have running applications with system tray support:");

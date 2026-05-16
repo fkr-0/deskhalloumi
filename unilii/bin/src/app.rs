@@ -6,11 +6,12 @@ use crate::{
     enhanced_tray,
     module_loader::LoadedModule,
     tray,
+    widgets::{Audio, Power, SysMonitor, Video, WidgetMessage, Wifi},
 };
 use iced::{Element, Length, Task, Theme, window};
 use std::collections::{BTreeMap, HashMap};
 use tracing::{error, info};
-use unilii_core::{config::Config, ModuleUpdate};
+use unilii_core::{ModuleUpdate, config::Config, keys::KeybindingResult};
 
 /// A single panel in a multi-panel setup
 pub struct UniliiPanel {
@@ -21,6 +22,8 @@ pub struct UniliiPanel {
     pub shift_held: bool,
     pub tray_icons: Vec<tray::TrayIcon>,
     pub enhanced_tray: Option<enhanced_tray::EnhancedTrayState>,
+    pub tray_quickjump_active: bool,
+    pub tray_quickjump_input: String,
     pub run_options: RunOptions,
 }
 
@@ -68,6 +71,8 @@ impl UniliiPanelManager {
                         shift_held: false,
                         tray_icons: Vec::new(),
                         enhanced_tray: None,
+                        tray_quickjump_active: false,
+                        tray_quickjump_input: String::new(),
                         run_options: RunOptions::default(),
                     };
                     self.panels.insert(id, panel);
@@ -136,14 +141,33 @@ impl UniliiPanel {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyWidgetKind {
+    Wifi,
+    Audio,
+    Video,
+    Power,
+}
+
 /// Main application state (backwards compatibility)
 pub struct UniliiBar {
+    pub main_window_id: Option<window::Id>,
+    pub tray_window_id: Option<window::Id>,
+    pub legacy_widget_window_id: Option<window::Id>,
+    pub active_legacy_widget: Option<LegacyWidgetKind>,
     pub modules: HashMap<String, LoadedModule>,
     pub config: Config,
     pub app_config: AppConfig,
+    pub sysmonitor: SysMonitor,
+    pub wifi: Wifi,
+    pub audio: Audio,
+    pub video: Video,
+    pub power: Power,
     pub shift_held: bool,
     pub tray_icons: Vec<tray::TrayIcon>,
     pub enhanced_tray: Option<enhanced_tray::EnhancedTrayState>,
+    pub tray_quickjump_active: bool,
+    pub tray_quickjump_input: String,
     pub run_options: RunOptions,
 }
 
@@ -154,7 +178,7 @@ pub enum Message {
     InitializePanels,
     WindowOpened(window::Id),
     WindowClosed(window::Id),
-    
+
     // Panel messages
     ModuleUpdate(String, ModuleUpdate),
     KeyboardInput {
@@ -176,14 +200,36 @@ pub enum Message {
     TrayShowFavorites,
     TrayToggleFavorite(String, String), // (app_id, item_id)
     TrayFilterUpdate(String),
+    TrayEnterSubmenu(String, Vec<String>),
+    TrayExitSubmenu,
+    TrayTextInputChanged(String, String), // item_id, value
+    TrayTextInputFocusGained(String),
+    TrayTextInputFocusLost(String),
+    TrayTextInputCleared(String),
     TrayNetworkSnapshot(String, Result<tray::NetworkSnapshot, String>),
     TrayNetworkRefresh(String),
     TrayNetworkToggle(String),
     TrayNetworkToggleDone(String, Result<(), String>),
+    TrayMountSnapshot(
+        String,
+        Result<crate::menus::mount::MountMenuSnapshot, String>,
+    ),
+    TrayMountRefresh(String),
+    TrayCalendarSnapshot(
+        String,
+        Result<crate::menus::calendar::CalendarMenuSnapshot, String>,
+    ),
+    TrayCalendarRefresh(String),
     TraySpawnCommand(String, String),
     TraySpawnCommandDone(String, Result<(), String>),
     TrayAnimateTick,
+    TrayMenuFetched(String, Result<Vec<enhanced_tray::TrayMenuItem>, String>),
+
+    // Legacy widget events
+    LegacyWidget(WidgetMessage),
+    LegacyWidgetTick(String),
 
     // Legacy tray events (keep for compatibility during transition)
+    KeybindingAction(KeybindingResult),
     TrayEvent(tray::TrayEvent),
 }

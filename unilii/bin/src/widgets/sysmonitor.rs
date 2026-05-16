@@ -31,7 +31,10 @@ impl SysMonitor {
 
         // Memory usage from /proc/meminfo
         if let Ok(output) = Command::new("sh")
-            .args(["-c", "free | grep Mem | awk '{printf \"RAM: %.0f\\n\", ($3/$2) * 100.0}'"])
+            .args([
+                "-c",
+                "free | grep Mem | awk '{printf \"RAM: %.0f\\n\", ($3/$2) * 100.0}'",
+            ])
             .output()
         {
             let mem = String::from_utf8_lossy(&output.stdout).trim().to_string();

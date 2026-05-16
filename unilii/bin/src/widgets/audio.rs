@@ -34,19 +34,13 @@ impl Audio {
 
     pub fn update_devices(&mut self) {
         // Get output devices using pactl
-        if let Ok(output) = Command::new("pactl")
-            .args(["list", "sinks"])
-            .output()
-        {
+        if let Ok(output) = Command::new("pactl").args(["list", "sinks"]).output() {
             let result = String::from_utf8_lossy(&output.stdout);
             self.output_devices = self.parse_audio_devices(&result, "sink");
         }
 
         // Get input devices using pactl
-        if let Ok(output) = Command::new("pactl")
-            .args(["list", "sources"])
-            .output()
-        {
+        if let Ok(output) = Command::new("pactl").args(["list", "sources"]).output() {
             let result = String::from_utf8_lossy(&output.stdout);
             self.input_devices = self.parse_audio_devices(&result, "source");
         }
@@ -70,13 +64,9 @@ impl Audio {
             let line = line.trim();
 
             if line.starts_with("Name:") {
-                current_name = line.strip_prefix("Name: ")
-                    .unwrap_or("")
-                    .to_string();
+                current_name = line.strip_prefix("Name: ").unwrap_or("").to_string();
             } else if line.starts_with("Description:") {
-                current_desc = line.strip_prefix("Description: ")
-                    .unwrap_or("")
-                    .to_string();
+                current_desc = line.strip_prefix("Description: ").unwrap_or("").to_string();
             } else if line.starts_with("State:") && line.contains("RUNNING") {
                 is_active = true;
             } else if line.is_empty() && !current_name.is_empty() {
@@ -170,36 +160,40 @@ impl Audio {
         let mut menu_content = column![].spacing(4).padding(8);
 
         // Output devices
-        menu_content = menu_content.push(
-            text("Output Devices").size(12).color(Color::WHITE)
-        );
+        menu_content = menu_content.push(text("Output Devices").size(12).color(Color::WHITE));
 
         for device in &self.output_devices {
-            let label = format!("{} {}", if device.is_active { "✓" } else { " " }, device.description);
+            let label = format!(
+                "{} {}",
+                if device.is_active { "✓" } else { " " },
+                device.description
+            );
             let msg = WidgetMessage::Audio(format!("set_output:{}", device.name));
             menu_content = menu_content.push(
                 button(text(label).size(11).color(Color::WHITE))
                     .padding([4, 8])
                     .width(Length::Fill)
-                    .on_press(msg)
+                    .on_press(msg),
             );
         }
 
         menu_content = menu_content.push(text("---").size(10).color(Color::WHITE));
 
         // Input devices
-        menu_content = menu_content.push(
-            text("Input Devices").size(12).color(Color::WHITE)
-        );
+        menu_content = menu_content.push(text("Input Devices").size(12).color(Color::WHITE));
 
         for device in &self.input_devices {
-            let label = format!("{} {}", if device.is_active { "✓" } else { " " }, device.description);
+            let label = format!(
+                "{} {}",
+                if device.is_active { "✓" } else { " " },
+                device.description
+            );
             let msg = WidgetMessage::Audio(format!("set_input:{}", device.name));
             menu_content = menu_content.push(
                 button(text(label).size(11).color(Color::WHITE))
                     .padding([4, 8])
                     .width(Length::Fill)
-                    .on_press(msg)
+                    .on_press(msg),
             );
         }
 
@@ -207,13 +201,15 @@ impl Audio {
             .height(Length::Fixed(300.0))
             .width(Length::Fixed(300.0));
 
-        let icon_button = button(text(format!("🔊 {}", self.current_output)).size(12).color(Color::WHITE))
-            .padding([2, 8])
-            .on_press(WidgetMessage::Audio("toggle_menu".to_string()));
+        let icon_button = button(
+            text(format!("🔊 {}", self.current_output))
+                .size(12)
+                .color(Color::WHITE),
+        )
+        .padding([2, 8])
+        .on_press(WidgetMessage::Audio("toggle_menu".to_string()));
 
-        column![icon_button, scroll_menu]
-            .spacing(4)
-            .into()
+        column![icon_button, scroll_menu].spacing(4).into()
     }
 }
 

@@ -23,6 +23,9 @@ use log::warn;
 #[cfg(any(feature = "power", feature = "backlight"))]
 pub mod sysfs;
 
+/// Calendar and CalDAV domain types, provider traits, and cache logic.
+pub mod calendar;
+
 /// Module providing access to running processes via the procfs.
 #[cfg(feature = "process")]
 pub mod process;

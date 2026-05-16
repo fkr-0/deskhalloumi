@@ -1,10 +1,10 @@
 //! Widget trait and common types for unilii widgets
 
-pub mod sysmonitor;
-pub mod wifi;
 pub mod audio;
-pub mod video;
 pub mod power;
+pub mod sysmonitor;
+pub mod video;
+pub mod wifi;
 
 use crate::app::Message;
 use crate::module_loader::LoadedModule;
@@ -41,16 +41,14 @@ pub trait Widget: Debug + Send + Sync {
 }
 
 // Re-export widget implementations
-pub use sysmonitor::SysMonitor;
-pub use wifi::Wifi;
 pub use audio::Audio;
-pub use video::Video;
 pub use power::Power;
+pub use sysmonitor::SysMonitor;
+pub use video::Video;
+pub use wifi::Wifi;
 
 /// Render modules as widgets in status bar
-pub fn render_modules(
-    modules: &HashMap<String, LoadedModule>,
-) -> Vec<Element<'_, Message>> {
+pub fn render_modules(modules: &HashMap<String, LoadedModule>) -> Vec<Element<'_, Message>> {
     let mut module_names: Vec<_> = modules.keys().collect();
     module_names.sort();
 
@@ -74,7 +72,10 @@ pub fn render_modules(
 /// Returns 0-based tray index if key is a digit 1-9 (Character("1") etc.)
 pub fn key_char_digit(key: &str) -> Option<usize> {
     // iced Key::Character(SmolStr) formats as: Character("1")
-    if let Some(inner) = key.strip_prefix("Character(\"").and_then(|s| s.strip_suffix("\")")) {
+    if let Some(inner) = key
+        .strip_prefix("Character(\"")
+        .and_then(|s| s.strip_suffix("\")"))
+    {
         if inner.len() == 1 {
             if let Some(d) = inner.chars().next().and_then(|c| c.to_digit(10)) {
                 if d >= 1 {

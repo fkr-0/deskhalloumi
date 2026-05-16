@@ -31,7 +31,7 @@ pub fn initialize_global_subscriptions(module_subscriptions: Vec<ModuleSubscript
                 poisoned.into_inner()
             }
         };
-        
+
         for sub in &module_subscriptions {
             match sub.name.as_str() {
                 "clock" => {
@@ -41,7 +41,10 @@ pub fn initialize_global_subscriptions(module_subscriptions: Vec<ModuleSubscript
                     registry.battery_updates = Some(Arc::new(Mutex::new(None)));
                 }
                 _ => {
-                    warn!("Subscription for unknown module '{}' will be monitored but not stored", sub.name);
+                    warn!(
+                        "Subscription for unknown module '{}' will be monitored but not stored",
+                        sub.name
+                    );
                 }
             }
         }
@@ -49,33 +52,39 @@ pub fn initialize_global_subscriptions(module_subscriptions: Vec<ModuleSubscript
 
     // Start subscription monitoring with error recovery
     tokio::spawn(async move {
-        info!("Starting global subscription monitor for {} modules", module_subscriptions.len());
-        
+        info!(
+            "Starting global subscription monitor for {} modules",
+            module_subscriptions.len()
+        );
+
         // Create tasks for each module subscription with error isolation
         let mut handles = Vec::new();
-        
+
         for mut sub in module_subscriptions {
             let name = sub.name.clone();
-            
+
             let handle = tokio::spawn(async move {
-                info!("Starting resilient subscription handler for module: {}", name);
-                
+                info!(
+                    "Starting resilient subscription handler for module: {}",
+                    name
+                );
+
                 while let Some(update) = sub.receiver.recv().await {
                     info!("Module '{}' update: {:?}", name, update);
-                    
+
                     // Store the update with error handling
                     if let Err(e) = store_module_update_safe(&name, update) {
                         warn!("Failed to store update for module '{}': {}", name, e);
                     }
                 }
-                
+
                 info!("Module '{}' subscription handler terminated", name);
             });
-            
+
             handles.push(handle);
         }
-        
-        // Monitor subscription tasks 
+
+        // Monitor subscription tasks
         for handle in handles {
             match handle.await {
                 Ok(_) => {
@@ -90,7 +99,7 @@ pub fn initialize_global_subscriptions(module_subscriptions: Vec<ModuleSubscript
                 }
             }
         }
-        
+
         info!("All module subscription handlers have completed");
     });
 }
@@ -98,13 +107,15 @@ pub fn initialize_global_subscriptions(module_subscriptions: Vec<ModuleSubscript
 /// Store a module update in the global registry with error handling.
 #[allow(dead_code)]
 fn store_module_update_safe(module_name: &str, update: ModuleUpdate) -> Result<(), String> {
-    let registry = MODULE_REGISTRY.lock()
+    let registry = MODULE_REGISTRY
+        .lock()
         .map_err(|e| format!("Failed to acquire registry lock: {}", e))?;
-    
+
     match module_name {
         "clock" => {
             if let Some(ref storage) = registry.clock_updates {
-                storage.lock()
+                storage
+                    .lock()
                     .map_err(|e| format!("Failed to acquire clock storage lock: {}", e))?
                     .replace(update);
             } else {
@@ -113,7 +124,8 @@ fn store_module_update_safe(module_name: &str, update: ModuleUpdate) -> Result<(
         }
         "battery" => {
             if let Some(ref storage) = registry.battery_updates {
-                storage.lock()
+                storage
+                    .lock()
                     .map_err(|e| format!("Failed to acquire battery storage lock: {}", e))?
                     .replace(update);
             } else {
@@ -124,7 +136,7 @@ fn store_module_update_safe(module_name: &str, update: ModuleUpdate) -> Result<(
             return Err(format!("Unknown module: {}", module_name));
         }
     }
-    
+
     Ok(())
 }
 
@@ -132,19 +144,21 @@ fn store_module_update_safe(module_name: &str, update: ModuleUpdate) -> Result<(
 #[allow(dead_code)]
 pub fn store_module_update(module_name: &str, update: ModuleUpdate) {
     let registry = MODULE_REGISTRY.lock().unwrap();
-    
+
     match module_name {
         "clock" => {
             if let Some(ref storage) = registry.clock_updates
-                && let Ok(mut stored) = storage.lock() {
-                    *stored = Some(update);
-                }
+                && let Ok(mut stored) = storage.lock()
+            {
+                *stored = Some(update);
+            }
         }
         "battery" => {
             if let Some(ref storage) = registry.battery_updates
-                && let Ok(mut stored) = storage.lock() {
-                    *stored = Some(update);
-                }
+                && let Ok(mut stored) = storage.lock()
+            {
+                *stored = Some(update);
+            }
         }
         _ => {}
     }
@@ -160,20 +174,26 @@ pub fn get_latest_module_update(module_name: &str) -> Option<ModuleUpdate> {
             poisoned.into_inner()
         }
     };
-    
+
     let storage = match module_name {
         "clock" => registry.clock_updates.as_ref()?,
         "battery" => registry.battery_updates.as_ref()?,
         _ => {
-            warn!("Attempted to get update for unknown module: {}", module_name);
+            warn!(
+                "Attempted to get update for unknown module: {}",
+                module_name
+            );
             return None;
         }
     };
-    
+
     match storage.lock() {
         Ok(stored) => stored.clone(),
         Err(poisoned) => {
-            warn!("Module '{}' storage lock was poisoned, attempting recovery", module_name);
+            warn!(
+                "Module '{}' storage lock was poisoned, attempting recovery",
+                module_name
+            );
             poisoned.into_inner().clone()
         }
     }
@@ -186,7 +206,7 @@ pub fn has_module_updates(module_name: &str) -> bool {
         Ok(reg) => reg,
         Err(_) => return false,
     };
-    
+
     match module_name {
         "clock" => registry.clock_updates.is_some(),
         "battery" => registry.battery_updates.is_some(),
@@ -196,6 +216,6 @@ pub fn has_module_updates(module_name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    
+
     include!("subscription_manager_tests.rs");
 }

@@ -1,7 +1,7 @@
 use chrono::Local;
 use iced::{
-    widget::{container, text},
     Alignment, Element, Length,
+    widget::{container, text},
 };
 use unilii_core::{Module, ModuleConfig, ModuleUpdate, Result};
 
@@ -26,7 +26,10 @@ impl Module for Clock {
     }
 
     fn view(&self) -> Element<'_, ModuleUpdate> {
-        text(&self.current_time).size(14).color(iced::Color::WHITE).into()
+        text(&self.current_time)
+            .size(14)
+            .color(iced::Color::WHITE)
+            .into()
     }
 
     fn update(&mut self, message: ModuleUpdate) -> Result<()> {

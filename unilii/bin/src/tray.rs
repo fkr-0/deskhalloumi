@@ -3,15 +3,22 @@
 #![allow(dead_code)]
 
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 use tracing::warn;
-use zbus::{zvariant::OwnedObjectPath, Connection, Proxy};
+use zbus::{Connection, Proxy, zvariant::OwnedObjectPath};
 
 const WATCHER_SERVICE: &str = "org.kde.StatusNotifierWatcher";
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 const WATCHER_INTERFACE: &str = "org.kde.StatusNotifierWatcher";
 const ITEM_INTERFACE: &str = "org.kde.StatusNotifierItem";
 const TRAY_HOST_NAME: &str = "org.freedesktop.StatusNotifierHost-unilii";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrayIconPixmap {
+    pub width: i32,
+    pub height: i32,
+    pub data: Vec<u8>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrayIcon {
@@ -21,8 +28,10 @@ pub struct TrayIcon {
     pub id: String,
     pub title: String,
     pub icon_name: Option<String>,
+    pub icon_pixmap: Option<TrayIconPixmap>,
     pub status: String,
     pub has_menu: bool,
+    pub menu_object_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +65,15 @@ pub struct NetworkSnapshot {
     pub interface: String,
     pub state: String,
     pub enabled: bool,
+    pub connected_ssid: Option<String>,
+    pub known_networks: Vec<KnownNetwork>,
     pub networks: Vec<WifiNetwork>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownNetwork {
+    pub name: String,
+    pub autoconnect: bool,
 }
 
 pub async fn run_tray_watcher(output: UnboundedSender<TrayEvent>, poll_ms: u64) {
@@ -87,9 +104,10 @@ pub async fn run_tray_watcher(output: UnboundedSender<TrayEvent>, poll_ms: u64) 
 
 pub fn is_network_icon(icon: &TrayIcon) -> bool {
     if let Some(icon_name) = &icon.icon_name
-        && is_network_label(icon_name) {
-            return true;
-        }
+        && is_network_label(icon_name)
+    {
+        return true;
+    }
     is_network_label(&icon.id) || is_network_label(&icon.title)
 }
 
@@ -198,6 +216,22 @@ pub async fn read_network_snapshot(
     .await?;
     let (interface, state, enabled) = parse_device_status(&device_status)
         .ok_or_else(|| "no wifi interface found via nmcli".to_string())?;
+    let connected_ssid = if enabled {
+        let active = run_nmcli(&nmcli_path, &["-t", "-f", "ACTIVE,SSID", "device", "wifi"]).await?;
+        parse_connected_ssid(&active)
+    } else {
+        None
+    };
+    let known_networks = if enabled {
+        let known = run_nmcli(
+            &nmcli_path,
+            &["-t", "-f", "NAME,TYPE,AUTOCONNECT", "connection", "show"],
+        )
+        .await?;
+        parse_known_networks(&known)
+    } else {
+        Vec::new()
+    };
 
     let networks = if enabled {
         let mut args = vec!["-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list"];
@@ -214,6 +248,8 @@ pub async fn read_network_snapshot(
         interface,
         state,
         enabled,
+        connected_ssid,
+        known_networks,
         networks,
     })
 }
@@ -225,10 +261,17 @@ pub async fn set_wifi_enabled(nmcli_path: String, enable: bool) -> Result<(), St
 }
 
 pub fn icon_label_for(icon: &TrayIcon) -> String {
-    if let Some(name) = &icon.icon_name {
-        return icon_label_for_name(name);
+    if is_network_label(&icon.id) || is_network_label(&icon.title) {
+        return "📶".to_string();
     }
-    "◉".to_string()
+
+    icon.icon_name
+        .as_deref()
+        .and_then(initials_label)
+        .or_else(|| initials_label(&icon.id))
+        .or_else(|| initials_label(icon.title.as_str()))
+        .or_else(|| icon.service.rsplit('.').next().and_then(initials_label))
+        .unwrap_or_else(|| "◉".to_string())
 }
 
 pub fn icon_label_for_name(icon_name: &str) -> String {
@@ -243,8 +286,44 @@ pub fn icon_label_for_name(icon_name: &str) -> String {
         "🅱".to_string()
     } else if lower.contains("mail") {
         "✉".to_string()
+    } else if lower.contains("sync") || lower.contains("cloud") {
+        "☁".to_string()
+    } else if lower.contains("chat") || lower.contains("message") || lower.contains("im") {
+        "💬".to_string()
+    } else if lower.contains("calendar") || lower.contains("alarm") || lower.contains("clock") {
+        "🕒".to_string()
     } else {
-        "◉".to_string()
+        initials_label(icon_name).unwrap_or_else(|| "◉".to_string())
+    }
+}
+
+fn initials_label(input: &str) -> Option<String> {
+    let compact: String = input
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || ch.is_whitespace())
+        .collect();
+
+    let mut initials = compact
+        .split_whitespace()
+        .filter_map(|part| part.chars().next())
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .take(2)
+        .collect::<String>()
+        .to_uppercase();
+
+    if initials.is_empty() {
+        initials = compact
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .take(2)
+            .collect::<String>()
+            .to_uppercase();
+    }
+
+    if initials.is_empty() {
+        None
+    } else {
+        Some(initials)
     }
 }
 
@@ -315,6 +394,17 @@ async fn read_tray_icons(connection: &Connection) -> Vec<TrayIcon> {
 }
 
 async fn read_tray_icon(connection: &Connection, identifier: &str) -> Option<TrayIcon> {
+    fn pick_best_pixmap(candidates: Vec<(i32, i32, Vec<u8>)>) -> Option<TrayIconPixmap> {
+        candidates
+            .into_iter()
+            .filter(|(w, h, data)| *w > 0 && *h > 0 && !data.is_empty())
+            .max_by_key(|(w, h, _)| (*w as i64) * (*h as i64))
+            .map(|(width, height, data)| TrayIconPixmap {
+                width,
+                height,
+                data,
+            })
+    }
     let (service, path) = parse_identifier(identifier);
     let proxy = Proxy::new(connection, service.as_str(), path.as_str(), ITEM_INTERFACE)
         .await
@@ -328,11 +418,28 @@ async fn read_tray_icon(connection: &Connection, identifier: &str) -> Option<Tra
         .get_property("Title")
         .await
         .unwrap_or_else(|_| id.clone());
-    let icon_name = proxy.get_property("IconName").await.ok();
     let status: String = proxy
         .get_property("Status")
         .await
         .unwrap_or_else(|_| "Active".to_string());
+    let primary_icon_name = proxy.get_property("IconName").await.ok();
+    let attention_icon_name = proxy.get_property("AttentionIconName").await.ok();
+    let primary_icon_pixmap: Vec<(i32, i32, Vec<u8>)> =
+        proxy.get_property("IconPixmap").await.unwrap_or_default();
+    let attention_icon_pixmap: Vec<(i32, i32, Vec<u8>)> = proxy
+        .get_property("AttentionIconPixmap")
+        .await
+        .unwrap_or_default();
+    let icon_name = if status.eq_ignore_ascii_case("NeedsAttention") {
+        attention_icon_name.clone().or(primary_icon_name.clone())
+    } else {
+        primary_icon_name.clone().or(attention_icon_name.clone())
+    };
+    let icon_pixmap = if status.eq_ignore_ascii_case("NeedsAttention") {
+        pick_best_pixmap(attention_icon_pixmap).or_else(|| pick_best_pixmap(primary_icon_pixmap))
+    } else {
+        pick_best_pixmap(primary_icon_pixmap).or_else(|| pick_best_pixmap(attention_icon_pixmap))
+    };
     let menu = proxy.get_property::<OwnedObjectPath>("Menu").await.ok();
 
     Some(TrayIcon {
@@ -342,8 +449,10 @@ async fn read_tray_icon(connection: &Connection, identifier: &str) -> Option<Tra
         id,
         title,
         icon_name,
+        icon_pixmap,
         status,
         has_menu: menu.is_some(),
+        menu_object_path: menu.map(|p| p.as_str().to_string()),
     })
 }
 
@@ -430,11 +539,54 @@ fn parse_wifi_networks(output: &str) -> Vec<WifiNetwork> {
     networks
 }
 
+fn parse_connected_ssid(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let mut parts = line.splitn(2, ':');
+        let active = parts.next().unwrap_or_default().trim();
+        let ssid = parts.next().unwrap_or_default().trim();
+        if active.eq_ignore_ascii_case("yes") && !ssid.is_empty() {
+            return Some(ssid.to_string());
+        }
+    }
+    None
+}
+
+fn parse_known_networks(output: &str) -> Vec<KnownNetwork> {
+    let mut known = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for line in output.lines() {
+        let mut parts = line.splitn(3, ':');
+        let name = parts.next().unwrap_or_default().trim();
+        let kind = parts.next().unwrap_or_default().trim();
+        let autoconnect_raw = parts.next().unwrap_or_default().trim();
+        if name.is_empty() || kind != "802-11-wireless" {
+            continue;
+        }
+        if !seen.insert(name.to_string()) {
+            continue;
+        }
+        let autoconnect = matches!(autoconnect_raw, "yes" | "true" | "on" | "1");
+        known.push(KnownNetwork {
+            name: name.to_string(),
+            autoconnect,
+        });
+    }
+
+    known.sort_by(|left, right| {
+        right
+            .autoconnect
+            .cmp(&left.autoconnect)
+            .then(left.name.cmp(&right.name))
+    });
+    known
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        animate_progress, icon_label_for_name, parse_device_status, parse_wifi_networks,
-        spawn_command, visible_menu_items,
+        animate_progress, icon_label_for_name, parse_connected_ssid, parse_device_status,
+        parse_known_networks, parse_wifi_networks, spawn_command, visible_menu_items,
     };
 
     #[test]
@@ -512,6 +664,13 @@ mod tests {
     }
 
     #[test]
+    fn icon_label_for_cloud_and_chat_icons() {
+        assert_eq!(icon_label_for_name("cloud-syncing"), "☁");
+        assert_eq!(icon_label_for_name("chat-unread"), "💬");
+        assert_eq!(icon_label_for_name("calendar-today"), "🕒");
+    }
+
+    #[test]
     fn visible_menu_items_clamps_to_valid_range() {
         assert_eq!(visible_menu_items(10, -0.5), 0);
         assert_eq!(visible_menu_items(10, 1.5), 10);
@@ -537,7 +696,6 @@ mod tests {
         let input = "TestNet:50:WPA2\nTestNet:50:WPA2\nOtherNet:75:WEP\n";
         let networks = parse_wifi_networks(input);
         assert_eq!(networks.len(), 2);
-        // After sorting by signal descending, OtherNet (75) comes first
         assert_eq!(networks[0].ssid, "OtherNet");
         assert_eq!(networks[1].ssid, "TestNet");
     }
@@ -547,11 +705,10 @@ mod tests {
         let input = "NetA:50:WPA2\nNetB:75:WPA2\nNetC:75:Open\nNetD:25:Open\n";
         let networks = parse_wifi_networks(input);
         assert_eq!(networks.len(), 4);
-        // Sorted by signal descending, then SSID ascending
-        assert_eq!(networks[0].ssid, "NetB"); // 75, B < C
-        assert_eq!(networks[1].ssid, "NetC"); // 75, C > B
-        assert_eq!(networks[2].ssid, "NetA"); // 50
-        assert_eq!(networks[3].ssid, "NetD"); // 25
+        assert_eq!(networks[0].ssid, "NetB");
+        assert_eq!(networks[1].ssid, "NetC");
+        assert_eq!(networks[2].ssid, "NetA");
+        assert_eq!(networks[3].ssid, "NetD");
     }
 
     #[test]
@@ -560,5 +717,20 @@ mod tests {
         let networks = parse_wifi_networks(input);
         assert_eq!(networks.len(), 1);
         assert_eq!(networks[0].ssid, "ValidNet");
+    }
+
+    #[test]
+    fn parse_connected_ssid_extracts_yes_row() {
+        let input = "no:Cafe\nyes:Home\n";
+        assert_eq!(parse_connected_ssid(input).as_deref(), Some("Home"));
+    }
+
+    #[test]
+    fn parse_known_networks_filters_wifi_and_sorts() {
+        let input = "Home:802-11-wireless:yes\nVPN:vpn:yes\nCafe:802-11-wireless:no\n";
+        let known = parse_known_networks(input);
+        assert_eq!(known.len(), 2);
+        assert_eq!(known[0].name, "Home");
+        assert!(known[0].autoconnect);
     }
 }

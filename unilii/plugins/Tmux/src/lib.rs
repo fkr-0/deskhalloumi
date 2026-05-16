@@ -31,7 +31,11 @@ pub struct Tmux {
 impl Tmux {
     async fn list_panes() -> Result<Vec<TmuxPane>> {
         let output = Command::new("tmux")
-            .args(["list-panes", "-F", "#{pane_id} #{session_name} #{window_index} #{pane_index} #{pane_current}"])
+            .args([
+                "list-panes",
+                "-F",
+                "#{pane_id} #{session_name} #{window_index} #{pane_index} #{pane_current}",
+            ])
             .output()
             .map_err(|e| format!("Failed to execute tmux list-panes: {}", e))?;
 
@@ -63,11 +67,21 @@ impl Tmux {
 
     async fn switch_to_pane(pane: &TmuxPane) -> Result<()> {
         Command::new("tmux")
-            .args(["select-pane", "-t", &format!("{}:{}.{}", pane.session_name, pane.window_index, pane.pane_index)])
+            .args([
+                "select-pane",
+                "-t",
+                &format!(
+                    "{}:{}.{}",
+                    pane.session_name, pane.window_index, pane.pane_index
+                ),
+            ])
             .spawn()
             .map_err(|e| format!("Failed to switch to tmux pane: {}", e))?;
 
-        info!("Switched to tmux pane {}:{}:{}", pane.session_name, pane.window_index, pane.pane_index);
+        info!(
+            "Switched to tmux pane {}:{}:{}",
+            pane.session_name, pane.window_index, pane.pane_index
+        );
         Ok(())
     }
 }
@@ -97,7 +111,8 @@ impl Module for Tmux {
                 let mut buttons = Vec::new();
 
                 for (i, p) in self.panes.iter().enumerate() {
-                    let label = format!("{}:{}:{}.{}",
+                    let label = format!(
+                        "{}:{}:{}.{}",
                         if p.current { "●" } else { "○" },
                         p.session_name,
                         p.window_index,
@@ -105,9 +120,9 @@ impl Module for Tmux {
                     );
 
                     let is_selected = i == selected;
-                    let btn = button(text(label).size(12))
-                        .padding([4, 8])
-                        .on_press(ModuleUpdate::Custom(format!(r#"{{"action":"select","index":{}}}"#, i)));
+                    let btn = button(text(label).size(12)).padding([4, 8]).on_press(
+                        ModuleUpdate::Custom(format!(r#"{{"action":"select","index":{}}}"#, i)),
+                    );
 
                     let btn = if is_selected {
                         btn.style(button::primary)
@@ -126,13 +141,9 @@ impl Module for Tmux {
 
                 buttons.push(cancel_btn.into());
 
-                let content = column(buttons)
-                    .spacing(4)
-                    .width(Length::Shrink);
+                let content = column(buttons).spacing(4).width(Length::Shrink);
 
-                container(content)
-                    .padding(8)
-                    .into()
+                container(content).padding(8).into()
             } else {
                 text("No tmux panes").size(12).into()
             }
@@ -141,16 +152,13 @@ impl Module for Tmux {
             let current = self.panes.iter().find(|p| p.current);
             match current {
                 Some(pane) => {
-                    let label = format!("tmux: {}:{}.{}",
-                        pane.session_name,
-                        pane.window_index,
-                        pane.pane_index
+                    let label = format!(
+                        "tmux: {}:{}.{}",
+                        pane.session_name, pane.window_index, pane.pane_index
                     );
-                    container(text(label).size(12))
-                        .padding(4)
-                        .into()
+                    container(text(label).size(12)).padding(4).into()
                 }
-                None => text("tmux: none").size(12).into()
+                None => text("tmux: none").size(12).into(),
             }
         }
     }
@@ -172,7 +180,8 @@ impl Module for Tmux {
                                         }
                                         // Refresh pane list after switch
                                         if let Some(tx) = tx {
-                                            let _ = tx.send(ModuleUpdate::Text("refresh".to_string()));
+                                            let _ =
+                                                tx.send(ModuleUpdate::Text("refresh".to_string()));
                                         }
                                     });
                                 }
@@ -216,15 +225,21 @@ impl Module for Tmux {
                         }
                         "update_panes" => {
                             if let Some(panes) = data.get("panes").and_then(|v| v.as_array()) {
-                                self.panes = panes.iter().filter_map(|p| {
-                                    Some(TmuxPane {
-                                        id: p.get("id")?.as_u64()? as usize,
-                                        session_name: p.get("session_name")?.as_str()?.to_string(),
-                                        window_index: p.get("window_index")?.as_u64()? as usize,
-                                        pane_index: p.get("pane_index")?.as_u64()? as usize,
-                                        current: p.get("current")?.as_bool().unwrap_or(false),
+                                self.panes = panes
+                                    .iter()
+                                    .filter_map(|p| {
+                                        Some(TmuxPane {
+                                            id: p.get("id")?.as_u64()? as usize,
+                                            session_name: p
+                                                .get("session_name")?
+                                                .as_str()?
+                                                .to_string(),
+                                            window_index: p.get("window_index")?.as_u64()? as usize,
+                                            pane_index: p.get("pane_index")?.as_u64()? as usize,
+                                            current: p.get("current")?.as_bool().unwrap_or(false),
+                                        })
                                     })
-                                }).collect();
+                                    .collect();
                             }
                         }
                         _ => {}
@@ -235,9 +250,7 @@ impl Module for Tmux {
         Ok(())
     }
 
-    async fn subscribe(
-        &mut self,
-    ) -> Result<Option<mpsc::UnboundedReceiver<ModuleUpdate>>> {
+    async fn subscribe(&mut self) -> Result<Option<mpsc::UnboundedReceiver<ModuleUpdate>>> {
         let (tx, rx) = mpsc::unbounded_channel();
         *self.tx.lock().unwrap() = Some(tx.clone());
 

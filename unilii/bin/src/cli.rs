@@ -82,8 +82,22 @@ pub enum Commands {
 
     /// Display version information
     Version,
-}
 
+    /// Simulate key events against loaded bindings and print trigger diagnostics
+    KeyDryRun {
+        /// Configuration file to load keybindings from
+        #[arg(short, long, value_name = "FILE")]
+        config: Option<PathBuf>,
+
+        /// Optional sxhkd config file to import instead of TOML keybindings
+        #[arg(long, value_name = "FILE")]
+        sxhkd: Option<PathBuf>,
+
+        /// Comma-separated events, e.g. KEY_LEFTMETA:1,KEY_RETURN:1,KEY_RETURN:0,KEY_LEFTMETA:0
+        #[arg(long, value_name = "EVENTS")]
+        events: String,
+    },
+}
 
 impl Commands {
     /// Check if this is the default run command

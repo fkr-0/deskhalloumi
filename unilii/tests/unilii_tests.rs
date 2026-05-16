@@ -1,4 +1,4 @@
-use unilii::util::{build_strut_partial, DockSide};
+use unilii::util::{DockSide, build_strut_partial};
 
 #[test]
 fn test_build_strut_partial_left() {

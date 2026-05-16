@@ -25,6 +25,7 @@ fn test_default_app_config() {
     // Test application settings
     assert_eq!(config.app.refresh_rate_ms, 50);
     assert!(!config.app.verbose);
+    assert_eq!(config.app.xrandr_presets_yaml, None);
     assert_eq!(config.app.theme.font_size, Some(14));
 }
 
@@ -42,6 +43,7 @@ fn test_save_and_load_config_roundtrip() {
     let mut config = AppConfig::default();
     config.app.verbose = true;
     config.app.refresh_rate_ms = 100;
+    config.app.xrandr_presets_yaml = Some("/tmp/presets.yml".to_string());
     config.modules.get_mut("clock").unwrap().update_interval_ms = Some(2000);
     
     let temp_file = NamedTempFile::new().unwrap();
@@ -55,6 +57,7 @@ fn test_save_and_load_config_roundtrip() {
     
     assert!(loaded_config.app.verbose);
     assert_eq!(loaded_config.app.refresh_rate_ms, 100);
+    assert_eq!(loaded_config.app.xrandr_presets_yaml.as_deref(), Some("/tmp/presets.yml"));
     assert_eq!(loaded_config.modules["clock"].update_interval_ms, Some(2000));
 }
 

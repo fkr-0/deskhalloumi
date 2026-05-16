@@ -1,14 +1,14 @@
 //! DBus integration for tray menu system
-//! 
+//!
 //! Handles StatusNotifierItem and DBusMenu protocols with proper error handling
 
+use crate::enhanced_tray::core::{TrayIcon, TrayMenuAction, TrayMenuItem, TrayWidgetType};
 use std::collections::HashMap;
-use zbus::{zvariant::OwnedValue, Connection, Proxy};
-use zbus::names::{BusName, InterfaceName};
-use zbus::zvariant::{ObjectPath, Dict, Array};
-use tracing::{debug, warn};
 use thiserror::Error;
-use crate::enhanced_tray::core::{TrayIcon, TrayMenuAction, TrayMenuItem};
+use tracing::{debug, warn};
+use zbus::names::{BusName, InterfaceName};
+use zbus::zvariant::ObjectPath;
+use zbus::{Connection, Proxy, zvariant::OwnedValue};
 
 // DBus constants
 const WATCHER_SERVICE: &str = "org.kde.StatusNotifierWatcher";
@@ -63,12 +63,12 @@ impl From<zbus::Error> for DbusError {
 
 /// Enhanced DBus menu fetcher with proper error handling
 pub async fn fetch_dbus_menu(icon: &TrayIcon) -> DbusResult<Vec<DbusMenuItem>> {
-    let menu_path = icon.menu_object_path.as_ref()
-        .ok_or(DbusError::NoMenu)?;
+    let menu_path = icon.menu_object_path.as_ref().ok_or(DbusError::NoMenu)?;
 
     debug!("Fetching DBus menu for {} at {}", icon.service, menu_path);
 
-    let connection = Connection::session().await
+    let connection = Connection::session()
+        .await
         .map_err(|e| DbusError::Connection(e.to_string()))?;
 
     let bus_name = BusName::try_from(icon.service.as_str())
@@ -78,29 +78,34 @@ pub async fn fetch_dbus_menu(icon: &TrayIcon) -> DbusResult<Vec<DbusMenuItem>> {
     let interface = InterfaceName::try_from(MENU_INTERFACE)
         .map_err(|e| DbusError::Proxy(format!("Invalid interface name: {}", e)))?;
 
-    let proxy = Proxy::new(
-        &connection,
-        bus_name,
-        object_path,
-        interface,
-    )
-    .await
-    .map_err(|e| DbusError::Proxy(e.to_string()))?;
+    let proxy = Proxy::new(&connection, bus_name, object_path, interface)
+        .await
+        .map_err(|e| DbusError::Proxy(e.to_string()))?;
 
-    // Get the menu layout - request all properties for comprehensive menu support
     #[allow(clippy::type_complexity)]
-    let layout_result: Result<DbusMenuLayoutResponse, zbus::Error> = 
-        proxy.call("GetLayout", &(
-            0i32,  // parent ID (0 = root)
-            -1i32, // recursion depth (-1 = all levels)
-            vec!["label", "enabled", "visible", "icon-name", "toggle-type", "toggle-state", "shortcut"]
-        ))
+    let layout_result: Result<DbusMenuLayoutResponse, zbus::Error> = proxy
+        .call(
+            "GetLayout",
+            &(
+                0i32,
+                -1i32,
+                vec![
+                    "label",
+                    "enabled",
+                    "visible",
+                    "icon-name",
+                    "toggle-type",
+                    "toggle-state",
+                    "shortcut",
+                    "children-display",
+                    "type",
+                ],
+            ),
+        )
         .await;
 
     match layout_result {
-        Ok((_revision, layout)) => {
-            parse_dbus_menu_layout(layout)
-        }
+        Ok((_revision, layout)) => parse_dbus_menu_layout(layout),
         Err(e) => {
             warn!("Failed to get menu layout for {}: {}", icon.service, e);
             Err(DbusError::MethodCall(format!("{}", e)))
@@ -110,82 +115,59 @@ pub async fn fetch_dbus_menu(icon: &TrayIcon) -> DbusResult<Vec<DbusMenuItem>> {
 
 /// Parse DBus menu layout response into menu items
 pub fn parse_dbus_menu_layout(
-    layout: (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>)
+    layout: (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>),
 ) -> DbusResult<Vec<DbusMenuItem>> {
     let (_id, _properties, children) = layout;
-    
+
     debug!("Parsing menu layout with {} children", children.len());
-    
+
     let mut menu_items = Vec::new();
-    
+
     for child in children {
         match parse_menu_item_recursive(&child) {
             Ok(item) => menu_items.push(item),
             Err(e) => {
                 warn!("Failed to parse menu item: {}", e);
-                continue; // Skip invalid items but continue processing
+                continue;
             }
         }
     }
-    
+
     Ok(menu_items)
 }
 
 /// Recursively parse a menu item from DBus data
 pub fn parse_menu_item_recursive(value: &OwnedValue) -> DbusResult<DbusMenuItem> {
-    // DBus menu items are structured as: (id, properties, children)
-    let item_struct = match value.downcast_ref::<zbus::zvariant::Structure>() {
-        Ok(s) => s,
-        Err(_) => return Err(DbusError::ResponseParsing("Expected structure".to_string())),
-    };
-    
-    if item_struct.fields().len() != 3 {
-        return Err(DbusError::ResponseParsing(
-            "Menu item structure must have 3 fields".to_string()
-        ));
-    }
-    
-    let _id_value = &item_struct.fields()[0];
-    let props_value = &item_struct.fields()[1];
-    let children_value = &item_struct.fields()[2];
-    
-    // Extract ID - simplified for now due to zvariant complexity
-    let id = 1; // TODO: improve ID extraction from zvariant
-    
-    // Extract properties as a Dictionary
-    let _properties_dict = props_value.downcast_ref::<Dict>()
-        .map_err(|_| DbusError::ResponseParsing("Properties must be a dictionary".to_string()))?;
-    
-    // Extract children
-    let children_array = children_value.downcast_ref::<Array>()
-        .map_err(|_| DbusError::ResponseParsing("Invalid children array".to_string()))?;
-    
-    // Parse properties with improved extraction
-    let label = extract_string_property(&_properties_dict, "label")
-        .unwrap_or_else(|| {
-            if id == 0 {
-                "Menu".to_string() // Root item
-            } else {
-                format!("Item {}", id) // Fallback for items without labels
-            }
-        });
-    
-    let enabled = extract_bool_property(&_properties_dict, "enabled").unwrap_or(true);
-    let visible = extract_bool_property(&_properties_dict, "visible").unwrap_or(true);
-    let icon_name = extract_string_property(&_properties_dict, "icon-name");
-    let shortcut = extract_string_property(&_properties_dict, "shortcut");
-    
-    // Handle toggle properties for checkable items
-    let toggle_type = extract_string_property(&_properties_dict, "toggle-type").unwrap_or_default();
-    let toggle_state = extract_int_property(&_properties_dict, "toggle-state").unwrap_or(0);
-    
+    let (id, properties, children_values): (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>) =
+        value
+            .try_clone()
+            .map_err(|e| {
+                DbusError::ResponseParsing(format!("Failed to clone menu item value: {e}"))
+            })?
+            .try_into()
+            .map_err(|e| DbusError::ResponseParsing(format!("Expected menu item tuple: {e}")))?;
+
+    let label = extract_string_property(&properties, "label").unwrap_or_else(|| {
+        if id == 0 {
+            "Menu".to_string()
+        } else {
+            format!("Item {}", id)
+        }
+    });
+
+    let enabled = extract_bool_property(&properties, "enabled").unwrap_or(true);
+    let visible = extract_bool_property(&properties, "visible").unwrap_or(true);
+    let icon_name = extract_string_property(&properties, "icon-name");
+    let shortcut = extract_shortcut_property(&properties, "shortcut")
+        .or_else(|| extract_string_property(&properties, "shortcut"));
+
+    let toggle_type = extract_string_property(&properties, "toggle-type").unwrap_or_default();
+    let toggle_state = extract_int_property(&properties, "toggle-state").unwrap_or(0);
     let checkable = !toggle_type.is_empty();
     let checked = toggle_state == 1;
 
-    // Parse children recursively
     let mut children = Vec::new();
-    for child_value in children_array.iter() {
-        let child_owned: OwnedValue = child_value.try_into().unwrap();
+    for child_owned in children_values {
         match parse_menu_item_recursive(&child_owned) {
             Ok(child_item) => children.push(child_item),
             Err(e) => {
@@ -194,7 +176,7 @@ pub fn parse_menu_item_recursive(value: &OwnedValue) -> DbusResult<DbusMenuItem>
             }
         }
     }
-    
+
     Ok(DbusMenuItem {
         id,
         label,
@@ -208,44 +190,69 @@ pub fn parse_menu_item_recursive(value: &OwnedValue) -> DbusResult<DbusMenuItem>
     })
 }
 
-/// Convert DBus menu structure to tray menu items 
+/// Convert DBus menu structure to tray menu items
 pub fn convert_dbus_to_tray_menu(dbus_menu: Vec<DbusMenuItem>, app_id: &str) -> Vec<TrayMenuItem> {
     dbus_menu
         .into_iter()
+        .filter(|item| item.visible)
         .map(|item| convert_dbus_menu_item(item, app_id, ""))
         .collect()
 }
 
 /// Convert single DBus menu item to tray menu item
-fn convert_dbus_menu_item(dbus_item: DbusMenuItem, app_id: &str, path_prefix: &str) -> TrayMenuItem {
+fn convert_dbus_menu_item(
+    dbus_item: DbusMenuItem,
+    app_id: &str,
+    path_prefix: &str,
+) -> TrayMenuItem {
+    let item_id = format!("{}_{}", app_id, dbus_item.id);
     let full_path = if path_prefix.is_empty() {
         dbus_item.label.clone()
     } else {
         format!("{} → {}", path_prefix, dbus_item.label)
     };
 
-    let submenu = dbus_item
+    let submenu: Vec<TrayMenuItem> = dbus_item
         .children
         .into_iter()
+        .filter(|child| child.visible)
         .map(|child| convert_dbus_menu_item(child, app_id, &full_path))
         .collect();
 
-    // Determine if this is a separator
-    let is_separator = dbus_item.label.trim().is_empty() 
-        || dbus_item.label == "-" 
-        || dbus_item.label == "separator";
+    let is_separator = dbus_item.label.trim().is_empty()
+        || dbus_item.label == "-"
+        || dbus_item.label.eq_ignore_ascii_case("separator");
+
+    let widget_type = if is_separator {
+        TrayWidgetType::Separator
+    } else if !submenu.is_empty() {
+        TrayWidgetType::SubmenuButton
+    } else {
+        TrayWidgetType::Button
+    };
+
+    let action = if is_separator {
+        TrayMenuAction::Activate
+    } else if !submenu.is_empty() {
+        TrayMenuAction::NavigateToSubmenu {
+            item_id: item_id.clone(),
+            submenu_path: vec![item_id.clone()],
+        }
+    } else {
+        TrayMenuAction::DbusMenuAction {
+            item_id: dbus_item.id,
+            event_id: "clicked".to_string(),
+        }
+    };
 
     TrayMenuItem {
-        id: format!("{}_{}", app_id, dbus_item.id),
-        label: if is_separator { "─".to_string() } else { dbus_item.label },
-        action: if is_separator {
-            TrayMenuAction::Activate
+        id: item_id,
+        label: if is_separator {
+            "─".to_string()
         } else {
-            TrayMenuAction::DbusMenuAction {
-                item_id: dbus_item.id,
-                event_id: "clicked".to_string(),
-            }
+            dbus_item.label
         },
+        action,
         icon: dbus_item.icon_name,
         submenu,
         enabled: dbus_item.enabled,
@@ -256,21 +263,27 @@ fn convert_dbus_menu_item(dbus_item: DbusMenuItem, app_id: &str, path_prefix: &s
         is_separator,
         app_id: app_id.to_string(),
         full_path,
+        widget_type,
+        default_value: None,
+        placeholder: None,
     }
 }
 
 /// Invoke a DBus menu action
 pub async fn invoke_dbus_menu_action(
-    icon: &TrayIcon, 
-    item_id: i32, 
-    event_id: &str
+    icon: &TrayIcon,
+    item_id: i32,
+    event_id: &str,
 ) -> DbusResult<()> {
-    let menu_path = icon.menu_object_path.as_ref()
-        .ok_or(DbusError::NoMenu)?;
+    let menu_path = icon.menu_object_path.as_ref().ok_or(DbusError::NoMenu)?;
 
-    debug!("Invoking DBus menu action: {} on item {} for {}", event_id, item_id, icon.service);
+    debug!(
+        "Invoking DBus menu action: {} on item {} for {}",
+        event_id, item_id, icon.service
+    );
 
-    let connection = Connection::session().await
+    let connection = Connection::session()
+        .await
         .map_err(|e| DbusError::Connection(e.to_string()))?;
 
     let bus_name = BusName::try_from(icon.service.as_str())
@@ -280,14 +293,9 @@ pub async fn invoke_dbus_menu_action(
     let interface = InterfaceName::try_from(MENU_INTERFACE)
         .map_err(|e| DbusError::Proxy(format!("Invalid interface name: {}", e)))?;
 
-    let proxy = Proxy::new(
-        &connection,
-        bus_name,
-        object_path,
-        interface,
-    )
-    .await
-    .map_err(|e| DbusError::Proxy(e.to_string()))?;
+    let proxy = Proxy::new(&connection, bus_name, object_path, interface)
+        .await
+        .map_err(|e| DbusError::Proxy(e.to_string()))?;
 
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -295,7 +303,15 @@ pub async fn invoke_dbus_menu_action(
         .as_millis() as u32;
 
     let result: Result<(), zbus::Error> = proxy
-        .call("Event", &(item_id, event_id, zbus::zvariant::Value::from(""), timestamp))
+        .call(
+            "Event",
+            &(
+                item_id,
+                event_id,
+                zbus::zvariant::Value::from(""),
+                timestamp,
+            ),
+        )
         .await;
 
     result.map_err(|e| DbusError::MethodCall(e.to_string()))?;
@@ -308,7 +324,8 @@ pub async fn invoke_dbus_menu_action(
 pub async fn invoke_standard_action(icon: &TrayIcon, action: &str) -> DbusResult<()> {
     debug!("Invoking standard action '{}' for {}", action, icon.service);
 
-    let connection = Connection::session().await
+    let connection = Connection::session()
+        .await
         .map_err(|e| DbusError::Connection(e.to_string()))?;
 
     let bus_name = BusName::try_from(icon.service.as_str())
@@ -318,23 +335,18 @@ pub async fn invoke_standard_action(icon: &TrayIcon, action: &str) -> DbusResult
     let interface = InterfaceName::try_from(ITEM_INTERFACE)
         .map_err(|e| DbusError::Proxy(format!("Invalid interface name: {}", e)))?;
 
-    let proxy = Proxy::new(
-        &connection,
-        bus_name,
-        object_path,
-        interface,
-    )
-    .await
-    .map_err(|e| DbusError::Proxy(e.to_string()))?;
+    let proxy = Proxy::new(&connection, bus_name, object_path, interface)
+        .await
+        .map_err(|e| DbusError::Proxy(e.to_string()))?;
 
-    // Standard StatusNotifierItem actions
     match action {
         "Activate" => {
             let result: Result<(), zbus::Error> = proxy.call("Activate", &(0i32, 0i32)).await;
             result?;
         }
         "SecondaryActivate" => {
-            let result: Result<(), zbus::Error> = proxy.call("SecondaryActivate", &(0i32, 0i32)).await;
+            let result: Result<(), zbus::Error> =
+                proxy.call("SecondaryActivate", &(0i32, 0i32)).await;
             result?;
         }
         "ContextMenu" => {
@@ -342,9 +354,10 @@ pub async fn invoke_standard_action(icon: &TrayIcon, action: &str) -> DbusResult
             result?;
         }
         _ => {
-            return Err(DbusError::InvalidMenuData(
-                format!("Unknown action: {}", action)
-            ));
+            return Err(DbusError::InvalidMenuData(format!(
+                "Unknown action: {}",
+                action
+            )));
         }
     }
 
@@ -356,14 +369,16 @@ pub async fn invoke_standard_action(icon: &TrayIcon, action: &str) -> DbusResult
 pub async fn register_as_host() -> DbusResult<()> {
     debug!("Attempting to register as StatusNotifier host");
 
-    let connection = Connection::session().await
+    let connection = Connection::session()
+        .await
         .map_err(|e| DbusError::Connection(e.to_string()))?;
 
-    // Check if StatusNotifier watcher service is available first
     let watcher_available = check_watcher_available(&connection).await;
     if !watcher_available {
-        warn!("StatusNotifier watcher service not available - continuing without host registration");
-        return Ok(()); // Continue gracefully without watcher
+        warn!(
+            "StatusNotifier watcher service not available - continuing without host registration"
+        );
+        return Ok(());
     }
 
     let bus_name = BusName::try_from(WATCHER_SERVICE)
@@ -373,16 +388,10 @@ pub async fn register_as_host() -> DbusResult<()> {
     let interface = InterfaceName::try_from(WATCHER_INTERFACE)
         .map_err(|e| DbusError::Proxy(format!("Invalid watcher interface: {}", e)))?;
 
-    let proxy = Proxy::new(
-        &connection,
-        bus_name,
-        object_path,
-        interface,
-    )
-    .await
-    .map_err(|e| DbusError::Proxy(e.to_string()))?;
+    let proxy = Proxy::new(&connection, bus_name, object_path, interface)
+        .await
+        .map_err(|e| DbusError::Proxy(e.to_string()))?;
 
-    // Try the correct DBus method name - the spec calls it "RegisterStatusNotifierHost"
     let result: Result<(), zbus::Error> = proxy
         .call("RegisterStatusNotifierHost", &(TRAY_HOST_NAME,))
         .await;
@@ -394,7 +403,6 @@ pub async fn register_as_host() -> DbusResult<()> {
         }
         Err(e) => {
             warn!("Failed to register as host (method may not exist): {}", e);
-            // Don't treat this as a fatal error - many systems work without explicit host registration
             Ok(())
         }
     }
@@ -434,7 +442,8 @@ async fn check_watcher_available(connection: &Connection) -> bool {
 pub async fn get_status_notifier_items() -> DbusResult<Vec<String>> {
     debug!("Getting registered status notifier items");
 
-    let connection = Connection::session().await
+    let connection = Connection::session()
+        .await
         .map_err(|e| DbusError::Connection(e.to_string()))?;
 
     let bus_name = BusName::try_from(WATCHER_SERVICE)
@@ -444,20 +453,13 @@ pub async fn get_status_notifier_items() -> DbusResult<Vec<String>> {
     let interface = InterfaceName::try_from(WATCHER_INTERFACE)
         .map_err(|e| DbusError::Proxy(format!("Invalid interface name: {}", e)))?;
 
-    let proxy = Proxy::new(
-        &connection,
-        bus_name,
-        object_path, 
-        interface,
-    )
-    .await
-    .map_err(|e| DbusError::Proxy(e.to_string()))?;
+    let proxy = Proxy::new(&connection, bus_name, object_path, interface)
+        .await
+        .map_err(|e| DbusError::Proxy(e.to_string()))?;
 
-    // Get both classic items and new StatusNotifier items
-    let items: Result<Vec<String>, zbus::Error> = proxy
-        .get_property("RegisteredStatusNotifierItems")
-        .await;
-    
+    let items: Result<Vec<String>, zbus::Error> =
+        proxy.get_property("RegisteredStatusNotifierItems").await;
+
     match items {
         Ok(item_list) => {
             debug!("Found {} status notifier items", item_list.len());
@@ -474,12 +476,12 @@ pub async fn get_status_notifier_items() -> DbusResult<Vec<String>> {
 pub async fn get_status_notifier_properties(identifier: &str) -> DbusResult<TrayIcon> {
     debug!("Getting properties for status notifier: {}", identifier);
 
-    let connection = Connection::session().await
+    let connection = Connection::session()
+        .await
         .map_err(|e| DbusError::Connection(e.to_string()))?;
 
-    // Parse the identifier to extract service name and object path
     let (service, object_path_str) = parse_status_notifier_identifier(identifier)?;
-    
+
     let bus_name = BusName::try_from(service.clone())
         .map_err(|e| DbusError::Proxy(format!("Invalid service name: {}", e)))?;
     let object_path = ObjectPath::try_from(object_path_str.clone())
@@ -487,21 +489,66 @@ pub async fn get_status_notifier_properties(identifier: &str) -> DbusResult<Tray
     let interface = InterfaceName::try_from(ITEM_INTERFACE)
         .map_err(|e| DbusError::Proxy(format!("Invalid interface name: {}", e)))?;
 
-    let proxy = Proxy::new(
-        &connection,
-        bus_name,
-        object_path,
-        interface,
-    )
-    .await
-    .map_err(|e| DbusError::Proxy(e.to_string()))?;
+    let proxy = Proxy::new(&connection, bus_name, object_path, interface)
+        .await
+        .map_err(|e| DbusError::Proxy(e.to_string()))?;
 
-    // Get essential properties
-    let id: String = proxy.get_property("Id").await.unwrap_or_else(|_| identifier.to_string());
-    let title: String = proxy.get_property("Title").await.unwrap_or_else(|_| "Unknown".to_string());
-    let status: String = proxy.get_property("Status").await.unwrap_or_else(|_| "Active".to_string());
-    let icon_name: Option<String> = proxy.get_property("IconName").await.ok();
+    let id: String = proxy
+        .get_property("Id")
+        .await
+        .unwrap_or_else(|_| identifier.to_string());
+    let title: String = proxy
+        .get_property("Title")
+        .await
+        .unwrap_or_else(|_| "Unknown".to_string());
+    let status: String = proxy
+        .get_property("Status")
+        .await
+        .unwrap_or_else(|_| "Active".to_string());
+    let primary_icon_name: Option<String> = proxy.get_property("IconName").await.ok();
+    let attention_icon_name: Option<String> = proxy.get_property("AttentionIconName").await.ok();
+    let primary_icon_pixmap: Vec<(i32, i32, Vec<u8>)> =
+        proxy.get_property("IconPixmap").await.unwrap_or_default();
+    let attention_icon_pixmap: Vec<(i32, i32, Vec<u8>)> = proxy
+        .get_property("AttentionIconPixmap")
+        .await
+        .unwrap_or_default();
     let menu_path: Option<String> = proxy.get_property("Menu").await.ok();
+
+    let icon_name = if status.eq_ignore_ascii_case("NeedsAttention") {
+        attention_icon_name.clone().or(primary_icon_name.clone())
+    } else {
+        primary_icon_name.clone().or(attention_icon_name.clone())
+    };
+    let icon_pixmap = if status.eq_ignore_ascii_case("NeedsAttention") {
+        attention_icon_pixmap
+            .into_iter()
+            .max_by_key(|(w, h, _)| (*w as i64) * (*h as i64))
+            .or_else(|| {
+                primary_icon_pixmap
+                    .into_iter()
+                    .max_by_key(|(w, h, _)| (*w as i64) * (*h as i64))
+            })
+            .map(|(width, height, data)| crate::tray::TrayIconPixmap {
+                width,
+                height,
+                data,
+            })
+    } else {
+        primary_icon_pixmap
+            .into_iter()
+            .max_by_key(|(w, h, _)| (*w as i64) * (*h as i64))
+            .or_else(|| {
+                attention_icon_pixmap
+                    .into_iter()
+                    .max_by_key(|(w, h, _)| (*w as i64) * (*h as i64))
+            })
+            .map(|(width, height, data)| crate::tray::TrayIconPixmap {
+                width,
+                height,
+                data,
+            })
+    };
 
     Ok(TrayIcon {
         key: identifier.to_string(),
@@ -510,6 +557,7 @@ pub async fn get_status_notifier_properties(identifier: &str) -> DbusResult<Tray
         id,
         title,
         icon_name,
+        icon_pixmap,
         status,
         has_menu: menu_path.is_some(),
         menu_object_path: menu_path,
@@ -517,23 +565,39 @@ pub async fn get_status_notifier_properties(identifier: &str) -> DbusResult<Tray
 }
 
 /// Extract string property from DBus properties dictionary
-fn extract_string_property(_dict: &Dict, _key: &str) -> Option<String> {
-    // DBus property extraction with fallback 
-    // Note: zvariant Dict API complexity - simplified approach for now
-    // TODO: Implement proper property extraction when zvariant API is clearer
-    None
+fn extract_string_property(dict: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
+    let value = dict.get(key)?;
+    value.try_clone().ok()?.try_into().ok()
 }
 
 /// Extract boolean property from DBus properties dictionary  
-fn extract_bool_property(_dict: &Dict, _key: &str) -> Option<bool> {
-    // TODO: Implement proper property extraction
-    None
+fn extract_bool_property(dict: &HashMap<String, OwnedValue>, key: &str) -> Option<bool> {
+    let value = dict.get(key)?;
+    value.try_clone().ok()?.try_into().ok()
 }
 
 /// Extract integer property from DBus properties dictionary
-fn extract_int_property(_dict: &Dict, _key: &str) -> Option<i32> {
-    // TODO: Implement proper property extraction
-    None
+fn extract_int_property(dict: &HashMap<String, OwnedValue>, key: &str) -> Option<i32> {
+    let value = dict.get(key)?;
+    let owned = value.try_clone().ok()?;
+    let as_i32: Result<i32, _> = owned.try_clone().ok()?.try_into();
+    let as_i64: Result<i64, _> = owned.try_clone().ok()?.try_into();
+    let as_u32: Result<u32, _> = owned.try_into();
+    as_i32
+        .ok()
+        .or_else(|| as_i64.ok().map(|v| v as i32))
+        .or_else(|| as_u32.ok().map(|v| v as i32))
+}
+
+fn extract_shortcut_property(dict: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
+    let value = dict.get(key)?;
+    let shortcut: Vec<Vec<String>> = value.try_clone().ok()?.try_into().ok()?;
+    let first = shortcut.first()?;
+    if first.is_empty() {
+        None
+    } else {
+        Some(first.join("+"))
+    }
 }
 
 /// Parse StatusNotifier identifier into service name and object path
@@ -544,7 +608,6 @@ fn parse_status_notifier_identifier(identifier: &str) -> DbusResult<(String, Str
         let object_path = identifier[slash_pos..].to_string();
         Ok((service, object_path))
     } else {
-        // Default to standard StatusNotifier path if no path specified
         Ok((identifier.to_string(), "/StatusNotifierItem".to_string()))
     }
 }
@@ -552,8 +615,7 @@ fn parse_status_notifier_identifier(identifier: &str) -> DbusResult<(String, Str
 /// Test function to demonstrate real StatusNotifier functionality
 pub async fn test_real_status_notifier_functionality() -> DbusResult<()> {
     println!("Testing real StatusNotifier functionality...");
-    
-    // Register as host (non-fatal if it fails)
+
     match register_as_host().await {
         Ok(_) => println!("✅ StatusNotifier host registration completed"),
         Err(e) => {
@@ -561,8 +623,7 @@ pub async fn test_real_status_notifier_functionality() -> DbusResult<()> {
             println!("   Continuing with tray item detection...");
         }
     }
-    
-    // Get available items
+
     match get_status_notifier_items().await {
         Ok(items) => {
             if items.is_empty() {
@@ -574,57 +635,73 @@ pub async fn test_real_status_notifier_functionality() -> DbusResult<()> {
                 println!("   - KDE Connect indicator");
                 println!("   - Any Qt or modern GTK application with system tray support");
                 println!();
-                println!("✅ DBus integration is working - ready for when tray apps are available!");
+                println!(
+                    "✅ DBus integration is working - ready for when tray apps are available!"
+                );
                 return Ok(());
             }
 
             println!("✅ Found {} StatusNotifier items:", items.len());
             println!();
-            
+
             for item in &items {
                 println!("🔍 Analyzing: {}", item);
-                
-                // Try to get properties for this item
+
                 match get_status_notifier_properties(item).await {
                     Ok(icon) => {
                         println!("  📱 App: {} ({})", icon.title, icon.id);
                         println!("  📊 Status: {} | Service: {}", icon.status, icon.service);
-                        
+
                         if icon.has_menu {
                             if let Some(menu_path) = &icon.menu_object_path {
                                 println!("  🍴 Menu available at: {}", menu_path);
-                                
-                                // Try to fetch the menu
+
                                 match fetch_dbus_menu(&icon).await {
                                     Ok(menu_items) => {
-                                        println!("  ✅ Menu parsing successful! {} items found", menu_items.len());
-                                        
-                                        // Convert to tray menu items for integration testing
-                                        let tray_menu = convert_dbus_to_tray_menu(menu_items, &icon.id);
-                                        println!("  📋 Converted to {} tray menu items", tray_menu.len());
-                                        
-                                        // Show a sample of menu items with real labels
+                                        println!(
+                                            "  ✅ Menu parsing successful! {} items found",
+                                            menu_items.len()
+                                        );
+                                        let tray_menu =
+                                            convert_dbus_to_tray_menu(menu_items, &icon.id);
+                                        println!(
+                                            "  📋 Converted to {} tray menu items",
+                                            tray_menu.len()
+                                        );
+
                                         for (i, item) in tray_menu.iter().take(5).enumerate() {
-                                            let status = if !item.enabled { " (disabled)" } else { "" };
-                                            let check = if item.checked { "☑ " } else if item.checkable { "☐ " } else { "  " };
-                                            let children = if !item.submenu.is_empty() { 
-                                                format!(" → {} sub-items", item.submenu.len()) 
-                                            } else { 
-                                                String::new() 
+                                            let status =
+                                                if !item.enabled { " (disabled)" } else { "" };
+                                            let check = if item.checked {
+                                                "☑ "
+                                            } else if item.checkable {
+                                                "☐ "
+                                            } else {
+                                                "  "
                                             };
-                                            
-                                            println!("      {}{}{}{}{}", 
-                                                i + 1, 
+                                            let children = if !item.submenu.is_empty() {
+                                                format!(" → {} sub-items", item.submenu.len())
+                                            } else {
+                                                String::new()
+                                            };
+
+                                            println!(
+                                                "      {}{}{}{}{}",
+                                                i + 1,
                                                 if i < 9 { ". " } else { "." },
-                                                check, 
+                                                check,
                                                 item.label,
-                                                status);
+                                                status
+                                            );
                                             if !children.is_empty() {
                                                 println!("         {}", children);
                                             }
                                         }
                                         if tray_menu.len() > 5 {
-                                            println!("      ... and {} more items", tray_menu.len() - 5);
+                                            println!(
+                                                "      ... and {} more items",
+                                                tray_menu.len() - 5
+                                            );
                                         }
                                     }
                                     Err(e) => {
@@ -639,12 +716,14 @@ pub async fn test_real_status_notifier_functionality() -> DbusResult<()> {
                     }
                     Err(e) => {
                         println!("  ❌ Property access failed: {}", e);
-                        println!("      (Application may not fully support StatusNotifier protocol)");
+                        println!(
+                            "      (Application may not fully support StatusNotifier protocol)"
+                        );
                     }
                 }
                 println!();
             }
-            
+
             println!("🎉 DBus integration test completed successfully!");
             println!("   Enhanced tray system can parse StatusNotifier applications and menus.");
         }
@@ -658,15 +737,13 @@ pub async fn test_real_status_notifier_functionality() -> DbusResult<()> {
             println!("✅ DBus integration code is ready - start some tray applications to test!");
         }
     }
-    
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
-    
 
     fn create_test_icon() -> TrayIcon {
         TrayIcon {
@@ -676,6 +753,7 @@ mod tests {
             id: "test-app".to_string(),
             title: "Test App".to_string(),
             icon_name: Some("test-icon".to_string()),
+            icon_pixmap: None,
             status: "Active".to_string(),
             has_menu: true,
             menu_object_path: Some("/MenuBar".to_string()),
@@ -706,50 +784,49 @@ mod tests {
 
     #[test]
     fn test_dbus_to_tray_conversion() {
-        let dbus_items = vec![
-            DbusMenuItem {
-                id: 1,
-                label: "File".to_string(),
+        let dbus_items = vec![DbusMenuItem {
+            id: 1,
+            label: "File".to_string(),
+            enabled: true,
+            visible: true,
+            icon_name: None,
+            checkable: false,
+            checked: false,
+            shortcut: None,
+            children: vec![DbusMenuItem {
+                id: 2,
+                label: "Open".to_string(),
                 enabled: true,
                 visible: true,
-                icon_name: None,
+                icon_name: Some("document-open".to_string()),
                 checkable: false,
                 checked: false,
-                shortcut: None,
-                children: vec![
-                    DbusMenuItem {
-                        id: 2,
-                        label: "Open".to_string(),
-                        enabled: true,
-                        visible: true,
-                        icon_name: Some("document-open".to_string()),
-                        checkable: false,
-                        checked: false,
-                        shortcut: Some("Ctrl+O".to_string()),
-                        children: vec![],
-                    }
-                ],
-            }
-        ];
+                shortcut: Some("Ctrl+O".to_string()),
+                children: vec![],
+            }],
+        }];
 
         let tray_items = convert_dbus_to_tray_menu(dbus_items, "test-app");
-        
+
         assert_eq!(tray_items.len(), 1);
         assert_eq!(tray_items[0].label, "File");
         assert_eq!(tray_items[0].app_id, "test-app");
         assert_eq!(tray_items[0].submenu.len(), 1);
         assert_eq!(tray_items[0].submenu[0].label, "Open");
         assert_eq!(tray_items[0].submenu[0].full_path, "File → Open");
+        assert!(matches!(
+            tray_items[0].widget_type,
+            TrayWidgetType::SubmenuButton
+        ));
+        assert!(matches!(
+            tray_items[0].action,
+            TrayMenuAction::NavigateToSubmenu { .. }
+        ));
     }
 
     #[test]
     fn test_separator_detection() {
-        let separator_variants = vec![
-            "",
-            "-",
-            "separator",
-            "  ",
-        ];
+        let separator_variants = vec!["", "-", "separator", "  "];
 
         for label in separator_variants {
             let dbus_item = DbusMenuItem {
@@ -765,8 +842,13 @@ mod tests {
             };
 
             let tray_item = convert_dbus_menu_item(dbus_item, "test", "");
-            assert!(tray_item.is_separator, "Label '{}' should be detected as separator", label);
+            assert!(
+                tray_item.is_separator,
+                "Label '{}' should be detected as separator",
+                label
+            );
             assert_eq!(tray_item.label, "─");
+            assert!(matches!(tray_item.widget_type, TrayWidgetType::Separator));
         }
     }
 
@@ -774,7 +856,7 @@ mod tests {
     fn test_checkable_item_conversion() {
         let dbus_item = DbusMenuItem {
             id: 1,
-            label: "Show Toolbar".to_string(),  
+            label: "Show Toolbar".to_string(),
             enabled: true,
             visible: true,
             icon_name: None,
@@ -800,14 +882,12 @@ mod tests {
         assert!(matches!(converted, DbusError::MethodCall(_)));
     }
 
-    // Comprehensive tests for property parsing functionality
-
     #[test]
     fn test_simple_dbus_menu_item_creation() {
         let dbus_item = DbusMenuItem {
             id: 1,
             label: "Test Item".to_string(),
-            enabled: true, 
+            enabled: true,
             visible: true,
             icon_name: Some("test-icon".to_string()),
             checkable: false,
@@ -882,31 +962,27 @@ mod tests {
 
     #[test]
     fn test_dbus_menu_conversion_with_children() {
-        let dbus_menu = vec![
-            DbusMenuItem {
-                id: 1,
-                label: "File".to_string(),
+        let dbus_menu = vec![DbusMenuItem {
+            id: 1,
+            label: "File".to_string(),
+            enabled: true,
+            visible: true,
+            icon_name: None,
+            checkable: false,
+            checked: false,
+            shortcut: None,
+            children: vec![DbusMenuItem {
+                id: 11,
+                label: "New".to_string(),
                 enabled: true,
                 visible: true,
-                icon_name: None,
+                icon_name: Some("document-new".to_string()),
                 checkable: false,
                 checked: false,
-                shortcut: None,
-                children: vec![
-                    DbusMenuItem {
-                        id: 11,
-                        label: "New".to_string(),
-                        enabled: true,
-                        visible: true,
-                        icon_name: Some("document-new".to_string()),
-                        checkable: false,
-                        checked: false,
-                        shortcut: Some("Ctrl+N".to_string()),
-                        children: vec![],
-                    }
-                ],
-            }
-        ];
+                shortcut: Some("Ctrl+N".to_string()),
+                children: vec![],
+            }],
+        }];
 
         let tray_menu = convert_dbus_to_tray_menu(dbus_menu, "test-app");
 
@@ -916,7 +992,10 @@ mod tests {
         assert_eq!(tray_menu[0].submenu.len(), 1);
         assert_eq!(tray_menu[0].submenu[0].label, "New");
         assert_eq!(tray_menu[0].submenu[0].shortcut, Some("Ctrl+N".to_string()));
-        assert_eq!(tray_menu[0].submenu[0].icon, Some("document-new".to_string()));
+        assert_eq!(
+            tray_menu[0].submenu[0].icon,
+            Some("document-new".to_string())
+        );
     }
 
     #[test]
@@ -931,9 +1010,28 @@ mod tests {
         ];
 
         for error in errors {
-            // Test that error display and debug work without panicking
             let _display = format!("{}", error);
             let _debug = format!("{:?}", error);
         }
+    }
+
+    #[test]
+    fn test_parse_status_notifier_identifier() {
+        assert_eq!(
+            parse_status_notifier_identifier(":1.23/org/ayatana/NotificationItem/app")
+                .expect("identifier should parse"),
+            (
+                ":1.23".to_string(),
+                "/org/ayatana/NotificationItem/app".to_string()
+            )
+        );
+        assert_eq!(
+            parse_status_notifier_identifier("com.example.Service")
+                .expect("identifier should parse"),
+            (
+                "com.example.Service".to_string(),
+                "/StatusNotifierItem".to_string()
+            )
+        );
     }
 }

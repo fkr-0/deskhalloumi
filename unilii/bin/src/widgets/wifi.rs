@@ -26,6 +26,13 @@ impl Wifi {
     }
 
     pub fn update_status(&mut self) {
+        if !self.wifi_enabled {
+            self.connected = false;
+            self.ssid = "WiFi Disabled".to_string();
+            self.signal = 0;
+            return;
+        }
+
         // Check if WiFi is enabled
         if let Ok(output) = Command::new("nmcli")
             .args(["-t", "-f", "wifi", "radio"])
@@ -163,12 +170,14 @@ impl Wifi {
         let icon_str = if self.connected { "📶" } else { "📡" };
         let label = format!("{} {}%", icon_str, self.signal);
 
-        let mut menu_content = column![]
-            .spacing(4)
-            .padding(8);
+        let mut menu_content = column![].spacing(4).padding(8);
 
         // WiFi enable/disable toggle
-        let wifi_status = if self.wifi_enabled { "Disable WiFi" } else { "Enable WiFi" };
+        let wifi_status = if self.wifi_enabled {
+            "Disable WiFi"
+        } else {
+            "Enable WiFi"
+        };
         let toggle_button = button(text(wifi_status).size(11).color(Color::WHITE))
             .padding([4, 8])
             .width(Length::Fill)
@@ -178,16 +187,20 @@ impl Wifi {
         menu_content = menu_content.push(text("---").size(10).color(Color::WHITE));
 
         if self.wifi_enabled {
-            menu_content = menu_content.push(text("Available Networks").size(12).color(Color::WHITE));
+            menu_content =
+                menu_content.push(text("Available Networks").size(12).color(Color::WHITE));
 
-            let connect_messages: Vec<WidgetMessage> = networks.iter().map(|network| {
-                WidgetMessage::Wifi(format!("connect:{}", network.ssid))
-            }).collect();
+            let connect_messages: Vec<WidgetMessage> = networks
+                .iter()
+                .map(|network| WidgetMessage::Wifi(format!("connect:{}", network.ssid)))
+                .collect();
 
             for (network, msg) in networks.iter().zip(connect_messages.iter()) {
                 let net_row = row![
                     text(network.ssid.clone()).size(11).color(Color::WHITE),
-                    text(format!("{}%", network.signal)).size(10).color(Color::WHITE),
+                    text(format!("{}%", network.signal))
+                        .size(10)
+                        .color(Color::WHITE),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center);
@@ -196,19 +209,19 @@ impl Wifi {
                     button(net_row)
                         .padding([4, 8])
                         .width(Length::Fill)
-                        .on_press(msg.clone())
+                        .on_press(msg.clone()),
                 );
             }
 
             if is_empty {
                 menu_content = menu_content.push(
-                    text("Scanning for networks...").size(11).color(Color::WHITE)
+                    text("Scanning for networks...")
+                        .size(11)
+                        .color(Color::WHITE),
                 );
             }
         } else {
-            menu_content = menu_content.push(
-                text("WiFi is disabled").size(11).color(Color::WHITE)
-            );
+            menu_content = menu_content.push(text("WiFi is disabled").size(11).color(Color::WHITE));
         }
 
         let scroll_menu = scrollable(menu_content)
@@ -219,9 +232,7 @@ impl Wifi {
             .padding([2, 8])
             .on_press(WidgetMessage::Wifi("toggle_menu".to_string()));
 
-        column![icon_button, scroll_menu]
-            .spacing(4)
-            .into()
+        column![icon_button, scroll_menu].spacing(4).into()
     }
 }
 
@@ -385,4 +396,3 @@ mod tests {
         assert_ne!(wifi.wifi_enabled, original_enabled);
     }
 }
-

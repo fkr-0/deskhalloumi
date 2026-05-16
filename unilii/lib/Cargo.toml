@@ -21,6 +21,7 @@ futures-util = "0.3"
 # Error handling and logging
 anyhow = "1.0"
 log = "0.4"
+chrono.workspace = true
 
 # Optional crates used by specific modules
 udev = { version = "0.9.3", features = ["send"], optional = true }

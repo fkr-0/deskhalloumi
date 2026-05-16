@@ -1,10 +1,13 @@
 //! Global keybinding daemon and parsing utilities.
 
 use crate::Result;
+use crate::key_engine::{EngineBinding, KeyEngine, KeyEngineTraceReason, KeyTrigger};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use tracing::{error, info, warn};
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::Instant;
+use tracing::{debug, error, info, warn};
 
 /// Command type for keybinding execution.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
@@ -15,7 +18,7 @@ pub enum CommandType {
     Shell,
     /// Internal bar action (e.g., toggle-module, reload-config)
     Bar,
-    /// Tray menu action (e.g., open-menu, close-menu)
+    /// Internal tray menu action (e.g., open-menu, close-menu)
     Tray,
     /// Widget/action (future)
     Widget,
@@ -33,6 +36,21 @@ pub struct KeyBinding {
     /// Trigger on key release instead of press (for release-to-confirm)
     #[serde(default)]
     pub release: bool,
+    /// Trigger mode for key execution semantics.
+    #[serde(default)]
+    pub trigger: KeyTrigger,
+    /// Optional hold threshold (milliseconds) for mod-release semantics.
+    #[serde(default)]
+    pub hold_ms: Option<u64>,
+    /// Optional cooldown between successful triggers.
+    #[serde(default)]
+    pub cooldown_ms: Option<u64>,
+    /// Conflict resolution priority (higher wins).
+    #[serde(default)]
+    pub priority: u16,
+    /// If true, suppress lower-priority matches in the same event.
+    #[serde(default)]
+    pub consume: bool,
 }
 
 fn default_command_type() -> CommandType {
@@ -42,9 +60,32 @@ fn default_command_type() -> CommandType {
 #[derive(Debug, Clone)]
 struct ParsedBinding {
     binding: KeyBinding,
-    /// Every group represents "one required key", where each entry in the
-    /// group is accepted as an alternative (e.g. left or right modifier).
-    required_groups: Vec<Vec<String>>,
+    engine_binding: EngineBinding,
+}
+
+/// Structured tray actions that the bar can interpret directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrayDaemonAction {
+    OpenMenu,
+    CloseMenu,
+    ToggleMenu,
+    ShowAggregated,
+    ShowFavorites,
+    FocusNext,
+    FocusPrevious,
+    ActivateSelected,
+    OpenIndex(usize),
+    RefreshStatus,
+    Raw(String),
+}
+
+/// Structured bar actions that the bar can interpret directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BarDaemonAction {
+    ReloadConfig,
+    ToggleModule(String),
+    FocusModule(String),
+    Raw(String),
 }
 
 /// Result of executing a keybinding.
@@ -62,23 +103,47 @@ pub enum KeybindingResult {
     Unknown,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyDryRunEvent {
+    pub key: String,
+    pub value: i32,
+    pub at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyDryRunStep {
+    pub event: KeyDryRunEvent,
+    pub triggered_binding_names: Vec<String>,
+    pub trace_lines: Vec<String>,
+}
+
 /// Keybinding manager using unilii-lib evdev keyboard streams.
 pub struct KeybindingDaemon {
     bindings: Vec<ParsedBinding>,
+    engine: Mutex<KeyEngine>,
     action_sender: Option<tokio::sync::mpsc::UnboundedSender<KeybindingResult>>,
 }
 
 impl KeybindingDaemon {
     pub fn new(bindings: Vec<KeyBinding>) -> Self {
+        let parsed_bindings = Self::parse_bindings(bindings);
+        let engine_bindings = parsed_bindings
+            .iter()
+            .map(|parsed| parsed.engine_binding.clone())
+            .collect();
         Self {
-            bindings: Self::parse_bindings(bindings),
+            bindings: parsed_bindings,
+            engine: Mutex::new(KeyEngine::new(engine_bindings)),
             action_sender: None,
         }
     }
 
     /// Set a sender for internal actions (bar/tray actions).
     /// This allows the daemon to communicate internal actions back to the application.
-    pub fn set_action_sender(&mut self, sender: tokio::sync::mpsc::UnboundedSender<KeybindingResult>) {
+    pub fn set_action_sender(
+        &mut self,
+        sender: tokio::sync::mpsc::UnboundedSender<KeybindingResult>,
+    ) {
         self.action_sender = Some(sender);
     }
 
@@ -114,75 +179,40 @@ impl KeybindingDaemon {
         }?;
 
         let mut stream = listener;
-        let mut pressed_keys: HashSet<String> = HashSet::new();
-        let mut already_triggered: HashSet<usize> = HashSet::new();
-        // Track bindings that are ready for release-to-confirm
-        let mut release_ready: HashSet<usize> = HashSet::new();
-
         while let Some(event) = stream.next().await {
             let key_name = format!("{:?}", event.code);
 
-            match event.value {
-                1 => {
-                    // Key press
-                    pressed_keys.insert(key_name);
-                    self.check_bindings(&pressed_keys, &mut already_triggered, &mut release_ready)?;
+            let output = {
+                let mut engine = self
+                    .engine
+                    .lock()
+                    .map_err(|error| format!("failed to lock key engine: {}", error))?;
+                engine.process_event(&key_name, event.value, Instant::now())
+            };
+
+            for trace in output.traces {
+                let level = match trace.reason {
+                    KeyEngineTraceReason::Matched => "matched",
+                    KeyEngineTraceReason::Suppressed => "suppressed",
+                    KeyEngineTraceReason::Invalidated => "invalidated",
+                };
+                debug!(
+                    "hotkeys: engine trace binding='{}' index={} state={} detail={}",
+                    trace.binding_name, trace.index, level, trace.detail
+                );
+            }
+
+            for index in output.triggered {
+                if let Err(error) = self.execute_binding(index) {
+                    error!(
+                        "hotkeys: binding execution failed index={} error={}",
+                        index, error
+                    );
                 }
-                0 => {
-                    // Key release
-                    pressed_keys.remove(&key_name);
-                    // Execute release bindings and clear their ready state
-                    self.execute_release_bindings(&mut release_ready)?;
-                    already_triggered.retain(|index| self.matches_binding(*index, &pressed_keys));
-                    release_ready.retain(|index| self.matches_binding(*index, &pressed_keys));
-                }
-                _ => {}
             }
         }
 
         Ok(())
-    }
-
-    fn check_bindings(
-        &self,
-        pressed: &HashSet<String>,
-        already_triggered: &mut HashSet<usize>,
-        release_ready: &mut HashSet<usize>,
-    ) -> Result<()> {
-        for index in 0..self.bindings.len() {
-            let matches = self.matches_binding(index, pressed);
-            let binding = &self.bindings[index].binding;
-
-            if binding.release {
-                // Release-to-confirm: mark as ready if not already triggered
-                if matches && !release_ready.contains(&index) {
-                    release_ready.insert(index);
-                }
-            } else {
-                // Normal: execute immediately if not already triggered
-                if matches && !already_triggered.contains(&index) {
-                    self.execute_binding(index)?;
-                    already_triggered.insert(index);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn execute_release_bindings(&self, release_ready: &mut HashSet<usize>) -> Result<()> {
-        let bindings_to_execute: Vec<usize> = release_ready.iter().copied().collect();
-        for index in bindings_to_execute {
-            self.execute_binding(index)?;
-            release_ready.remove(&index);
-        }
-        Ok(())
-    }
-
-    fn matches_binding(&self, index: usize, pressed: &HashSet<String>) -> bool {
-        self.bindings[index]
-            .required_groups
-            .iter()
-            .all(|alternatives| alternatives.iter().any(|key| pressed.contains(key)))
     }
 
     fn execute_binding(&self, index: usize) -> Result<()> {
@@ -236,16 +266,149 @@ impl KeybindingDaemon {
     }
 }
 
+pub fn dry_run_bindings(
+    bindings: &[KeyBinding],
+    events: &[KeyDryRunEvent],
+) -> std::result::Result<Vec<KeyDryRunStep>, String> {
+    let parsed_bindings = parse_bindings_strict(bindings)?;
+    let engine_bindings = parsed_bindings
+        .iter()
+        .map(|parsed| parsed.engine_binding.clone())
+        .collect::<Vec<_>>();
+    let mut engine = KeyEngine::new(engine_bindings);
+    let base = Instant::now();
+
+    let mut steps = Vec::with_capacity(events.len());
+    for event in events {
+        let now = base + std::time::Duration::from_millis(event.at_ms);
+        let output = engine.process_event(&event.key, event.value, now);
+        let triggered_binding_names = output
+            .triggered
+            .iter()
+            .map(|index| parsed_bindings[*index].binding.name.clone())
+            .collect::<Vec<_>>();
+        let trace_lines = output
+            .traces
+            .into_iter()
+            .map(|trace| {
+                let state = match trace.reason {
+                    KeyEngineTraceReason::Matched => "matched",
+                    KeyEngineTraceReason::Suppressed => "suppressed",
+                    KeyEngineTraceReason::Invalidated => "invalidated",
+                };
+                format!(
+                    "{} [{}] {} ({})",
+                    trace.binding_name, trace.index, state, trace.detail
+                )
+            })
+            .collect::<Vec<_>>();
+
+        steps.push(KeyDryRunStep {
+            event: event.clone(),
+            triggered_binding_names,
+            trace_lines,
+        });
+    }
+
+    Ok(steps)
+}
+
+pub fn parse_tray_action(command: &str) -> TrayDaemonAction {
+    let trimmed = command.trim();
+    let lower = trimmed.to_ascii_lowercase();
+
+    match lower.as_str() {
+        "open-menu" | "menu:open" | "tray:open" => TrayDaemonAction::OpenMenu,
+        "close-menu" | "menu:close" | "tray:close" => TrayDaemonAction::CloseMenu,
+        "toggle-menu" | "menu:toggle" | "tray:toggle" => TrayDaemonAction::ToggleMenu,
+        "show-aggregated" | "aggregated" | "tray:aggregated" => TrayDaemonAction::ShowAggregated,
+        "show-favorites" | "favorites" | "tray:favorites" => TrayDaemonAction::ShowFavorites,
+        "focus-next" | "next" | "tray:next" => TrayDaemonAction::FocusNext,
+        "focus-previous" | "previous" | "prev" | "tray:previous" => TrayDaemonAction::FocusPrevious,
+        "activate-selected" | "select" | "tray:activate" => TrayDaemonAction::ActivateSelected,
+        "refresh-status" | "refresh" | "tray:refresh" => TrayDaemonAction::RefreshStatus,
+        _ => {
+            if let Some(index) = lower
+                .strip_prefix("open-index:")
+                .or_else(|| lower.strip_prefix("tray:index:"))
+                .and_then(|value| value.parse::<usize>().ok())
+            {
+                TrayDaemonAction::OpenIndex(index)
+            } else {
+                TrayDaemonAction::Raw(trimmed.to_string())
+            }
+        }
+    }
+}
+
+pub fn parse_bar_action(command: &str) -> BarDaemonAction {
+    let trimmed = command.trim();
+    let lower = trimmed.to_ascii_lowercase();
+
+    if matches!(
+        lower.as_str(),
+        "reload-config" | "config:reload" | "bar:reload"
+    ) {
+        return BarDaemonAction::ReloadConfig;
+    }
+
+    if let Some(module) = trimmed
+        .strip_prefix("toggle-module:")
+        .or_else(|| trimmed.strip_prefix("bar:toggle:"))
+    {
+        return BarDaemonAction::ToggleModule(module.trim().to_string());
+    }
+
+    if let Some(module) = trimmed
+        .strip_prefix("focus-module:")
+        .or_else(|| trimmed.strip_prefix("bar:focus:"))
+    {
+        return BarDaemonAction::FocusModule(module.trim().to_string());
+    }
+
+    BarDaemonAction::Raw(trimmed.to_string())
+}
+
 fn parse_binding(binding: KeyBinding) -> std::result::Result<ParsedBinding, String> {
     let groups = parse_keysym(&binding.keysym)?;
     if groups.is_empty() {
         return Err("no keys parsed".to_string());
     }
 
+    let trigger = if binding.release && matches!(binding.trigger, KeyTrigger::Press) {
+        KeyTrigger::Release
+    } else {
+        binding.trigger.clone()
+    };
+    let trigger_keys = groups.last().cloned().unwrap_or_default();
+    let engine_binding = EngineBinding::new(
+        binding.name.clone(),
+        groups.clone(),
+        trigger,
+        binding.priority,
+        binding.consume,
+        binding.hold_ms.unwrap_or(0),
+        binding.cooldown_ms,
+        trigger_keys,
+    );
+
     Ok(ParsedBinding {
         binding,
-        required_groups: groups,
+        engine_binding,
     })
+}
+
+fn parse_bindings_strict(
+    bindings: &[KeyBinding],
+) -> std::result::Result<Vec<ParsedBinding>, String> {
+    let mut parsed = Vec::with_capacity(bindings.len());
+    for binding in bindings {
+        parsed.push(
+            parse_binding(binding.clone())
+                .map_err(|error| format!("binding '{}' invalid: {}", binding.name, error))?,
+        );
+    }
+    Ok(parsed)
 }
 
 fn parse_keysym(keysym: &str) -> std::result::Result<Vec<Vec<String>>, String> {
@@ -330,7 +493,10 @@ fn normalize_token(token: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_keysym, token_to_key_candidates};
+    use super::{
+        BarDaemonAction, TrayDaemonAction, parse_bar_action, parse_keysym, parse_tray_action,
+        token_to_key_candidates,
+    };
 
     #[test]
     fn parses_modifiers_with_left_right_variants() {
@@ -351,5 +517,42 @@ mod tests {
     fn rejects_unknown_tokens() {
         let err = token_to_key_candidates("HyperMega").expect_err("token should fail");
         assert!(err.contains("unsupported key token"));
+    }
+
+    #[test]
+    fn parses_tray_commands_into_structured_actions() {
+        assert_eq!(parse_tray_action("open-menu"), TrayDaemonAction::OpenMenu);
+        assert_eq!(
+            parse_tray_action("tray:index:3"),
+            TrayDaemonAction::OpenIndex(3)
+        );
+        assert_eq!(
+            parse_tray_action("favorites"),
+            TrayDaemonAction::ShowFavorites
+        );
+    }
+
+    #[test]
+    fn preserves_unknown_tray_commands() {
+        assert_eq!(
+            parse_tray_action("custom:dispatch"),
+            TrayDaemonAction::Raw("custom:dispatch".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_bar_commands_into_structured_actions() {
+        assert_eq!(
+            parse_bar_action("reload-config"),
+            BarDaemonAction::ReloadConfig
+        );
+        assert_eq!(
+            parse_bar_action("toggle-module:clock"),
+            BarDaemonAction::ToggleModule("clock".to_string())
+        );
+        assert_eq!(
+            parse_bar_action("bar:focus:wifi"),
+            BarDaemonAction::FocusModule("wifi".to_string())
+        );
     }
 }

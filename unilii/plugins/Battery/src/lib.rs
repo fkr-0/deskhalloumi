@@ -1,8 +1,8 @@
 use futures::StreamExt;
 
 use iced::{
-    widget::{container, row, text},
     Alignment, Element, Length,
+    widget::{container, row, text},
 };
 use unilii_core::{Module, ModuleConfig, ModuleUpdate, Result};
 use unilii_lib::sysfs::power::{BatteryPowerDevice, PowerDevice, PowerDeviceKind};
@@ -64,9 +64,10 @@ impl Module for Battery {
             ModuleUpdate::Text(text) => {
                 // Parse percentage from text
                 if let Some(pct_str) = text.strip_suffix('%')
-                    && let Ok(pct) = pct_str.parse::<f32>() {
-                        self.percentage = pct;
-                    }
+                    && let Ok(pct) = pct_str.parse::<f32>()
+                {
+                    self.percentage = pct;
+                }
             }
             ModuleUpdate::ProgressBar(value) => {
                 self.percentage = value * 100.0;

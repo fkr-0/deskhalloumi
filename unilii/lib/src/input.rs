@@ -11,8 +11,8 @@
 //! the user to the `input` group or setting up udev rules.
 
 use anyhow::Result;
-use evdev::{enumerate, Device, EventType, KeyCode};
-use futures::{stream, StreamExt};
+use evdev::{Device, EventType, KeyCode, enumerate};
+use futures::{StreamExt, stream};
 use log::{info, warn};
 
 use crate::StaticStream;

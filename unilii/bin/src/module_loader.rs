@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 
 use tracing::{info, warn};
-use unilii_core::{DefaultModuleRegistry, ModuleConfig, ModuleRegistry, ModuleUpdate, Result, register_module};
+use unilii_core::{
+    DefaultModuleRegistry, ModuleConfig, ModuleRegistry, ModuleUpdate, Result, register_module,
+};
 
 /// Container for a loaded module with its update channel.
 pub struct LoadedModule {
@@ -43,7 +45,7 @@ impl ModuleManager {
 
         Self { registry }
     }
-    
+
     /// Load modules based on configuration with comprehensive error handling.
     pub async fn load_modules(
         &self,
@@ -52,21 +54,22 @@ impl ModuleManager {
         let mut modules = HashMap::new();
         let mut subscriptions = Vec::new();
         let mut load_errors = Vec::new();
-        
+
         for (name, config) in configs.iter() {
             if !config.enabled {
                 info!("Module '{}' is disabled, skipping", name);
                 continue;
             }
-            
+
             info!("Loading module: {}", name);
-            
+
             // Attempt to load module with timeout and error recovery
             let load_result = tokio::time::timeout(
                 std::time::Duration::from_secs(10), // 10 second timeout
-                self.load_single_module(name, config)
-            ).await;
-            
+                self.load_single_module(name, config),
+            )
+            .await;
+
             match load_result {
                 Ok(Ok((module, subscription))) => {
                     modules.insert(name.clone(), LoadedModule { module });
@@ -87,7 +90,7 @@ impl ModuleManager {
                 }
             }
         }
-        
+
         if modules.is_empty() && !configs.is_empty() {
             let enabled_count = configs.values().filter(|c| c.enabled).count();
             if enabled_count > 0 {
@@ -98,14 +101,18 @@ impl ModuleManager {
                 ).into());
             }
         }
-        
+
         if !load_errors.is_empty() {
-            info!("Module loading completed with {} errors: {}", load_errors.len(), load_errors.join("; "));
+            info!(
+                "Module loading completed with {} errors: {}",
+                load_errors.len(),
+                load_errors.join("; ")
+            );
         }
-        
+
         Ok((modules, subscriptions))
     }
-    
+
     /// Load a single module with proper error handling.
     async fn load_single_module(
         &self,
@@ -114,7 +121,7 @@ impl ModuleManager {
     ) -> Result<(Box<dyn unilii_core::Module>, Option<ModuleSubscription>)> {
         // Create module with retry mechanism
         let mut module = self.create_module_with_retry(name, config, 3).await?;
-        
+
         // Set up subscription with error handling
         let subscription = match module.subscribe().await {
             Ok(Some(rx)) => Some(ModuleSubscription {
@@ -126,14 +133,17 @@ impl ModuleManager {
                 None
             }
             Err(e) => {
-                warn!("Module '{}' subscription setup failed: {}, continuing without subscription", name, e);
+                warn!(
+                    "Module '{}' subscription setup failed: {}, continuing without subscription",
+                    name, e
+                );
                 None
             }
         };
-        
+
         Ok((module, subscription))
     }
-    
+
     /// Create a module with retry mechanism for transient failures.
     async fn create_module_with_retry(
         &self,
@@ -142,54 +152,68 @@ impl ModuleManager {
         max_retries: usize,
     ) -> Result<Box<dyn unilii_core::Module>> {
         let mut last_error = None;
-        
+
         for attempt in 0..max_retries {
             if attempt > 0 {
                 // Exponential backoff: 100ms, 200ms, 400ms...
                 let delay = std::time::Duration::from_millis(100 * (1 << attempt));
-                info!("Module '{}' creation attempt {} failed, retrying in {:?}", name, attempt, delay);
+                info!(
+                    "Module '{}' creation attempt {} failed, retrying in {:?}",
+                    name, attempt, delay
+                );
                 tokio::time::sleep(delay).await;
             }
-            
+
             match self.registry.create(name, config).await {
                 Ok(module) => return Ok(module),
                 Err(e) => {
                     last_error = Some(e);
-                    warn!("Module '{}' creation attempt {} failed: {}", name, attempt + 1, last_error.as_ref().unwrap());
+                    warn!(
+                        "Module '{}' creation attempt {} failed: {}",
+                        name,
+                        attempt + 1,
+                        last_error.as_ref().unwrap()
+                    );
                 }
             }
         }
-        
+
         Err(last_error.unwrap_or_else(|| "Unknown error".into()))
     }
-    
+
     /// Get the default configuration for all available modules.
     #[allow(dead_code)]
     pub fn default_config(&self) -> HashMap<String, ModuleConfig> {
         let mut configs = HashMap::new();
-        
+
         // Default configurations for each module
         if self.registry.has_module("clock") {
-            configs.insert("clock".to_string(), ModuleConfig {
-                enabled: true,
-                position: unilii_core::ModulePosition::Right,
-                update_interval_ms: Some(1000),
-                theme_overrides: None,
-            });
+            configs.insert(
+                "clock".to_string(),
+                ModuleConfig {
+                    enabled: true,
+                    position: unilii_core::ModulePosition::Right,
+                    update_interval_ms: Some(1000),
+                    theme_overrides: None,
+                },
+            );
         }
-        
+
         if self.registry.has_module("battery") {
-            configs.insert("battery".to_string(), ModuleConfig {
-                enabled: true,
-                position: unilii_core::ModulePosition::Right,
-                update_interval_ms: Some(5000),
-                theme_overrides: None,
-            });
+            configs.insert(
+                "battery".to_string(),
+                ModuleConfig {
+                    enabled: true,
+                    position: unilii_core::ModulePosition::Right,
+                    update_interval_ms: Some(5000),
+                    theme_overrides: None,
+                },
+            );
         }
-        
+
         configs
     }
-    
+
     /// List all registered modules.
     #[allow(dead_code)]
     pub fn list_available_modules(&self) -> Vec<String> {
