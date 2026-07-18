@@ -247,14 +247,14 @@ fn strict_report_fails_for_migration_warnings() {
     let sxhkd = write_file(
         temp.path(),
         "sxhkdrc",
-        "super + {1-3}\n    echo unsupported\n",
+        "super + {a-9}\n    echo unsupported\n",
     );
     let output = Command::new(bin())
         .args(["--sxhkd", sxhkd.to_str().unwrap(), "--dry-run", "--strict"])
         .output()
         .expect("run strict report");
     assert_eq!(output.status.code(), Some(3));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("simple comma-separated expansion"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("must stay within"));
 }
 
 #[test]

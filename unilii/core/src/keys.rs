@@ -293,14 +293,14 @@ impl KeybindingDaemon {
             match deskhalloumi_lib::input::listen_keyboard_events_experimental_with_grab(grab) {
                 Ok(stream) => {
                     info!(
-                        "hotkeys: listener initialized using experimental tokio-udev path (grab={}, execute={})",
+                        "hotkeys: listener initialized with dynamic tokio-udev keyboard hot-plug (grab={}, execute={})",
                         grab, self.options.execute
                     );
                     Ok(stream)
                 }
                 Err(error) => {
                     warn!(
-                        "hotkeys: experimental listener unavailable, falling back to base evdev (grab={}): {}",
+                        "hotkeys: dynamic udev listener unavailable, falling back to one-time evdev scan (grab={}): {}",
                         grab, error
                     );
                     deskhalloumi_lib::input::listen_keyboard_events_with_grab(grab)

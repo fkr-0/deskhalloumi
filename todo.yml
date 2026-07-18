@@ -41,7 +41,7 @@ resolved:
   - unilii/core/tests/sxhkd_import_tests.rs
 - id: SXHKD-002
   status: complete
-  summary: Reject unsupported chains, ranges, malformed braces, and semantic loss explicitly.
+  summary: Reject unsupported chains, malformed or mixed-class ranges, and semantic loss explicitly.
   evidence:
   - unsupported constructs are skipped with line-specific diagnostics
 - id: REL-001
@@ -105,16 +105,29 @@ resolved:
   - scripts/check_release_metadata.py
   - .github/workflows/release.yml
   - docs/versioning.md
-remaining:
 - id: SXHKD-010
+  status: complete
+  summary: Import exact sxhkd sequence syntax including same-class alphanumeric ranges, underscore empty elements, escaped braces, and pairwise command expansion.
+  evidence:
+  - unilii/core/src/key_import_sxhkd.rs
+  - unilii/core/tests/sxhkd_import_tests.rs
+  - unilii/core/tests/fixtures/sxhkd/migration-corpus.sxhkd
+- id: HK-EVDEV-012
+  status: complete
+  summary: Add and remove active evdev keyboard streams dynamically through tokio-udev without terminating the aggregate listener.
+  evidence:
+  - unilii/lib/src/input.rs
+  - generation-based stale-event suppression and duplicate-path tests
+remaining:
+- id: SXHKD-011
   status: pending
   priority: P1
-  gap: sxhkd numeric ranges, nested/correlated expansions, modes/chains, and replay are not equivalent.
-  task: Extend migration parsing only where semantics can be represented exactly.
+  gap: sxhkd line continuations, chord chains/modes, replay, and synchronous execution are not equivalent to the current action model.
+  task: Extend migration only where semantics can be represented exactly; retain explicit approximate/unsupported classifications otherwise.
   acceptance_criteria:
-  - Realistic fixture corpus classifies each binding as exact, approximate, or unsupported.
   - No unsupported construct becomes an active literal chord.
-  - Generated TOML and i3 output round-trip through validation.
+  - Multi-line syntax is either imported exactly or rejected with source-located diagnostics.
+  - Replay and synchronous execution are never claimed as exact.
   suggested_files:
   - unilii/core/src/key_import_sxhkd.rs
   - unilii/core/tests/fixtures/sxhkd
@@ -130,17 +143,6 @@ remaining:
   suggested_files:
   - unilii/core/src/key_spec.rs
   - KEYBINDINGS.md
-- id: HK-EVDEV-012
-  status: pending
-  priority: P1
-  gap: The udev monitor does not add or remove active keyboard streams dynamically.
-  task: Implement keyboard hotplug lifecycle for the evdev backend.
-  acceptance_criteria:
-  - New keyboards become active without daemon restart.
-  - Removed devices do not terminate the aggregate stream.
-  - Device duplication and permission errors are observable.
-  suggested_files:
-  - unilii/lib/src/input.rs
 - id: HK-SOAK-020
   status: pending
   priority: P2

@@ -138,9 +138,20 @@ deskhalloumi-hotkeyd \
   --strict
 ```
 
-Simple comma-separated brace alternatives are expanded pairwise. Numeric
-ranges, nested/malformed expansions, modes/chains, and replay semantics remain
-explicit diagnostics when they cannot be represented exactly.
+Comma alternatives, same-class alphanumeric ranges such as `{1-9}` and
+`{a-z}`, underscore empty elements, escaped braces, and multiple Cartesian
+sequence groups are expanded. Chord and command expansions pair by position
+when their final lengths match; one command may fan out across all chords.
+
+Malformed or mixed-class ranges, nested braces, and chord chains/modes remain
+unsupported diagnostics. Replay and synchronous execution prefixes are
+imported only with explicit semantic-loss warnings. Expansion is capped at
+4096 generated values.
+
+The default evdev listener uses tokio-udev to activate newly attached keyboards
+and retire removed devices without restarting the daemon. Duplicate add/change
+events are ignored, and generation IDs prevent stale events from a reused
+`/dev/input/event*` path from reaching the key engine.
 
 Known old and new menu commands are promoted to managed-menu actions:
 

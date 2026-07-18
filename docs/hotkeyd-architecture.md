@@ -233,10 +233,10 @@ never touches the developer's live display.
 
 ## Remaining limitations
 
-- Dynamic evdev keyboard hotplug remains P1.
 - Sway/Wayland requires a separately tested adapter; no parity claim is made.
-- Complex sxhkd ranges, modes/chains, replay, and nested correlated expansions
-  remain explicit migration diagnostics.
+- sxhkd line continuations, modes/chains, replay, synchronous execution, and
+  nested expansions remain explicit exact/approximate/unsupported migration
+  diagnostics.
 - Some bar module mutation actions still require a runtime refactor.
 - Managed-menu `show` is process-idempotent but does not force the window manager
   to raise an already visible window that lost focus.

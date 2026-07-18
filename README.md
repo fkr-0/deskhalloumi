@@ -84,8 +84,9 @@ The active implementation includes:
 - Release-oriented shared menu design system for DBus tray menus, aggregated search, favorites, Wi-Fi, storage, calendar, system controls, and custom launcher entries.
 - Widgets for audio, video/display presets, WiFi, power, and system monitoring.
 - Core keybinding support, dry-run tests, sxhkd import with simple brace
-  expansion, recursive active-i3 conflict auditing, safe i3 include generation,
-  and a selective native X11 backend for advanced shortcut semantics.
+  and range expansion, recursive active-i3 conflict auditing, safe i3 include
+  generation, dynamic evdev keyboard hot-plug, and a selective native X11
+  backend for advanced shortcut semantics.
 - A versioned user-scoped action bus connecting standalone hotkeys to bar, tray,
   and widget actions.
 - Plugin crates for clock, battery, and tmux modules.

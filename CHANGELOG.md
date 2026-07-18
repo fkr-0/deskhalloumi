@@ -1,13 +1,11 @@
 # Changelog
 
 All notable user-visible changes to the active DeskHalloumi workspace are
-recorded in
-this file. The project follows Semantic Versioning as described in
+recorded in this file. The project follows Semantic Versioning as described in
 [`docs/versioning.md`](docs/versioning.md).
 
-The workspace declares version `0.2.0`. The release preparation commit does not
-create the corresponding annotated `v0.2.0` tag; tagging remains a deliberate
-maintainer action after review.
+Version `0.2.0` is identified by the annotated `v0.2.0` release tag. Changes
+after that tag belong under `[Unreleased]`.
 
 ## [Unreleased]
 
@@ -22,8 +20,9 @@ maintainer action after review.
   and consume semantics in the keybinding engine.
 - Shadow-mode and strict migration diagnostics for invalid, duplicate, and
   shadowed keybindings.
-- sxhkd configuration import with release-prefix support and pairwise expansion
-  of simple comma-separated chord/command braces.
+- sxhkd configuration import with release-prefix support, same-class
+  alphanumeric ranges, underscore empty elements, escaped braces, and pairwise
+  chord/command expansion.
 - Safe i3/X11 keybinding export through `--print-i3-bindings` and
   `--write-i3-bindings`, with optional `--reload-i3`.
 - Atomic generated i3 include replacement and strict fail-closed validation.
@@ -44,14 +43,19 @@ maintainer action after review.
 - A tag-gated release workflow that validates annotated tags, reruns all gates,
   and produces a deterministic Linux binary archive with a SHA-256 checksum.
 - An in-app CopyQ shortcut guide available from the header or with `F1`.
+- Dynamic evdev keyboard hot-plug handling that adds newly connected keyboards,
+  retires removed streams independently, and suppresses stale path generations.
 
 ### Changed
 
-- Unsupported sxhkd ranges, malformed/nested expansions, and mode/chord chains
-  are now skipped with explicit diagnostics instead of being imported as
-  literal nonfunctional chords.
+- Unsupported sxhkd mixed-class ranges, malformed/nested expansions, and
+  mode/chord chains are skipped with explicit diagnostics instead of being
+  imported as literal nonfunctional chords.
 - sxhkd replay bindings are imported only with an explicit warning that replay
   semantics are not preserved.
+- sxhkd synchronous command prefixes are stripped before shell execution and
+  produce an explicit asynchronous-semantics warning instead of a broken shell
+  command beginning with `;`.
 - Normal i3 deployments can delegate standard passive key grabs to i3 rather
   than requiring access to raw `/dev/input` devices.
 - The project and Cargo packages are now named DeskHalloumi/`deskhalloumi-*`.
@@ -82,6 +86,8 @@ maintainer action after review.
   clean candidate worktrees, annotated tag objects, and tag-to-HEAD agreement.
 - Fixed the Tmux plugin rejecting real pane IDs such as `%17`; pane discovery now
   covers all windows, reports command failures, and selects panes by stable ID.
+- Fixed the tokio-udev listener being monitor-only: add/remove/change events now
+  update active keyboard streams without restarting the hotkey daemon.
 
 ### Security
 
@@ -94,3 +100,5 @@ maintainer action after review.
   mode `0600`; requests are versioned, size-bounded, and timeout-bounded.
 - Native X11 mode grabs only configured trigger chords, leaving unmatched input
   untouched and reporting grab conflicts before committing a new generation.
+- sxhkd Cartesian brace expansion is capped at 4096 generated values to prevent
+  accidental configuration blow-ups during migration.

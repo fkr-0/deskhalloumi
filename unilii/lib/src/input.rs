@@ -13,7 +13,9 @@
 use anyhow::{Result, anyhow};
 use evdev::{Device, EventType, KeyCode, enumerate};
 use futures::{StreamExt, stream};
-use log::{info, warn};
+use log::{debug, info, warn};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::StaticStream;
 
@@ -32,6 +34,65 @@ pub struct KeyEvent {
 pub struct KeyboardScanStats {
     pub total_devices: usize,
     pub keyboard_candidates: usize,
+}
+
+struct OpenedKeyboard {
+    path: PathBuf,
+    device: Device,
+}
+
+#[derive(Debug)]
+enum DeviceStreamItem {
+    Key {
+        path: PathBuf,
+        generation: u64,
+        event: KeyEvent,
+    },
+    Closed {
+        path: PathBuf,
+        generation: u64,
+        error: String,
+    },
+}
+
+#[derive(Debug, Default)]
+struct KeyboardDeviceRegistry {
+    active: HashMap<PathBuf, u64>,
+    next_generation: u64,
+}
+
+impl KeyboardDeviceRegistry {
+    fn register(&mut self, path: PathBuf) -> Option<u64> {
+        if self.active.contains_key(&path) {
+            return None;
+        }
+
+        self.next_generation = self.next_generation.wrapping_add(1).max(1);
+        let generation = self.next_generation;
+        self.active.insert(path, generation);
+        Some(generation)
+    }
+
+    fn is_active(&self, path: &Path) -> bool {
+        self.active.contains_key(path)
+    }
+
+    fn remove(&mut self, path: &Path) -> bool {
+        self.active.remove(path).is_some()
+    }
+
+    fn remove_generation(&mut self, path: &Path, generation: u64) -> bool {
+        if self.accepts(path, generation) {
+            self.active.remove(path);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn accepts(&self, path: &Path, generation: u64) -> bool {
+        self.active.get(path).copied() == Some(generation)
+    }
 }
 
 fn is_keyboard_device(device: &Device) -> bool {
@@ -79,11 +140,18 @@ pub fn read_keyboard_devices() -> Vec<Device> {
 /// Enumerate keyboard devices and optionally request an exclusive evdev grab.
 ///
 /// In observe mode (`grab=false`), other applications and the window manager continue
-/// to receive the same key events. In grab mode (`grab=true`), unilii asks the kernel
-/// to suppress those events for other clients. Grab mode requires permission to open
-/// and grab every selected keyboard device; failures are returned with actionable
-/// diagnostics instead of silently falling back to shadow behavior.
+/// to receive the same key events. In grab mode (`grab=true`), DeskHalloumi asks the
+/// kernel to suppress those events for other clients. Grab mode requires permission
+/// to open and grab every selected keyboard device; failures are returned with
+/// actionable diagnostics instead of silently falling back to shadow behavior.
 pub fn read_keyboard_devices_with_grab(grab: bool) -> Result<Vec<Device>> {
+    Ok(read_keyboard_devices_with_paths(grab)?
+        .into_iter()
+        .map(|opened| opened.device)
+        .collect())
+}
+
+fn read_keyboard_devices_with_paths(grab: bool) -> Result<Vec<OpenedKeyboard>> {
     let mut keyboards = Vec::new();
     let mut total_devices = 0usize;
     for (path, mut dev) in enumerate() {
@@ -108,7 +176,7 @@ pub fn read_keyboard_devices_with_grab(grab: bool) -> Result<Vec<Device>> {
                     path, dev_name
                 );
             }
-            keyboards.push(dev);
+            keyboards.push(OpenedKeyboard { path, device: dev });
         } else {
             info!(
                 "input device skipped (not a full keyboard): path={:?}, name={}",
@@ -126,7 +194,7 @@ pub fn read_keyboard_devices_with_grab(grab: bool) -> Result<Vec<Device>> {
     if grab && keyboards.is_empty() {
         return Err(anyhow!(
             "no accessible keyboard devices were found for active grab mode. \
-             Check /dev/input permissions or run unilii-hotkeyd --shadow first."
+             Check /dev/input permissions or run deskhalloumi-hotkeyd --shadow first."
         ));
     }
 
@@ -144,16 +212,15 @@ fn device_to_keyevent_stream(dev: Device) -> Option<StaticStream<KeyEvent>> {
                     match stream.next_event().await {
                         Ok(event) => {
                             if event.event_type() == EventType::KEY {
-                                let code = KeyCode::new(event.code());
                                 let key_event = KeyEvent {
-                                    code,
+                                    code: KeyCode::new(event.code()),
                                     value: event.value(),
                                 };
                                 return Some((key_event, stream));
                             }
                         }
-                        Err(_) => {
-                            warn!("evdev event stream ended with error");
+                        Err(error) => {
+                            warn!("evdev event stream ended with error: {}", error);
                             return None;
                         }
                     }
@@ -162,14 +229,102 @@ fn device_to_keyevent_stream(dev: Device) -> Option<StaticStream<KeyEvent>> {
             .boxed();
             Some(stream)
         }
-        Err(e) => {
+        Err(error) => {
             warn!(
                 "failed to open evdev event stream for device {}: {}",
-                dev_name, e
+                dev_name, error
             );
             None
         }
     }
+}
+
+fn device_to_tagged_keyevent_stream(
+    dev: Device,
+    path: PathBuf,
+    generation: u64,
+) -> Result<StaticStream<DeviceStreamItem>> {
+    let dev_name = dev.name().unwrap_or("unknown").to_string();
+    let event_stream = dev.into_event_stream().map_err(|error| {
+        anyhow!(
+            "failed to open evdev event stream for path={} name='{}': {}",
+            path.display(),
+            dev_name,
+            error
+        )
+    })?;
+    info!(
+        "opened hot-plug evdev event stream: path={}, name={}, generation={}",
+        path.display(),
+        dev_name,
+        generation
+    );
+
+    Ok(
+        stream::unfold(Some((event_stream, path, generation)), |state| async move {
+            let (mut event_stream, path, generation) = state?;
+            loop {
+                match event_stream.next_event().await {
+                    Ok(event) if event.event_type() == EventType::KEY => {
+                        return Some((
+                            DeviceStreamItem::Key {
+                                path: path.clone(),
+                                generation,
+                                event: KeyEvent {
+                                    code: KeyCode::new(event.code()),
+                                    value: event.value(),
+                                },
+                            },
+                            Some((event_stream, path, generation)),
+                        ));
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        return Some((
+                            DeviceStreamItem::Closed {
+                                path,
+                                generation,
+                                error: error.to_string(),
+                            },
+                            None,
+                        ));
+                    }
+                }
+            }
+        })
+        .boxed(),
+    )
+}
+
+fn open_keyboard_device(path: &Path, grab: bool) -> Result<Option<Device>> {
+    let mut device = Device::open(path).map_err(|error| {
+        anyhow!(
+            "failed to open hot-plug input device path={}: {}",
+            path.display(),
+            error
+        )
+    })?;
+    let name = device.name().unwrap_or("unknown").to_string();
+    if !device.supported_events().contains(EventType::KEY) || !is_keyboard_device(&device) {
+        debug!(
+            "hot-plug input device ignored (not a full keyboard): path={}, name={}",
+            path.display(),
+            name
+        );
+        return Ok(None);
+    }
+
+    if grab {
+        device.grab().map_err(|error| {
+            anyhow!(
+                "failed to grab hot-plug keyboard path={} name='{}': {}",
+                path.display(),
+                name,
+                error
+            )
+        })?;
+    }
+    Ok(Some(device))
 }
 
 /// Merge all currently available keyboard devices into a single stream.
@@ -180,8 +335,8 @@ fn listen_keyboard_events_from_current_devices_with_grab(
     let mut streams = Vec::new();
 
     for dev in devices {
-        if let Some(s) = device_to_keyevent_stream(dev) {
-            streams.push(s);
+        if let Some(stream) = device_to_keyevent_stream(dev) {
+            streams.push(stream);
         }
     }
 
@@ -213,8 +368,8 @@ fn listen_keyboard_events_from_current_devices() -> Result<StaticStream<KeyEvent
 /// Listen for key events from all currently available keyboard devices.
 ///
 /// This method does a one-time device scan and then listens on those devices.
-/// Newly hot-plugged keyboards are not picked up. For experimental hot-plug
-/// support via a udev monitor, use [`listen_keyboard_events_experimental`].
+/// Newly hot-plugged keyboards are not picked up. For hot-plug support via a
+/// udev monitor, use [`listen_keyboard_events_experimental`].
 pub fn listen_keyboard_events() -> Result<StaticStream<KeyEvent>> {
     listen_keyboard_events_from_current_devices()
 }
@@ -225,28 +380,183 @@ pub fn listen_keyboard_events_with_grab(grab: bool) -> Result<StaticStream<KeyEv
     listen_keyboard_events_from_current_devices_with_grab(grab)
 }
 
-/// Listen for keyboard events using experimental tokio-udev monitor support.
+/// Listen for keyboard events using tokio-udev hot-plug support.
 ///
-/// This currently creates an async monitor socket for input subsystem events
-/// and then falls back to the current-device merge stream. It validates that
-/// the monitor can be created and is ready for future dynamic hot-plug use,
-/// while preserving stable event behavior.
+/// The returned stream starts with all currently accessible keyboards and then
+/// adds newly connected keyboards without restarting the daemon. Removed or
+/// failed streams are retired independently, so one disappearing device does
+/// not terminate input from the remaining keyboards. Device generations
+/// suppress stale events when an `/dev/input/event*` path is quickly reused.
 #[cfg(feature = "input")]
 pub fn listen_keyboard_events_experimental() -> Result<StaticStream<KeyEvent>> {
     listen_keyboard_events_experimental_with_grab(false)
 }
 
-/// Listen for keyboard events using experimental tokio-udev monitor support,
-/// optionally requesting an exclusive evdev grab before streaming current devices.
+/// Listen for keyboard events using tokio-udev hot-plug support, optionally
+/// requesting an exclusive evdev grab for each current and future keyboard.
 #[cfg(feature = "input")]
 pub fn listen_keyboard_events_experimental_with_grab(grab: bool) -> Result<StaticStream<KeyEvent>> {
-    use udev::MonitorBuilder;
+    use futures::stream::SelectAll;
+    use tokio_udev::{AsyncMonitorSocket, EventType as UdevEventType, MonitorBuilder};
 
     let socket = MonitorBuilder::new()?.match_subsystem("input")?.listen()?;
-    let _monitor = tokio_udev::AsyncMonitorSocket::new(socket)?;
-    info!("experimental tokio-udev monitor socket initialized for input subsystem");
+    let monitor = AsyncMonitorSocket::new(socket)?;
+    info!("tokio-udev hot-plug monitor initialized for input subsystem");
 
-    listen_keyboard_events_from_current_devices_with_grab(grab)
+    let opened = read_keyboard_devices_with_paths(grab)?;
+    let mut registry = KeyboardDeviceRegistry::default();
+    let mut streams = SelectAll::new();
+    for opened in opened {
+        let Some(generation) = registry.register(opened.path.clone()) else {
+            continue;
+        };
+        match device_to_tagged_keyevent_stream(opened.device, opened.path.clone(), generation) {
+            Ok(stream) => streams.push(stream),
+            Err(error) => {
+                registry.remove_generation(&opened.path, generation);
+                warn!("hot-plug keyboard stream setup failed: {}", error);
+            }
+        }
+    }
+
+    if streams.is_empty() {
+        return Err(anyhow!(
+            "no usable keyboard event streams are available for hot-plug monitoring. Check \
+             /dev/input permissions and keyboard device detection"
+        ));
+    }
+
+    struct HotplugState {
+        monitor: AsyncMonitorSocket,
+        monitor_live: bool,
+        streams: SelectAll<StaticStream<DeviceStreamItem>>,
+        registry: KeyboardDeviceRegistry,
+        grab: bool,
+    }
+
+    enum NextInput {
+        Monitor(Option<std::io::Result<tokio_udev::Event>>),
+        Device(Option<DeviceStreamItem>),
+    }
+
+    let state = HotplugState {
+        monitor,
+        monitor_live: true,
+        streams,
+        registry,
+        grab,
+    };
+
+    Ok(stream::unfold(state, |mut state| async move {
+        loop {
+            let next = match (state.monitor_live, state.streams.is_empty()) {
+                (true, false) => {
+                    tokio::select! {
+                        event = state.monitor.next() => NextInput::Monitor(event),
+                        event = state.streams.next() => NextInput::Device(event),
+                    }
+                }
+                (true, true) => NextInput::Monitor(state.monitor.next().await),
+                (false, false) => NextInput::Device(state.streams.next().await),
+                (false, true) => return None,
+            };
+
+            match next {
+                NextInput::Monitor(Some(Ok(event))) => {
+                    let Some(path) = event.devnode().map(Path::to_path_buf) else {
+                        continue;
+                    };
+                    match event.event_type() {
+                        UdevEventType::Add | UdevEventType::Change => {
+                            if state.registry.is_active(&path) {
+                                continue;
+                            }
+                            match open_keyboard_device(&path, state.grab) {
+                                Ok(Some(device)) => {
+                                    let Some(generation) = state.registry.register(path.clone())
+                                    else {
+                                        continue;
+                                    };
+                                    match device_to_tagged_keyevent_stream(
+                                        device,
+                                        path.clone(),
+                                        generation,
+                                    ) {
+                                        Ok(stream) => {
+                                            state.streams.push(stream);
+                                            info!(
+                                                "hot-plug keyboard activated: path={}, generation={}",
+                                                path.display(),
+                                                generation
+                                            );
+                                        }
+                                        Err(error) => {
+                                            state.registry.remove_generation(&path, generation);
+                                            warn!(
+                                                "hot-plug keyboard activation failed for path={}: {}",
+                                                path.display(),
+                                                error
+                                            );
+                                        }
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(error) => warn!(
+                                    "hot-plug input device could not be activated path={}: {}",
+                                    path.display(),
+                                    error
+                                ),
+                            }
+                        }
+                        UdevEventType::Remove | UdevEventType::Unbind => {
+                            if state.registry.remove(&path) {
+                                info!("hot-plug keyboard removed: path={}", path.display());
+                            }
+                        }
+                        UdevEventType::Bind | UdevEventType::Unknown => {}
+                    }
+                }
+                NextInput::Monitor(Some(Err(error))) => {
+                    warn!("tokio-udev hot-plug monitor failed: {}", error);
+                    state.monitor_live = false;
+                }
+                NextInput::Monitor(None) => {
+                    warn!("tokio-udev hot-plug monitor ended");
+                    state.monitor_live = false;
+                }
+                NextInput::Device(Some(DeviceStreamItem::Key {
+                    path,
+                    generation,
+                    event,
+                })) => {
+                    if state.registry.accepts(&path, generation) {
+                        return Some((event, state));
+                    }
+                    debug!(
+                        "discarded stale keyboard event: path={}, generation={}",
+                        path.display(),
+                        generation
+                    );
+                }
+                NextInput::Device(Some(DeviceStreamItem::Closed {
+                    path,
+                    generation,
+                    error,
+                })) => {
+                    if state.registry.remove_generation(&path, generation) {
+                        warn!(
+                            "keyboard event stream closed: path={}, generation={}, error={}",
+                            path.display(),
+                            generation,
+                            error
+                        );
+                    }
+                }
+                NextInput::Device(None) => {}
+            }
+        }
+    })
+    .boxed())
 }
 
 #[cfg(not(feature = "input"))]
@@ -257,4 +567,39 @@ pub fn listen_keyboard_events_experimental() -> Result<StaticStream<KeyEvent>> {
 #[cfg(not(feature = "input"))]
 pub fn listen_keyboard_events_experimental_with_grab(grab: bool) -> Result<StaticStream<KeyEvent>> {
     listen_keyboard_events_from_current_devices_with_grab(grab)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keyboard_registry_deduplicates_and_reactivates_paths() {
+        let path = PathBuf::from("/dev/input/event7");
+        let mut registry = KeyboardDeviceRegistry::default();
+
+        let first = registry.register(path.clone()).expect("first generation");
+        assert!(registry.register(path.clone()).is_none());
+        assert!(registry.accepts(&path, first));
+
+        assert!(registry.remove(&path));
+        let second = registry.register(path.clone()).expect("second generation");
+        assert_ne!(first, second);
+        assert!(registry.accepts(&path, second));
+        assert!(!registry.accepts(&path, first));
+    }
+
+    #[test]
+    fn stale_stream_close_does_not_remove_reused_device_path() {
+        let path = PathBuf::from("/dev/input/event9");
+        let mut registry = KeyboardDeviceRegistry::default();
+        let old = registry.register(path.clone()).expect("old generation");
+        registry.remove(&path);
+        let current = registry.register(path.clone()).expect("current generation");
+
+        assert!(!registry.remove_generation(&path, old));
+        assert!(registry.accepts(&path, current));
+        assert!(registry.remove_generation(&path, current));
+        assert!(!registry.accepts(&path, current));
+    }
 }

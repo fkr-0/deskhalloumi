@@ -1,0 +1,28 @@
+# Exact: same-class numeric range paired with command expansion.
+super + {1-3}
+    i3-msg workspace {1-3}
+
+# Exact: underscore is an empty sequence element.
+super + {_,shift + } Return
+    {alacritty,alacritty --class alternate}
+
+# Exact: escaped braces remain literal command text.
+super + x
+    printf '%s\n' '\{literal\}'
+
+# Approximate: synchronous sxhkd execution is imported asynchronously.
+super + n
+    ; notify-send ready
+
+# Approximate: replay cannot be represented by the current backends.
+~super + m
+    notify-send replay
+
+# Unsupported: chord chains are not imported as literal chords.
+super + a ; super + b
+    notify-send chain
+
+# Unsupported: mixed alphanumeric classes are rejected rather than expanded
+# through punctuation code points.
+super + {a-9}
+    notify-send mixed-range

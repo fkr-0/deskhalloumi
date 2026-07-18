@@ -39,15 +39,82 @@ super + {h,l}
 }
 
 #[test]
-fn skips_ranges_instead_of_importing_a_literal_invalid_chord() {
-    let sxhkd = "super + {1-3}\n    echo workspace\n";
+fn expands_numeric_ranges_pairwise_with_commands() {
+    let sxhkd = "super + {1-3}\n    i3-msg workspace {1-3}\n";
     let imported = import_sxhkd_config(sxhkd);
-    assert!(imported.bindings.is_empty());
+    assert!(imported.warnings.is_empty());
+    assert_eq!(imported.bindings.len(), 3);
+    assert_eq!(imported.bindings[0].keysym, "super+1");
+    assert_eq!(imported.bindings[0].command, "i3-msg workspace 1");
+    assert_eq!(imported.bindings[2].keysym, "super+3");
+    assert_eq!(imported.bindings[2].command, "i3-msg workspace 3");
+}
+
+#[test]
+fn expands_empty_sequence_elements_after_chord_normalization() {
+    let sxhkd = r#"
+super + {_,shift + } Return
+    {alacritty,alacritty --class alternate}
+"#;
+    let imported = import_sxhkd_config(sxhkd);
+    assert!(imported.warnings.is_empty());
+    assert_eq!(imported.bindings.len(), 2);
+    assert_eq!(imported.bindings[0].keysym, "super+Return");
+    assert_eq!(imported.bindings[1].keysym, "super+shift+Return");
+}
+
+#[test]
+fn strips_synchronous_prefix_with_explicit_semantic_warning() {
+    let sxhkd = "super + n\n    ; notify-send ready\n";
+    let imported = import_sxhkd_config(sxhkd);
+    assert_eq!(imported.bindings.len(), 1);
+    assert_eq!(imported.bindings[0].command, "notify-send ready");
     assert_eq!(imported.warnings.len(), 1);
+    assert!(imported.warnings[0].message.contains("synchronous"));
+}
+
+#[test]
+fn migration_fixture_classifies_exact_approximate_and_unsupported_constructs() {
+    // unilii-audit: allow-live-session-command-reference -- this test parses fixture text and never executes i3 commands.
+    let imported = import_sxhkd_config(include_str!("fixtures/sxhkd/migration-corpus.sxhkd"));
+
+    assert_eq!(imported.bindings.len(), 8);
     assert!(
-        imported.warnings[0]
-            .message
-            .contains("simple comma-separated")
+        imported.bindings.iter().any(|binding| {
+            binding.keysym == "super+3" && binding.command == "i3-msg workspace 3"
+        })
+    );
+    assert!(imported.bindings.iter().any(|binding| {
+        binding.keysym == "super+shift+Return" && binding.command == "alacritty --class alternate"
+    }));
+    assert!(
+        imported.bindings.iter().any(|binding| {
+            binding.keysym == "super+x" && binding.command.contains("'{literal}'")
+        })
+    );
+    assert!(
+        imported
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("synchronous"))
+    );
+    assert!(
+        imported
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("replay"))
+    );
+    assert!(
+        imported
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("chains/modes"))
+    );
+    assert!(
+        imported
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("mixed") || warning.message.contains("range"))
     );
 }
 

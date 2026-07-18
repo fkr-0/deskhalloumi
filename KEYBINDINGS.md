@@ -317,6 +317,11 @@ The exporter supports standard press/release shell and managed-menu bindings.
 It diagnoses rather than approximates hold/modrelease, repeat, cooldown,
 priority, consume, and unsupported sxhkd migration constructs.
 
+The sxhkd importer expands comma sequences, same-class ranges (`{1-9}`,
+`{a-z}`, `{A-Z}`), `_` empty elements, escaped braces, and multiple Cartesian
+groups. Chord and command alternatives pair by final position. Chains/modes and
+nested expansions are rejected; replay and synchronous prefixes produce
+explicit semantic-loss warnings. Generated expansion is limited to 4096 values.
 
 ## Managed Menu Actions
 

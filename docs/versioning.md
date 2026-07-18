@@ -4,9 +4,8 @@
 
 The active Cargo workspace declares a shared version of `0.2.0` in the root
 `Cargo.toml`, and the main crates inherit it with `version.workspace = true`.
-The release candidate includes a dated changelog section and automated
-release-metadata checks, but the annotated `v0.2.0` tag is intentionally not
-created by the preparation commit.
+The released commit includes a dated changelog section, automated
+release-metadata checks, and the annotated `v0.2.0` tag.
 
 This document defines the contract; a version heading alone does not claim that
 the release has already been published or tagged.
@@ -107,10 +106,11 @@ A compatibility alias is part of the public contract once released.
 The release workflow does not publish crates or create a public GitHub release.
 Those remain explicit maintainer actions after artifact review.
 
-## Current recommendation
+## Current release
 
-Version `0.2.0` is the first DeskHalloumi-branded release candidate. It includes
-the compatibility-first command rename, selective X11 hotkeys, active i3
-auditing, cross-process actions, menu/front-end work, and release automation.
-Create `v0.2.0` only after the candidate commit is reviewed and the worktree is
-clean; the tag itself is intentionally not created by the preparation commit.
+Version `0.2.0` is the first DeskHalloumi-branded release. It includes the
+compatibility-first command rename, selective X11 hotkeys, active i3 auditing,
+cross-process actions, menu/front-end work, dynamic evdev keyboard hot-plug,
+sxhkd migration improvements, and release automation. New work must return to
+the `[Unreleased]` changelog section and select a later SemVer version before
+the next annotated tag is created.

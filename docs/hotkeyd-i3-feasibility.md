@@ -29,7 +29,7 @@ whole-device `--grab` escape hatch remains unsafe for normal desktop operation.
 | Active-config conflict scan | Implemented | Grab conflicts diagnosed | Not applicable |
 | Shell/menu actions | Yes | Yes | Yes |
 | Bar/tray/widget actions | Through hotkeyd/action bus | Through action bus | Through action bus |
-| Dynamic evdev hotplug | Not applicable | Not applicable | Remaining P1 gap |
+| Dynamic evdev hotplug | Not applicable | Not applicable | Implemented through tokio-udev with generation deduplication |
 | Sway/Wayland parity | Separate future adapter | No | Permission-dependent; not claimed |
 
 ## Active i3 conflict audit
