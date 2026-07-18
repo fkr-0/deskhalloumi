@@ -2,6 +2,7 @@
 
 use deskhalloumi_core::ModuleUpdate;
 use std::sync::{Arc, Mutex};
+use tokio::task::JoinSet;
 use tracing::{error, info, warn};
 
 use crate::module_loader::ModuleSubscription;
@@ -57,13 +58,14 @@ pub fn initialize_global_subscriptions(module_subscriptions: Vec<ModuleSubscript
             module_subscriptions.len()
         );
 
-        // Create tasks for each module subscription with error isolation
-        let mut handles = Vec::new();
+        // Keep all child workers in one owned task set so completion and panic
+        // handling remain structured inside the process-lifetime monitor.
+        let mut tasks = JoinSet::new();
 
         for mut sub in module_subscriptions {
             let name = sub.name.clone();
 
-            let handle = tokio::spawn(async move {
+            tasks.spawn(async move {
                 info!(
                     "Starting resilient subscription handler for module: {}",
                     name
@@ -79,23 +81,20 @@ pub fn initialize_global_subscriptions(module_subscriptions: Vec<ModuleSubscript
                 }
 
                 info!("Module '{}' subscription handler terminated", name);
+                name
             });
-
-            handles.push(handle);
         }
 
-        // Monitor subscription tasks
-        for handle in handles {
-            match handle.await {
-                Ok(_) => {
-                    // Task completed normally
-                    info!("Module subscription task completed normally");
+        while let Some(result) = tasks.join_next().await {
+            match result {
+                Ok(name) => {
+                    info!(module = %name, "module subscription task completed normally");
                 }
-                Err(e) if e.is_panic() => {
-                    error!("Module subscription task panicked: {}", e);
+                Err(error) if error.is_panic() => {
+                    error!(%error, "module subscription task panicked");
                 }
-                Err(e) => {
-                    error!("Module subscription task failed: {}", e);
+                Err(error) => {
+                    error!(%error, "module subscription task was cancelled");
                 }
             }
         }

@@ -1,452 +1,231 @@
-version: 1
-generated_at: "2026-05-16"
-roadmap:
-  title: "uniliii modular desktop-component replacement roadmap"
-  target_project:
-    requested_name: "uniliii"
-    observed_repository_name: "unilii"
-    path: "/home/user/work/code/unilii"
-  strategic_scope:
-    primary:
-      toolbar:
-        replaces: ["i3bar", "polybar"]
-        target_state: "multi-panel toolbar host with typed widgets, custom menus, tray/status integrations, hot reload, scriptability, and keyboard-first UX"
-      hotkeydaemon:
-        replaces: ["sxhkd"]
-        target_state: "standalone-capable global hotkey service with sxhkd import, typed actions, modes/chords/releases, conflict analysis, and panel/menu integration"
-    auxiliary:
-      notification_center:
-        target_state: "DBus notification intake, history, grouping, actions, and panel/menu surfacing"
-        start_after: ["typed_action_bus", "shared_menu_model"]
-      enhanced_panel_modules:
-        examples: ["weather", "audio", "network", "workspace", "system", "calendar"]
-        start_after: ["widget_runtime"]
-      rofi_type_filterer:
-        target_state: "fast item filterer using the same MenuModel, FilterState, keymaps, and action bus as toolbar menus"
-        start_after: ["shared_menu_model", "hotkey_engine"]
-  review_basis:
-    local_inputs:
-      - "tasks.yml from prior review"
-      - "AGENTS.md current architecture overview"
-      - "CONFIGURATION.md multi-panel and keybinding docs"
-      - "KEYBINDINGS.md current keybinding docs"
-      - "current command evidence from prior review: cargo check passes with warnings; cargo test and clippy fail"
-      - "modrelease-2 as tested reference for menu lifecycle, modifier release, workspace flow, keymaps, and preview models"
-    current_strengths:
-      - "Rust workspace already has core/lib/bin/plugin separation."
-      - "Iced direction is suitable for a modern panel UI."
-      - "Config already models panels, modules, and keybindings."
-      - "There is existing tray/menu/keybinding experimentation with many unit tests."
-    current_blockers:
-      - "Baseline tests/lints are red; strategic work must begin with stabilization."
-      - "main.rs is still a god module and should not remain the architecture boundary."
-      - "Competing tray/menu/app state models need consolidation."
-      - "Current keybinding docs are X11 keysym-oriented; sxhkd replacement needs backend-neutral key semantics."
-      - "Widget/plugin contracts are not yet strong enough for scriptable external modules."
-  product_thesis: >-
-    uniliii should evolve into a desktop augmentation stack, not merely a bar. A small desktop kernel should own typed actions, configuration, lifecycle, IPC, hotkey state, provider state, and capability registration. Panels, widgets, menus, tray, notifications, filterers, scripts, and CLIs become clients of that kernel. Toolbar and hotkeydaemon are solved first because they define the shared interaction contract for focus, actions, shortcuts, menus, command execution, feedback, and scriptability.
-  architecture_recommendation:
-    shape: "single repository, multiple crates, initially one process, later optional daemon/panel split"
-    preferred_sequence:
-      - "Keep one binary/process while extracting crate/module boundaries."
-      - "Introduce a typed action bus and stable domain models."
-      - "Only split daemon/panel after IPC and action routing are tested."
-    target_crates:
-      uniliii_core: "IDs, config schema, domain types, typed errors, capability registry, versioned contracts"
-      uniliii_action: "Action parser/executor, shell bridge, permissions, dry-run, ActionResult"
-      uniliii_hotkeys: "Key grammar, sxhkd import, conflict detection, modes/chords/releases, backend adapters"
-      uniliii_panel: "Iced shell, windows/panels, layout, theme, focus, animation"
-      uniliii_widgets: "Widget runtime, built-in widget traits, update scheduling, render models"
-      uniliii_menus: "MenuModel, FilterState, lifecycle, keyboard navigation, rofi-like list primitives"
-      uniliii_providers: "Clock, battery, network, audio, weather, process, workspace data providers"
-      uniliii_tray: "StatusNotifier and DBus tray host boundary"
-      uniliii_notify: "Future notification daemon/center DBus interop"
-      uniliii_ipc: "Unix socket or DBus control protocol and event subscriptions"
-      uniliii_cli: "validate, reload, query, run action, import sxhkd, inspect conflicts"
-    central_boundaries:
-      typed_action_bus:
-        purpose: "Common route for hotkeys, menu items, tray items, scripts, widgets, and CLI commands."
-        action_namespaces: ["internal", "shell", "widget", "menu", "tray", "desktop", "notification", "ipc"]
-      config_schema:
-        purpose: "Versioned declarative product configuration with validation and hot reload."
-        must_have: ["schema version", "includes/profiles", "per-panel layout", "keybinding modes", "action validation", "script timeout policy", "theme tokens"]
-      widget_runtime:
-        purpose: "Small widget state machines with config, provider subscriptions, render models, menu declarations, and stale/error states."
-      menu_system:
-        purpose: "One renderer-neutral interaction model for tray menus, widget menus, workspace selectors, and future filterer."
-      hotkey_engine:
-        purpose: "Backend-neutral key state engine with sxhkd import compatibility, not an sxhkd text-format clone internally."
-  ux_principles:
-    - "Keyboard-first; pointer-friendly second."
-    - "Every visible item should be invokable by hotkey or action bus."
-    - "Menus are transient and predictable: open, navigate, filter, confirm, cancel, focus-loss, release-to-confirm."
-    - "Provider failures show stale/error states rather than breaking the panel."
-    - "Scriptability is discoverable through CLI introspection, dry-run, validation, and action listing."
-    - "Performance prioritizes low idle CPU, bounded provider work, coalesced updates, and virtualized large lists."
-  non_goals_until_toolbar_and_hotkeys_are_solved:
-    - "No compositor or full window manager."
-    - "No plugin marketplace."
-    - "No notification center as architecture driver before action/menu/hotkey foundations."
-    - "No copying modrelease-2 Cairo/X11 renderer into the Iced panel host."
-    - "No unlimited script execution before timeouts, output bounds, and error feedback exist."
-
-milestones:
-  - id: M0
-    name: "stabilize baseline"
-    goal: "Make the current tree trustworthy before architecture migration."
-    solves: ["precondition-toolbar", "precondition-hotkeydaemon"]
-    deliverables:
-      - "green cargo test --workspace"
-      - "green clippy gate or documented temporary lint exceptions"
-      - "archive/reference files classified"
-      - "root docs updated to current workspace reality"
-    acceptance_criteria:
-      - "BUG-001 and BUG-002 from tasks.yml are fixed with tests."
-      - "cargo test --workspace exits 0."
-      - "cargo clippy --workspace --all-targets -- -D warnings exits 0 or exceptions reference task IDs."
-    successor_tasks_yml_candidates:
-      - "Fix tray unknown icon fallback regression."
-      - "Fix CalDAV datetime normalization lint."
-      - "Replace tautological WiFi test."
-      - "Classify archive/reference artifacts."
-  - id: M1
-    name: "desktop-kernel architecture ADR"
-    goal: "Document the professional product architecture before moving code."
-    solves: ["toolbar-architecture", "hotkeydaemon-architecture"]
-    deliverables:
-      - "docs/plans/YYYY-MM-DD-uniliii-desktop-kernel-architecture.md"
-      - "crate/module boundary map"
-      - "current module inventory: keep, move, merge, delete, archive"
-      - "modrelease-2 import/adapt/reject compatibility table"
-    acceptance_criteria:
-      - "Every major current module has a target owner or archive status."
-      - "No future milestone depends on main.rs as the long-term boundary."
-      - "The design separates domain-model tests from Iced rendering tests."
-    successor_tasks_yml_candidates:
-      - "Write desktop-kernel architecture ADR."
-      - "Create module inventory and move/delete decision table."
-      - "Define IDs for panels, widgets, actions, menus, keybindings, providers."
-  - id: M2
-    name: "typed action bus"
-    goal: "Make hotkeys, menus, widgets, tray items, scripts, and CLI commands dispatch through one typed route."
-    solves: ["toolbar-custom-menus", "hotkeydaemon-dispatch", "future-notifications", "future-filterer"]
-    deliverables:
-      - "Action enum and serialized action schema"
-      - "Action parser for config and CLI strings"
-      - "ActionExecutor for internal, shell, widget, menu, tray, desktop, notification, and IPC namespaces"
-      - "ActionResult with rejected/unavailable/timeout/failed/permission-denied states"
-      - "dry-run and audit output"
-    acceptance_criteria:
-      - "A keybinding, menu item, and CLI invocation can execute the same typed action."
-      - "Invalid actions fail config validation with actionable diagnostics."
-      - "Shell commands have timeout, environment, cwd, and bounded output policy."
-      - "No action execution blocks the UI thread."
-    successor_tasks_yml_candidates:
-      - "Extract action_runner into action domain module/crate."
-      - "Define Action and ActionResult tests."
-      - "Wire keybinding/menu/tray commands through ActionExecutor."
-  - id: M3
-    name: "panel shell and layout kernel"
-    goal: "Replace i3bar/polybar at the window/layout layer."
-    solves: ["toolbar-base"]
-    deliverables:
-      - "PanelId, PanelConfig, PanelGeometry, PanelPlacement, StrutPolicy, MonitorSelector"
-      - "Iced multi-panel shell with hot-reloadable layout"
-      - "documented dock/strut reservation strategy per backend"
-      - "panel lifecycle: create, update, hide, show, destroy, reload"
-      - "theme and density tokens separate from widgets"
-    acceptance_criteria:
-      - "Two panels can be configured independently."
-      - "Layout reload updates geometry without process restart where possible."
-      - "Layout tests cover zones, overflow, alignment, and monitor targeting."
-      - "Provider updates do not stall UI responsiveness."
-    successor_tasks_yml_candidates:
-      - "Extract panel geometry domain types."
-      - "Write layout tests for left/center/right zones and overflow."
-      - "Move panel/window bootstrap out of main.rs."
-  - id: M4
-    name: "widget runtime"
-    goal: "Make toolbar content modular, configurable, testable, and scriptable."
-    solves: ["toolbar-widget-system", "enhanced-panel-foundation"]
-    deliverables:
-      - "WidgetInstance lifecycle: init, validate, subscribe, update, render-model, menu-model, shutdown"
-      - "Provider cache and subscription manager with backpressure"
-      - "error/stale-state model for every widget"
-      - "clock and battery migrated first; network/audio/system/tmux/weather later"
-      - "external command widget protocol design"
-    acceptance_criteria:
-      - "Widgets can be added, removed, disabled, and reconfigured without panel-core edits."
-      - "At least three built-in widgets use the same lifecycle."
-      - "Widget parser/render-model tests do not require live system state."
-      - "Provider updates are coalesced."
-    successor_tasks_yml_candidates:
-      - "Define WidgetInstance and WidgetUpdate contracts."
-      - "Migrate clock and battery to widget runtime."
-      - "Design external command widget JSON protocol."
-  - id: M5
-    name: "shared menu and filter model"
-    goal: "Unify custom menus, tray menus, widget menus, workspace selectors, and rofi-like filterer foundations."
-    solves: ["toolbar-custom-menus", "future-filterer"]
-    deliverables:
-      - "MenuModel, MenuItem, MenuAction, MenuState, MenuLifecycle, FilterState"
-      - "modrelease-2 lifecycle semantics ported as renderer-neutral tests"
-      - "filter/ranking API for large lists"
-      - "virtualized list rendering strategy"
-      - "Menu-to-action-bus integration"
-    acceptance_criteria:
-      - "Tray, widget, and custom menus use the same model."
-      - "Escape, focus-loss, click-outside, navigation, confirm, and modifier-release behavior are consistent."
-      - "Synthetic 10k-item list can filter within a documented responsiveness budget."
-      - "Menu state is inspectable via debug/IPC tooling."
-    successor_tasks_yml_candidates:
-      - "Port modrelease-2 menu lifecycle tests."
-      - "Create renderer-neutral MenuModel and FilterState."
-      - "Replace bespoke tray/widget menu state with shared model."
-  - id: M6
-    name: "hotkeydaemon engine"
-    goal: "Build the backend-neutral keyboard state engine that can replace sxhkd."
-    solves: ["hotkeydaemon-core"]
-    deliverables:
-      - "KeySpec grammar for modifiers, keys, press, release, hold, repeat, chord, sequence, and mode"
-      - "backend abstraction for key event sources"
-      - "conflict detector with explanations"
-      - "mode stack: default, transient, locked, passthrough"
-      - "release-to-confirm semantics shared with menus"
-      - "action bus dispatch on press/release/mode transition"
-    acceptance_criteria:
-      - "Standalone hotkey service can parse config and execute shell/internal actions."
-      - "Conflicts are detected before runtime."
-      - "Focused tests cover press, release, chord, sequence, mode enter/exit, repeat suppression, and conflict reporting."
-      - "The engine can run without panel UI."
-    successor_tasks_yml_candidates:
-      - "Extract key_engine into hotkey domain module/crate."
-      - "Define KeySpec and KeyEvent tests."
-      - "Write conflict detector tests."
-      - "Implement mode stack and release-to-confirm tests."
-  - id: M7
-    name: "sxhkd compatibility and migration"
-    goal: "Let users replace sxhkd incrementally instead of rewriting all shortcuts."
-    solves: ["hotkeydaemon-compatibility"]
-    deliverables:
-      - "sxhkd parser/importer"
-      - "translation report: exact, approximate, unsupported"
-      - "generated uniliii keybinding config"
-      - "realistic sxhkdrc fixtures"
-      - "CLI commands: import-sxhkd, validate, conflicts, explain"
-    acceptance_criteria:
-      - "Common sxhkd patterns import losslessly or explain why not."
-      - "Unsupported constructs do not silently degrade."
-      - "Generated config validates and can dry-run."
-    successor_tasks_yml_candidates:
-      - "Implement sxhkd parser fixtures."
-      - "Generate keybinding config from parsed sxhkd bindings."
-      - "Add unsupported construct diagnostics."
-  - id: M8
-    name: "toolbar-hotkey integrated UX"
-    goal: "Make toolbar and hotkeydaemon feel like one desktop system."
-    solves: ["toolbar-professional-ux", "hotkeydaemon-professional-ux"]
-    deliverables:
-      - "hotkey-driven menu launcher"
-      - "panel-visible mode indicators"
-      - "generated keybinding help overlay"
-      - "action history and failure feedback surface"
-      - "coherent reload of panels, widgets, actions, and hotkeys"
-    acceptance_criteria:
-      - "Changing keybinding config updates daemon behavior and help UI coherently."
-      - "A hotkey can open a widget menu, filter, confirm, and show result without pointer input."
-      - "Failed commands show bounded user-meaningful feedback."
-      - "Hotkey-triggered shell actions do not freeze UI."
-    successor_tasks_yml_candidates:
-      - "Generate keybinding help model from active config."
-      - "Add hotkey mode indicator widget."
-      - "Wire ActionResult into panel feedback surface."
-  - id: M9
-    name: "scriptability and external control"
-    goal: "Expose automation without unsafe shell-glue architecture."
-    solves: ["toolbar-scriptability", "hotkeydaemon-scriptability"]
-    deliverables:
-      - "CLI: query, action, hotkeys, widgets, panels, menus, reload, validate"
-      - "IPC protocol for local control and subscriptions"
-      - "external command widget protocol using JSON lines or request/response JSON"
-      - "script permission, timeout, and bounded-output model"
-      - "machine-readable introspection output"
-    acceptance_criteria:
-      - "Scripts can query current panels/widgets/hotkeys."
-      - "Scripts can trigger typed actions with dry-run."
-      - "External widgets can produce text/progress/icon/menu output through bounded protocol."
-      - "Bad scripts fail closed and visibly."
-    successor_tasks_yml_candidates:
-      - "Define IPC protocol and CLI query schema."
-      - "Implement action dry-run CLI."
-      - "Prototype external command widget with JSON fixtures."
-  - id: M10
-    name: "performance, reliability, packaging"
-    goal: "Make toolbar and hotkeydaemon day-to-day reliable."
-    solves: ["toolbar-production-readiness", "hotkeydaemon-production-readiness"]
-    deliverables:
-      - "idle CPU/memory benchmark"
-      - "redraw/update performance budgets"
-      - "provider failure and timeout tests"
-      - "config reload stress tests"
-      - "systemd user units"
-      - "install/uninstall/package docs"
-    acceptance_criteria:
-      - "Idle CPU and redraw rates meet documented budgets."
-      - "Provider crashes/timeouts do not crash panel or hotkeys."
-      - "Repeated config reload stays stable."
-      - "User can install panel-only, hotkeys-only, or combined stack."
-    successor_tasks_yml_candidates:
-      - "Add performance benchmark harness."
-      - "Add provider timeout/failure tests."
-      - "Write systemd user units for daemon and panel."
-  - id: M11
-    name: "auxiliary capability wave"
-    goal: "Build notification center, weather modules, and rofi-like filterer on solved foundations."
-    dependency: "Start after M2, M5, M6, and M8 are materially complete."
-    solves: ["notification-center", "enhanced-panel-system", "rofi-filterer"]
-    deliverables:
-      - "notification center using DBus provider, shared menu/list model, and action bus"
-      - "weather provider/widget using widget runtime and stale/error states"
-      - "filterer frontend using MenuModel, FilterState, keymaps, and action dispatch"
-    acceptance_criteria:
-      - "Auxiliary modules do not introduce a second menu/action/keybinding stack."
-      - "Auxiliary features can be controlled by CLI, hotkeys, and panel UI."
-    successor_tasks_yml_candidates:
-      - "Design notification center DBus provider boundary."
-      - "Build weather provider as widget-runtime conformance test."
-      - "Build filterer as menu/filter frontend."
-
-architecture_quality_gates:
-  mandatory:
-    - "Write or select failing tests first."
-    - "Verify RED failure before behavior implementation."
-    - "Run focused tests before full workspace tests."
-    - "Run cargo test --workspace before claiming completion."
-    - "Run clippy gate before merging architecture changes."
-  modularity:
-    - "No new feature code in main.rs except temporary wiring."
-    - "Every subsystem has an owner crate/module."
-    - "Cross-subsystem behavior flows through typed actions, providers, or documented APIs."
-  extensibility:
-    - "Config schema is versioned."
-    - "Widget/action/menu protocols are serializable and documented."
-    - "External scripts use stable CLI/IPC, not private internals."
-  performance:
-    - "No blocking provider or action work on the UI thread."
-    - "Polling sources have rate limits and stale/error semantics."
-    - "Large menus use filtering and virtualization."
-  reliability:
-    - "Provider and script failures are isolated."
-    - "Poisoned locks, invalid actions, and timeouts do not panic the panel."
-    - "Reload failures keep last-known-good config active."
-  ux:
-    - "Keyboard-only operation is an acceptance criterion."
-    - "Action results and errors are visible, inspectable, and bounded."
-    - "Mode, focus, and menu state are predictable and recoverable."
-
-next_steps_for_tasks_yml:
-  immediate:
-    - id: N0.1
-      title: "stabilize baseline gates"
-      source_milestone: M0
-      priority: P0
-      task_shape: "bugfix/test cleanup"
-      description: "Close current red cargo test and clippy blockers before architecture work."
-      proposed_subtasks:
-        - "Fix tray unknown icon fallback with existing failing test as RED."
-        - "Fix CalDAV identical branch with datetime tests."
-        - "Replace WiFi tautological assertion with real parser behavior test."
-    - id: N0.2
-      title: "write desktop-kernel architecture ADR"
-      source_milestone: M1
-      priority: P0
-      task_shape: "design doc"
-      description: "Document crate boundaries, process model, action bus, hotkey engine, widget runtime, menu model, and rejected approaches."
-      proposed_subtasks:
-        - "Inventory current modules and assign target owner crate/module."
-        - "Define anti-goals and migration sequence."
-        - "Map modrelease-2 concepts to import/adapt/reject decisions."
-    - id: N0.3
-      title: "define typed Action and ActionResult domain model"
-      source_milestone: M2
-      priority: P0
-      task_shape: "TDD feature foundation"
-      description: "Create shared action vocabulary for hotkeys, menus, widgets, tray, scripts, and CLI."
-      proposed_subtasks:
-        - "Write parser tests for internal, shell, menu, widget, and tray actions."
-        - "Write invalid-action diagnostic tests."
-        - "Adapt action_runner results into ActionResult."
-    - id: N0.4
-      title: "port modrelease-2 menu lifecycle tests"
-      source_milestone: M5
-      priority: P0
-      task_shape: "regression test import"
-      description: "Make modrelease-2 menu behavior renderer-neutral uniliii tests before implementing shared MenuModel."
-      proposed_subtasks:
-        - "Create active-menu test fixture."
-        - "Add Escape, click-outside, focus-loss, navigation, confirm, and modifier-release tests."
-        - "Keep tests independent of Cairo and live windows."
-    - id: N0.5
-      title: "define KeySpec and conflict analysis tests"
-      source_milestone: M6
-      priority: P0
-      task_shape: "TDD feature foundation"
-      description: "Start sxhkd replacement as backend-neutral key grammar and conflict detector."
-      proposed_subtasks:
-        - "Write tests for Super+Enter, release bindings, chords, sequences, and modes."
-        - "Write duplicate and shadowed binding tests."
-        - "Document physical vs logical key semantics."
-  near_term:
-    - id: N1.1
-      title: "extract panel geometry and layout tests"
-      source_milestone: M3
-      priority: P1
-      task_shape: "refactor with characterization tests"
-    - id: N1.2
-      title: "define WidgetInstance lifecycle"
-      source_milestone: M4
-      priority: P1
-      task_shape: "TDD architecture slice"
-    - id: N1.3
-      title: "build sxhkd importer fixtures"
-      source_milestone: M7
-      priority: P1
-      task_shape: "compatibility parser tests"
-    - id: N1.4
-      title: "create keybinding help model"
-      source_milestone: M8
-      priority: P1
-      task_shape: "UX integration"
-  deferred:
-    - id: N2.1
-      title: "notification center provider boundary"
-      source_milestone: M11
-      priority: P2
-      task_shape: "auxiliary design"
-    - id: N2.2
-      title: "weather provider conformance widget"
-      source_milestone: M11
-      priority: P2
-      task_shape: "widget ecosystem test"
-    - id: N2.3
-      title: "rofi-like filterer frontend"
-      source_milestone: M11
-      priority: P2
-      task_shape: "menu/filter frontend"
-
-open_design_questions:
-  - id: Q1
-    question: "Should production start combined or daemon+panel split?"
-    recommended_default: "combined process with crate boundaries first; split after IPC/action bus tests exist"
-  - id: Q2
-    question: "External widgets: JSON-lines command widgets or native dynamic plugins first?"
-    recommended_default: "JSON-lines command widgets first for scriptability and failure isolation"
-  - id: Q3
-    question: "Which global key backend is official first target?"
-    recommended_default: "use existing Linux backend first, then document X11/evdev/winit/Wayland constraints explicitly"
-  - id: Q4
-    question: "Should rofi-like filterer be a separate binary or panel mode?"
-    recommended_default: "shared model with panel/menu frontend first; separate binary later if useful"
-  - id: Q5
-    question: "What compatibility promise applies to i3, X11, Wayland, and non-i3 WMs?"
-    recommended_default: "declare i3/X11-oriented first-class support until backend adapters prove otherwise"
+schema_version: 2
+kind: internal_maintainer_roadmap
+updated_at: '2026-07-18'
+project:
+  name: DeskHalloumi
+  slug: deskhalloumi
+  repository: https://github.com/fkr-0/deskhalloumi
+  current_version: 0.2.0
+  supported_session: i3/X11
+  compatibility_boundary:
+  - unilii command aliases remain available during 0.x
+  - legacy config and runtime paths remain readable
+  - legacy application IDs remain stable where window-manager rules depend on them
+planning_principles:
+- Preserve a small, dependable desktop kernel rather than adding parallel menu, action, or hotkey stacks.
+- Keep UI work asynchronous and cancellation-safe; blocking system APIs belong behind explicit bounded adapters.
+- Prefer typed actions, structured errors, bounded channels, bounded output, and timeouts over unstructured shell glue.
+- Treat generated i3 configuration and selective native X11 grabs as distinct supported deployment modes.
+- Keep release tags immutable and make every published binary reproducible from an annotated source tag.
+- Make hardware, locale, and live-session assumptions explicit in tests.
+- Do not claim Sway or Wayland global-hotkey parity before a separately tested backend exists.
+current_baseline:
+  release:
+    tag: v0.2.0
+    source_status: published
+    linux_binary_archive: published
+    checksum: published
+    crates_io: not_published
+  quality:
+    formatting: green
+    safe_workspace_tests: green
+    isolated_i3_x11_tests: green
+    current_stable_clippy: green
+    release_toolchain: '1.94.1'
+  completed_foundations:
+  - DeskHalloumi rename with pre-1.0 compatibility aliases
+  - standalone hotkey supervisor with transactional reload
+  - recursive i3 configuration audit and atomic include generation
+  - selective native X11 hotkey backend
+  - dynamic evdev keyboard hot-plug handling
+  - versioned local action bus
+  - deterministic Linux release archive
+  - shared menu and popup implementation slices
+release_targets:
+- version: 0.2.1
+  theme: reliability, distribution, and documentation
+  exit_criteria:
+  - GitHub Releases are the durable binary distribution channel.
+  - installation, upgrade, rollback, and checksum instructions are complete.
+  - asynchronous command execution is timeout-bounded, output-bounded, and descendant-safe.
+  - current-stable CI and the pinned release toolchain are both documented.
+- version: 0.3.0
+  theme: structured runtime and action execution
+  exit_criteria:
+  - detached long-lived tasks are replaced by owned supervisors or documented process-lifetime tasks.
+  - action execution has one typed policy for timeout, cwd, environment, output, and cancellation.
+  - provider refreshes use bounded concurrency and explicit stale/error states.
+  - runtime metrics expose task failures, command timeouts, and dropped/coalesced updates.
+- version: 0.4.0
+  theme: widget and provider architecture
+  exit_criteria:
+  - clock, battery, network, audio, and system providers share one lifecycle contract.
+  - provider state can be tested without live desktop services.
+  - external command widgets use a bounded versioned protocol.
+- version: 0.5.0
+  theme: menu and automation convergence
+  exit_criteria:
+  - tray, widget, custom, and filterer menus share one renderer-neutral model.
+  - CLI introspection can list and invoke active actions, menus, widgets, and hotkeys.
+  - action history and failure feedback are visible from the panel.
+- version: 1.0.0
+  theme: stable desktop-control contract
+  exit_criteria:
+  - public configuration and IPC schemas have explicit compatibility guarantees.
+  - installation and rollback are package-quality.
+  - legacy unilii compatibility has a documented retirement decision.
+  - supported platform/session boundaries are stable and tested.
+workstreams:
+- id: REL
+  name: release and distribution
+  priority: P0
+  status: active
+  completed:
+  - annotated v0.2.0 tag
+  - deterministic Linux x86-64 archive
+  - SHA-256 checksum
+  - public GitHub Release assets
+  next:
+  - id: REL-01
+    task: Publish release archives and checksums automatically from the validated release workflow.
+    acceptance:
+    - Existing release assets are replaced atomically on an explicit retry.
+    - Release notes come from docs/releases/<version>.md.
+    - The checksum file verifies from the download directory without path rewriting.
+  - id: REL-02
+    task: Add packaging targets for Arch Linux and a generic install script without weakening source-tag verification.
+    acceptance:
+    - Install and uninstall are reproducible.
+    - User systemd units are installed without being enabled implicitly.
+  - id: REL-03
+    task: Decide whether first-party crates should be published to crates.io.
+    acceptance:
+    - Internal-only crates are clearly marked or publishable metadata is complete.
+- id: ASYNC
+  name: async runtime modernization
+  priority: P0
+  status: active
+  completed:
+  - id: ASYNC-01
+    task: Replace blocking action command polling with tokio process handling.
+  - id: ASYNC-02
+    task: Bound generic action duration and captured stdout/stderr.
+  next:
+  - id: ASYNC-03
+    task: Introduce owned task supervision for process-lifetime workers.
+    suggested_approach:
+    - use JoinSet or a small supervisor abstraction
+    - propagate shutdown explicitly
+    - record task panic and cancellation outcomes
+    acceptance:
+    - Long-lived workers have an owner.
+    - Shutdown waits for bounded cleanup.
+    - No new fire-and-forget task is added without a documented process-lifetime reason.
+  - id: ASYNC-04
+    task: Replace remaining synchronous process execution on UI-sensitive paths.
+    candidate_files:
+    - unilii/bin/src/widgets/audio.rs
+    - unilii/bin/src/widgets/power.rs
+    - unilii/bin/src/widgets/video.rs
+    - unilii/bin/src/widgets/wifi.rs
+    - unilii/bin/src/copyq_frontend/mod.rs
+    - unilii/lib/src/calendar/caldav.rs
+    acceptance:
+    - External commands do not block the Iced update path.
+    - Every command has timeout and output policy.
+    - Live command behavior remains overrideable in tests.
+  - id: ASYNC-05
+    task: Add bounded provider concurrency, coalescing, and backpressure metrics.
+    acceptance:
+    - Repeated refresh requests cannot create unbounded tasks.
+    - Latest-state providers coalesce redundant updates.
+    - Queue saturation is observable.
+  - id: ASYNC-06
+    task: Define cancellation-safe reload and shutdown contracts for hotkey, action-bus, DBus, and provider workers.
+    acceptance:
+    - Candidate reload failure leaves the previous generation operational.
+    - Socket and X11 resources are released during cancellation.
+- id: ARCH
+  name: architecture decomposition
+  priority: P1
+  status: active
+  next:
+  - id: ARCH-01
+    task: Continue splitting main.rs into bootstrap, runtime ownership, action routing, and Iced adapter modules.
+  - id: ARCH-02
+    task: Move ActionRunner policy into a shared core/action boundary once all consumers use the same semantics.
+  - id: ARCH-03
+    task: Replace the fixed clock/battery global subscription registry with typed provider state or watch channels.
+  - id: ARCH-04
+    task: Consolidate menu lifecycle and filtering into one renderer-neutral model.
+- id: HOTKEY
+  name: hotkeys and input semantics
+  priority: P1
+  status: active
+  next:
+  - id: HOTKEY-01
+    task: Define explicit logical-key versus physical-key configuration semantics.
+    acceptance:
+    - US and German layout-sensitive shortcuts have tests.
+    - Import/export diagnostics explain layout-dependent changes.
+  - id: HOTKEY-02
+    task: Extend sxhkd migration only for constructs with representable semantics.
+    acceptance:
+    - Unsupported chains, replay, and synchronous semantics never become silent approximations.
+  - id: HOTKEY-03
+    task: Add reload and device churn soak tests with CPU, memory, task, and log-volume budgets.
+- id: DOC
+  name: documentation and operator experience
+  priority: P1
+  status: active
+  next:
+  - id: DOC-01
+    task: Maintain a navigable documentation index and clear audience labels.
+  - id: DOC-02
+    task: Add complete binary install, source build, systemd, upgrade, rollback, and troubleshooting guides.
+  - id: DOC-03
+    task: Document async runtime ownership, blocking boundaries, cancellation, and subprocess policy.
+  - id: DOC-04
+    task: Add task-oriented examples for panel-only, hotkeys-only, and combined deployments.
+- id: WAYLAND
+  name: compositor portability
+  priority: P2
+  status: research
+  next:
+  - id: WAYLAND-01
+    task: Write a backend feasibility ADR for Sway/Wayland shortcuts, output control, and layer-shell behavior.
+  - id: WAYLAND-02
+    task: Prototype only behind an explicit experimental feature and isolated compositor tests.
+quality_gates:
+  required_for_every_merge:
+  - cargo fmt --all -- --check
+  - python3 scripts/check_release_metadata.py
+  - scripts/test_safe.sh for production-code changes
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
+  required_for_hotkey_or_i3_changes:
+  - scripts/test_i3_hotkeys.sh
+  required_for_release:
+  - python3 scripts/check_release_metadata.py --release --require-clean
+  - annotated tag points to the intended source commit
+  - deterministic archive and checksum are generated
+  - release notes exist under docs/releases
+  - downloadable assets are attached to the GitHub Release
+metrics_to_add:
+- idle CPU and resident memory
+- active Tokio task count by subsystem
+- action duration and timeout count
+- output truncation count and discarded bytes
+- provider refresh coalescing and queue saturation
+- hotkey reload success, rollback, and duration
+- DBus and action-bus request latency
+risk_register:
+- risk: main.rs remains a high-coupling integration boundary.
+  mitigation: extract ownership boundaries in small tested slices.
+- risk: system commands still block UI-sensitive paths.
+  mitigation: migrate them to the shared async command policy in ASYNC-04.
+- risk: detached tasks can survive configuration generations.
+  mitigation: introduce explicit supervisors and shutdown tokens in ASYNC-03 and ASYNC-06.
+- risk: Linux release binaries are not portable across all distributions.
+  mitigation: document the glibc/system-library boundary and add distro packaging or broader build targets.
+- risk: compatibility aliases expand maintenance cost.
+  mitigation: track usage and make a pre-1.0 retirement decision.

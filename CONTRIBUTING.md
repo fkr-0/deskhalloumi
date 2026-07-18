@@ -65,9 +65,24 @@ Executable scripts that intentionally run live-session commands must use the str
 
 Live-session integration tests are future work and must be opt-in. They should require an explicit environment variable, restore the original session state, and stay out of normal `scripts/test_safe.sh` runs.
 
+## Async and subprocess changes
+
+Read [the async runtime policy](docs/async-runtime.md) before adding Tokio tasks,
+channels, retries, provider refreshes, or external commands.
+
+Every spawned task needs an owner, observable failure handling, and bounded
+shutdown. Prefer direct awaits, `JoinSet`, or retained `JoinHandle`s over
+fire-and-forget tasks. Do not hold synchronous mutex guards across `.await`.
+
+External commands on UI-sensitive paths must use asynchronous process handling,
+timeouts, bounded retained output, and cancellation cleanup. Tests should use
+temporary harmless scripts rather than live desktop tools.
+
 ## Updating task state
 
-`tasks.yml` is the source of truth for the current feature plan. When completing a slice:
+`roadmap.yml` defines release horizons and architecture direction. `todo.yml`
+tracks focused known gaps, and `tasks.yml` records detailed implementation
+evidence. When completing a slice:
 
 1. Add or update focused tests first.
 2. Run the focused gate.

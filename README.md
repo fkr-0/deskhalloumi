@@ -1,7 +1,7 @@
 # DeskHalloumi
 
 [![CI](https://github.com/fkr-0/deskhalloumi/actions/workflows/ci.yml/badge.svg)](https://github.com/fkr-0/deskhalloumi/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/tag/fkr-0/deskhalloumi?label=release)](https://github.com/fkr-0/deskhalloumi/tags)
+[![Release](https://img.shields.io/github/v/release/fkr-0/deskhalloumi?label=release)](https://github.com/fkr-0/deskhalloumi/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 DeskHalloumi is a Rust desktop-control workspace built around Iced, Tokio,
@@ -22,7 +22,8 @@ expanded menu and popup frontends.
 - [Release notes](docs/releases/0.2.0.md)
 - [Complete changelog](CHANGELOG.md)
 - [Versioning and release policy](docs/versioning.md)
-- [Tag `v0.2.0`](https://github.com/fkr-0/deskhalloumi/tree/v0.2.0)
+- [Binary release and source tag `v0.2.0`](https://github.com/fkr-0/deskhalloumi/releases/tag/v0.2.0)
+- [Installation and upgrade guide](docs/installation.md)
 
 Clone the repository with:
 
@@ -32,9 +33,10 @@ cd deskhalloumi
 ```
 
 Pushing an annotated version tag runs the release workflow, which validates the
-tag and uploads a deterministic Linux archive plus SHA-256 checksum as a GitHub
-Actions artifact. It does not automatically publish crates or create a GitHub
-Release entry.
+tag, builds the primary and compatibility binaries, creates a deterministic
+Linux archive and checksum, and attaches both files to a durable GitHub Release.
+The same files are retained temporarily as a GitHub Actions artifact. Crates are
+not published automatically.
 
 ## Workspace layout
 
@@ -44,6 +46,7 @@ Release entry.
 ├── CONFIGURATION.md            # menu, module, and app configuration notes
 ├── KEYBINDINGS.md              # keybinding and sxhkd import notes
 ├── CHANGELOG.md                # user-visible unreleased and released changes
+├── roadmap.yml                 # internal maintainer roadmap and release horizons
 ├── todo.yml                    # focused remaining hotkey/rename/release work
 ├── tasks.yml                   # current review/implementation task state
 └── unilii/
@@ -78,6 +81,9 @@ cross-process single-instance menu lifecycle management.
 
 Documentation:
 
+- [Documentation index](docs/README.md)
+- [Installation, upgrade, and rollback](docs/installation.md)
+- [Async runtime and subprocess policy](docs/async-runtime.md)
 - [Hotkey architecture](docs/hotkeyd-architecture.md)
 - [Hotkey operation and troubleshooting](docs/hotkeyd-operations.md)
 - [i3/sxhkd replacement feasibility and migration](docs/hotkeyd-i3-feasibility.md)
@@ -142,6 +148,12 @@ Some architecture is still intentionally transitional. In particular, `unilii/bi
 
 ## Building and running
 
+Prebuilt Linux x86-64 binaries are available from the
+[GitHub Releases page](https://github.com/fkr-0/deskhalloumi/releases). Verify
+the accompanying SHA-256 file before installation. See
+[the installation guide](docs/installation.md) for user-local, system-wide,
+systemd, upgrade, rollback, and removal instructions.
+
 Install a recent Rust toolchain, then build the workspace from the repository root:
 
 ```sh
@@ -188,7 +200,9 @@ cargo test -p deskhalloumi-lib calendar::caldav::tests::normalizes_ics_datetime_
 
 ## Development workflow
 
-Use `tasks.yml` as the source of truth for current priorities. The current workflow is test-first:
+Use `roadmap.yml` for release horizons and architecture direction, `todo.yml`
+for focused known gaps, and `tasks.yml` for detailed implementation evidence.
+The current workflow is test-first:
 
 1. Reproduce the bug or missing behavior with a focused failing test or lint/doc check.
 2. Make the smallest implementation change that turns the test green.
@@ -201,8 +215,9 @@ Release metadata is governed by [the versioning policy](docs/versioning.md) and
 validated with `python3 scripts/check_release_metadata.py`. A prepared release
 commit can be checked with `--candidate`; a tagged release must pass
 `--release --require-clean`. The tag-triggered workflow accepts annotated tags
-only, reruns every release gate, and uploads a deterministic Linux archive plus
-SHA-256 checksum without publishing crates automatically. DeskHalloumi's
+only, reruns every release gate, and publishes a deterministic Linux archive
+plus SHA-256 checksum as GitHub Release assets without publishing crates
+automatically. DeskHalloumi's
 compatibility contract, path precedence, systemd transition, and name-screening
 limits are documented in [the rename plan](docs/project-renaming.md).
 

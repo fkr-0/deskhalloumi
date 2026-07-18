@@ -136,8 +136,10 @@ validation. Development CI continues to track current stable so newly added
 compiler and Clippy diagnostics are addressed on `main` without making an
 immutable historical tag depend on moving lint defaults.
 
-The release workflow does not publish crates or create a public GitHub release.
-Those remain explicit maintainer actions after artifact review.
+The release workflow creates or updates the public GitHub Release for the
+validated tag and uploads the deterministic Linux archive and checksum. It also
+keeps the files as a temporary Actions artifact for workflow inspection. Crate
+publication remains an explicit maintainer action.
 
 ## Post-release maintenance
 

@@ -9,6 +9,25 @@ after that tag belong under `[Unreleased]`.
 
 ## [Unreleased]
 
+### Added
+
+- Durable GitHub Release publication for validated Linux archives and SHA-256
+  checksums, in addition to temporary Actions artifacts.
+- A current internal maintainer roadmap, documentation index, complete binary
+  installation/upgrade/rollback guide, and async runtime policy.
+- Asynchronous action execution through `tokio::process`, with generic action
+  timeouts, working-directory and environment support, bounded retained output,
+  output byte/truncation metadata, and Unix descendant-process termination.
+- Structured module-subscription task monitoring with `JoinSet`, including
+  explicit normal-completion, panic, and cancellation diagnostics.
+
+### Changed
+
+- Release checksums now contain the archive basename, so `sha256sum -c` works
+  directly in the download directory.
+- Release retries update the existing GitHub Release and replace its assets
+  without moving the immutable source tag.
+
 ### Fixed
 
 - GitHub Actions now installs the `libudev` development headers required by the

@@ -94,6 +94,7 @@ tokio = { version = "1.49", features = [
   "sync",
   "net",
   "io-util",
+  "process",
   "signal",
 ] }
 serde = { version = "1.0", features = ["derive"] }

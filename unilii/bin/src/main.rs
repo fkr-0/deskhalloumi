@@ -2471,21 +2471,46 @@ fn run_system_shell_command(
                     vec![OsString::from("-lc"), OsString::from(command)],
                 ))
                 .await;
+            tracing::info!(
+                menu = %outcome.menu,
+                action = %outcome.action,
+                duration_ms = outcome.duration_ms,
+                exit_code = ?outcome.exit_code,
+                error_class = ?outcome.error_class,
+                stdout_bytes = outcome.stdout_bytes,
+                stderr_bytes = outcome.stderr_bytes,
+                stdout_truncated = outcome.stdout_truncated,
+                stderr_truncated = outcome.stderr_truncated,
+                "system menu action completed"
+            );
             match outcome.result {
                 Ok(()) => {
                     let detail = outcome.stdout.trim();
-                    Ok(if detail.is_empty() {
-                        format!("{title_owned} completed")
+                    let truncation = if outcome.stdout_truncated {
+                        format!(" [output truncated; {} bytes total]", outcome.stdout_bytes)
                     } else {
-                        format!("{title_owned}: {detail}")
+                        String::new()
+                    };
+                    Ok(if detail.is_empty() {
+                        format!("{title_owned} completed{truncation}")
+                    } else {
+                        format!("{title_owned}: {detail}{truncation}")
                     })
                 }
                 Err(error) => {
                     let stderr = outcome.stderr.trim();
-                    Err(if stderr.is_empty() {
-                        error
+                    let truncation = if outcome.stderr_truncated {
+                        format!(
+                            " [error output truncated; {} bytes total]",
+                            outcome.stderr_bytes
+                        )
                     } else {
-                        stderr.to_string()
+                        String::new()
+                    };
+                    Err(if stderr.is_empty() {
+                        format!("{error}{truncation}")
+                    } else {
+                        format!("{stderr}{truncation}")
                     })
                 }
             }
