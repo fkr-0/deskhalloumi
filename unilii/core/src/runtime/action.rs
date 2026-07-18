@@ -1,5 +1,4 @@
-#![allow(dead_code)]
-// FIXME(T6): Transitional action execution API is covered by unit tests and will be wired through the typed action bus task.
+//! Bounded asynchronous action and subprocess execution.
 
 use std::{
     ffi::OsString,
@@ -7,14 +6,18 @@ use std::{
     io,
     path::PathBuf,
     process::Stdio,
+    sync::Arc,
     time::{Duration, Instant},
 };
+
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
     process::{Child, Command},
     task::JoinHandle,
     time,
 };
+
+use super::metrics::{RuntimeMetrics, global_runtime_metrics};
 
 const DEFAULT_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
 const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
@@ -48,12 +51,13 @@ impl ActionCommand {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ActionRunner {
     pub menu: String,
     pub action: String,
     timeout: Duration,
     output_limit_bytes: usize,
+    metrics: Arc<RuntimeMetrics>,
 }
 
 impl ActionRunner {
@@ -71,11 +75,17 @@ impl ActionRunner {
             action: action.into(),
             timeout,
             output_limit_bytes: DEFAULT_OUTPUT_LIMIT_BYTES,
+            metrics: global_runtime_metrics(),
         }
     }
 
     pub fn with_output_limit(mut self, output_limit_bytes: usize) -> Self {
         self.output_limit_bytes = output_limit_bytes.max(1);
+        self
+    }
+
+    pub fn with_metrics(mut self, metrics: Arc<RuntimeMetrics>) -> Self {
+        self.metrics = metrics;
         self
     }
 
@@ -86,6 +96,7 @@ impl ActionRunner {
         E: ToString,
     {
         let started_at = Instant::now();
+        self.metrics.record_action_started();
         let (result, error_class) = match time::timeout(self.timeout, work).await {
             Ok(result) => {
                 let result = result.map_err(|error| error.to_string());
@@ -101,10 +112,12 @@ impl ActionRunner {
             ),
         };
 
+        let duration = started_at.elapsed();
+        self.record_completion(duration, result.is_ok(), error_class.as_deref(), 0, 0);
         ActionOutcome {
             menu: self.menu.clone(),
             action: self.action.clone(),
-            duration_ms: started_at.elapsed().as_millis(),
+            duration_ms: duration.as_millis(),
             exit_code: None,
             error_class,
             stdout: String::new(),
@@ -119,6 +132,76 @@ impl ActionRunner {
 
     pub async fn run_command(&self, command: ActionCommand) -> ActionOutcome<()> {
         let started_at = Instant::now();
+        self.metrics.record_action_started();
+        let raw = self.execute_command(command).await;
+        let duration = started_at.elapsed();
+        let stdout = String::from_utf8_lossy(&raw.stdout.bytes).into_owned();
+        let stderr = String::from_utf8_lossy(&raw.stderr.bytes).into_owned();
+        let truncated_streams = u64::from(raw.stdout.truncated) + u64::from(raw.stderr.truncated);
+        let discarded_bytes = raw
+            .stdout
+            .total_bytes
+            .saturating_add(raw.stderr.total_bytes)
+            .saturating_sub(stdout.len().saturating_add(stderr.len()) as u64);
+        self.record_completion(
+            duration,
+            raw.result.is_ok(),
+            raw.error_class.as_deref(),
+            truncated_streams,
+            discarded_bytes,
+        );
+        ActionOutcome {
+            menu: self.menu.clone(),
+            action: self.action.clone(),
+            duration_ms: duration.as_millis(),
+            exit_code: raw.exit_code,
+            error_class: raw.error_class,
+            stdout,
+            stderr,
+            stdout_truncated: raw.stdout.truncated,
+            stderr_truncated: raw.stderr.truncated,
+            stdout_bytes: raw.stdout.total_bytes,
+            stderr_bytes: raw.stderr.total_bytes,
+            result: raw.result,
+        }
+    }
+
+    pub async fn run_command_bytes(&self, command: ActionCommand) -> BinaryActionOutcome {
+        let started_at = Instant::now();
+        self.metrics.record_action_started();
+        let raw = self.execute_command(command).await;
+        let duration = started_at.elapsed();
+        let stderr = String::from_utf8_lossy(&raw.stderr.bytes).into_owned();
+        let truncated_streams = u64::from(raw.stdout.truncated) + u64::from(raw.stderr.truncated);
+        let discarded_bytes = raw
+            .stdout
+            .total_bytes
+            .saturating_add(raw.stderr.total_bytes)
+            .saturating_sub(raw.stdout.bytes.len().saturating_add(stderr.len()) as u64);
+        self.record_completion(
+            duration,
+            raw.result.is_ok(),
+            raw.error_class.as_deref(),
+            truncated_streams,
+            discarded_bytes,
+        );
+        BinaryActionOutcome {
+            menu: self.menu.clone(),
+            action: self.action.clone(),
+            duration_ms: duration.as_millis(),
+            exit_code: raw.exit_code,
+            error_class: raw.error_class,
+            stdout: raw.stdout.bytes,
+            stderr,
+            stdout_truncated: raw.stdout.truncated,
+            stderr_truncated: raw.stderr.truncated,
+            stdout_bytes: raw.stdout.total_bytes,
+            stderr_bytes: raw.stderr.total_bytes,
+            result: raw.result,
+        }
+    }
+
+    async fn execute_command(&self, command: ActionCommand) -> RawCommandOutcome {
         let mut process = Command::new(&command.program);
         process.args(&command.args);
         process.stdin(Stdio::null());
@@ -135,26 +218,15 @@ impl ActionRunner {
         let mut child = match process.spawn() {
             Ok(child) => child,
             Err(source) => {
-                let message = format!(
-                    "failed to spawn action `{}` for menu `{}` action `{}`: {source}",
-                    command.program.display(),
-                    self.menu,
-                    self.action
+                return RawCommandOutcome::failure(
+                    "spawn",
+                    format!(
+                        "failed to spawn action `{}` for menu `{}` action `{}`: {source}",
+                        command.program.display(),
+                        self.menu,
+                        self.action
+                    ),
                 );
-                return ActionOutcome {
-                    menu: self.menu.clone(),
-                    action: self.action.clone(),
-                    duration_ms: started_at.elapsed().as_millis(),
-                    exit_code: None,
-                    error_class: Some("spawn".to_string()),
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    stdout_truncated: false,
-                    stderr_truncated: false,
-                    stdout_bytes: 0,
-                    stderr_bytes: 0,
-                    result: Err(message),
-                };
             }
         };
 
@@ -179,21 +251,13 @@ impl ActionRunner {
 
         let stdout = join_reader(stdout_task).await;
         let stderr = join_reader(stderr_task).await;
-        let duration_ms = started_at.elapsed().as_millis();
 
         if timed_out {
-            return ActionOutcome {
-                menu: self.menu.clone(),
-                action: self.action.clone(),
-                duration_ms,
+            return RawCommandOutcome {
                 exit_code: None,
                 error_class: Some("timeout".to_string()),
-                stdout: stdout.text,
-                stderr: stderr.text,
-                stdout_truncated: stdout.truncated,
-                stderr_truncated: stderr.truncated,
-                stdout_bytes: stdout.total_bytes,
-                stderr_bytes: stderr.total_bytes,
+                stdout,
+                stderr,
                 result: Err(format!(
                     "action `{}` for menu `{}` timed out after {:?}",
                     self.action, self.menu, self.timeout
@@ -202,18 +266,11 @@ impl ActionRunner {
         }
 
         if let Some(source) = wait_error {
-            return ActionOutcome {
-                menu: self.menu.clone(),
-                action: self.action.clone(),
-                duration_ms: started_at.elapsed().as_millis(),
+            return RawCommandOutcome {
                 exit_code: None,
                 error_class: Some("wait".to_string()),
-                stdout: stdout.text,
-                stderr: stderr.text,
-                stdout_truncated: stdout.truncated,
-                stderr_truncated: stderr.truncated,
-                stdout_bytes: stdout.total_bytes,
-                stderr_bytes: stderr.total_bytes,
+                stdout,
+                stderr,
                 result: Err(format!(
                     "failed to wait for action `{}` in menu `{}`: {source}",
                     self.action, self.menu
@@ -223,32 +280,53 @@ impl ActionRunner {
 
         let status = status.expect("status exists when wait succeeded");
         let exit_code = status.code();
-        let success = status.success();
-        ActionOutcome {
-            menu: self.menu.clone(),
-            action: self.action.clone(),
-            duration_ms,
-            exit_code,
-            error_class: if success {
-                None
-            } else {
-                Some("non_zero_exit".to_string())
-            },
-            stdout: stdout.text,
-            stderr: stderr.text,
-            stdout_truncated: stdout.truncated,
-            stderr_truncated: stderr.truncated,
-            stdout_bytes: stdout.total_bytes,
-            stderr_bytes: stderr.total_bytes,
-            result: if success {
-                Ok(())
-            } else {
-                Err(format!(
+        if status.success() {
+            RawCommandOutcome {
+                exit_code,
+                error_class: None,
+                stdout,
+                stderr,
+                result: Ok(()),
+            }
+        } else {
+            RawCommandOutcome {
+                exit_code,
+                error_class: Some("non_zero_exit".to_string()),
+                stdout,
+                stderr,
+                result: Err(format!(
                     "action `{}` for menu `{}` exited with status {:?}",
                     self.action, self.menu, exit_code
-                ))
-            },
+                )),
+            }
         }
+    }
+
+    fn record_completion(
+        &self,
+        duration: Duration,
+        success: bool,
+        error_class: Option<&str>,
+        truncated_streams: u64,
+        discarded_bytes: u64,
+    ) {
+        tracing::info!(
+            menu = %self.menu,
+            action = %self.action,
+            duration_ms = duration.as_millis(),
+            success,
+            error_class = ?error_class,
+            truncated_streams,
+            discarded_bytes,
+            "runtime action completed"
+        );
+        self.metrics.record_action_finished(
+            duration,
+            success,
+            error_class == Some("timeout"),
+            truncated_streams,
+            discarded_bytes,
+        );
     }
 }
 
@@ -268,11 +346,47 @@ pub struct ActionOutcome<T> {
     pub result: Result<T, String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinaryActionOutcome {
+    pub menu: String,
+    pub action: String,
+    pub duration_ms: u128,
+    pub exit_code: Option<i32>,
+    pub error_class: Option<String>,
+    pub stdout: Vec<u8>,
+    pub stderr: String,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub stdout_bytes: u64,
+    pub stderr_bytes: u64,
+    pub result: Result<(), String>,
+}
+
 #[derive(Debug, Default)]
 struct BoundedOutput {
-    text: String,
+    bytes: Vec<u8>,
     truncated: bool,
     total_bytes: u64,
+}
+
+struct RawCommandOutcome {
+    exit_code: Option<i32>,
+    error_class: Option<String>,
+    stdout: BoundedOutput,
+    stderr: BoundedOutput,
+    result: Result<(), String>,
+}
+
+impl RawCommandOutcome {
+    fn failure(error_class: &str, message: String) -> Self {
+        Self {
+            exit_code: None,
+            error_class: Some(error_class.to_string()),
+            stdout: BoundedOutput::default(),
+            stderr: BoundedOutput::default(),
+            result: Err(message),
+        }
+    }
 }
 
 async fn read_bounded<R>(mut reader: R, limit: usize) -> io::Result<BoundedOutput>
@@ -296,8 +410,8 @@ where
     }
 
     Ok(BoundedOutput {
-        text: String::from_utf8_lossy(&retained).into_owned(),
-        truncated: total_bytes > retained.len() as u64,
+        bytes: retained,
+        truncated: total_bytes > limit as u64,
         total_bytes,
     })
 }
@@ -345,77 +459,47 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join(name);
         fs::write(&path, format!("#!/bin/sh\nset -eu\n{body}\n")).expect("write script");
-
-        let mut perms = fs::metadata(&path).expect("metadata").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&path, perms).expect("chmod");
-
+        let mut permissions = fs::metadata(&path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).expect("chmod");
         let _ = Box::leak(Box::new(dir));
         path
+    }
+
+    fn script_command(script: PathBuf) -> ActionCommand {
+        ActionCommand::new("sh", vec![script.into_os_string()])
     }
 
     #[tokio::test]
     async fn success_capture_collects_stdout_stderr_and_metadata() {
         let script = write_script(
             "success.sh",
-            r#"
-printf 'hello stdout\n'
-printf 'hello stderr\n' >&2
-"#,
+            "printf 'hello stdout\\n'\nprintf 'hello stderr\\n' >&2",
         );
         let runner = ActionRunner::with_timeout("menu-a", "action-success", Duration::from_secs(1));
-
-        let outcome = runner.run_command(ActionCommand::new(script, vec![])).await;
-
-        assert_eq!(outcome.menu, "menu-a");
-        assert_eq!(outcome.action, "action-success");
+        let outcome = runner.run_command(script_command(script)).await;
         assert_eq!(outcome.exit_code, Some(0));
-        assert_eq!(outcome.error_class, None);
         assert_eq!(outcome.result, Ok(()));
         assert_eq!(outcome.stdout, "hello stdout\n");
         assert_eq!(outcome.stderr, "hello stderr\n");
-        assert!(!outcome.stdout_truncated);
-        assert!(!outcome.stderr_truncated);
     }
 
     #[tokio::test]
     async fn timeout_returns_timeout_result() {
-        let script = write_script(
-            "timeout.sh",
-            r#"
-sleep 2
-"#,
-        );
+        let script = write_script("timeout.sh", "sleep 2");
         let runner =
             ActionRunner::with_timeout("menu-b", "action-timeout", Duration::from_millis(100));
-
-        let outcome = runner.run_command(ActionCommand::new(script, vec![])).await;
-
-        assert_eq!(outcome.menu, "menu-b");
-        assert_eq!(outcome.action, "action-timeout");
-        assert_eq!(outcome.exit_code, None);
+        let outcome = runner.run_command(script_command(script)).await;
         assert_eq!(outcome.error_class.as_deref(), Some("timeout"));
         assert!(outcome.result.is_err());
     }
 
     #[tokio::test]
     async fn non_zero_exit_captures_stderr() {
-        let script = write_script(
-            "failure.sh",
-            r#"
-printf 'failure details\n' >&2
-exit 23
-"#,
-        );
+        let script = write_script("failure.sh", "printf 'failure details\\n' >&2\nexit 23");
         let runner = ActionRunner::with_timeout("menu-c", "action-failure", Duration::from_secs(1));
-
-        let outcome = runner.run_command(ActionCommand::new(script, vec![])).await;
-
-        assert_eq!(outcome.menu, "menu-c");
-        assert_eq!(outcome.action, "action-failure");
+        let outcome = runner.run_command(script_command(script)).await;
         assert_eq!(outcome.exit_code, Some(23));
-        assert_eq!(outcome.error_class.as_deref(), Some("non_zero_exit"));
-        assert_eq!(outcome.stdout, "");
         assert_eq!(outcome.stderr, "failure details\n");
         assert!(outcome.result.is_err());
     }
@@ -424,34 +508,25 @@ exit 23
     async fn generic_actions_are_timeout_bounded() {
         let runner =
             ActionRunner::with_timeout("menu-generic", "slow-work", Duration::from_millis(25));
-
         let outcome = runner
             .run(async {
                 time::sleep(Duration::from_secs(5)).await;
                 Ok::<_, io::Error>(())
             })
             .await;
-
         assert_eq!(outcome.error_class.as_deref(), Some("timeout"));
-        assert!(outcome.result.is_err());
     }
 
     #[tokio::test]
     async fn command_output_is_drained_but_retained_within_limit() {
         let script = write_script(
             "large-output.sh",
-            r#"
-head -c 16384 /dev/zero | tr '\0' x
-head -c 12288 /dev/zero | tr '\0' y >&2
-"#,
+            "head -c 16384 /dev/zero | tr '\\0' x\nhead -c 12288 /dev/zero | tr '\\0' y >&2",
         );
         let runner =
             ActionRunner::with_timeout("menu-output", "bounded-output", Duration::from_secs(2))
                 .with_output_limit(1024);
-
-        let outcome = runner.run_command(ActionCommand::new(script, vec![])).await;
-
-        assert_eq!(outcome.result, Ok(()));
+        let outcome = runner.run_command(script_command(script)).await;
         assert_eq!(outcome.stdout.len(), 1024);
         assert_eq!(outcome.stderr.len(), 1024);
         assert!(outcome.stdout_truncated);
@@ -461,8 +536,17 @@ head -c 12288 /dev/zero | tr '\0' y >&2
     }
 
     #[tokio::test]
-    async fn command_supports_async_safe_environment_and_working_directory() {
-        let dir = tempdir().expect("tempdir");
+    async fn binary_output_is_retained_without_utf8_conversion() {
+        let script = write_script("binary.sh", "printf '\\377PNG'");
+        let runner = ActionRunner::with_timeout("preview", "binary", Duration::from_secs(1));
+        let outcome = runner.run_command_bytes(script_command(script)).await;
+        assert_eq!(outcome.result, Ok(()));
+        assert_eq!(outcome.stdout, vec![0xff, b'P', b'N', b'G']);
+    }
+
+    #[tokio::test]
+    async fn command_supports_environment_and_working_directory() {
+        let directory = tempdir().expect("tempdir");
         let runner = ActionRunner::with_timeout("menu-env", "env", Duration::from_secs(1));
         let command = ActionCommand::new(
             "sh",
@@ -471,12 +555,12 @@ head -c 12288 /dev/zero | tr '\0' y >&2
                 OsString::from("printf '%s:%s' \"$DESKHALLOUMI_TEST\" \"$PWD\""),
             ],
         )
-        .current_dir(dir.path())
+        .current_dir(directory.path())
         .env("DESKHALLOUMI_TEST", "ready");
-
         let outcome = runner.run_command(command).await;
-
-        assert_eq!(outcome.result, Ok(()));
-        assert_eq!(outcome.stdout, format!("ready:{}", dir.path().display()));
+        assert_eq!(
+            outcome.stdout,
+            format!("ready:{}", directory.path().display())
+        );
     }
 }

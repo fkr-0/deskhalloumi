@@ -1,5 +1,6 @@
 use std::fs;
-use std::process::Command;
+use std::process::Stdio;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
@@ -26,8 +27,9 @@ impl CalDavProvider {
     }
 }
 
+#[async_trait::async_trait]
 impl CalendarProvider for CalDavProvider {
-    fn fetch_events(
+    async fn fetch_events(
         &self,
         _account_id: &str,
         window_start_rfc3339: &str,
@@ -43,12 +45,15 @@ impl CalendarProvider for CalDavProvider {
                 ))
             })?;
 
-        let output = Command::new("curl")
+        let mut command = tokio::process::Command::new("curl");
+        command
             .arg("-fsSL")
             .arg("--connect-timeout")
             .arg("12")
             .arg("--max-time")
             .arg("20")
+            .arg("--max-filesize")
+            .arg("4194304")
             .arg("-X")
             .arg("REPORT")
             .arg("-H")
@@ -59,15 +64,28 @@ impl CalendarProvider for CalDavProvider {
             .arg(format!("{}:{}", self.config.username, secret))
             .arg("--data")
             .arg(query_body)
-            .arg(&self.config.calendar_url)
-            .output()
-            .map_err(|error| CalendarError::Backend(format!("failed to run curl: {}", error)))?;
+            .arg(&self.config.calendar_url);
+        command.stdin(Stdio::null());
+        command.kill_on_drop(true);
+        let output = tokio::time::timeout(Duration::from_secs(22), command.output())
+            .await
+            .map_err(|_| {
+                CalendarError::Backend(format!("curl timed out for {}", self.config.calendar_url))
+            })?
+            .map_err(|error| CalendarError::Backend(format!("failed to run curl: {error}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             return Err(CalendarError::Backend(format!(
                 "curl failed for {}: {}",
                 self.config.calendar_url, stderr
+            )));
+        }
+
+        if output.stdout.len() > 4 * 1024 * 1024 || output.stderr.len() > 256 * 1024 {
+            return Err(CalendarError::Backend(format!(
+                "curl output exceeded the CalDAV response limit for {}",
+                self.config.calendar_url
             )));
         }
 

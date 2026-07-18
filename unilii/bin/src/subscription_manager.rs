@@ -1,226 +1,140 @@
 //! Subscription management for coordinating module updates with Iced subscriptions.
 
-use deskhalloumi_core::ModuleUpdate;
-use std::sync::{Arc, Mutex};
-use tokio::task::JoinSet;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+
+use deskhalloumi_core::{ModuleUpdate, runtime::TaskSpawner};
 use tracing::{error, info, warn};
 
 use crate::module_loader::ModuleSubscription;
 
-/// Registry of active module update streams that Iced subscriptions can tap into.
-#[allow(dead_code)]
+type UpdateStorage = Arc<Mutex<Option<ModuleUpdate>>>;
+
+/// Registry of latest module values that Iced subscriptions can poll without
+/// owning the producer workers themselves.
+#[derive(Default)]
 struct ModuleUpdateRegistry {
-    clock_updates: Option<Arc<Mutex<Option<ModuleUpdate>>>>,
-    battery_updates: Option<Arc<Mutex<Option<ModuleUpdate>>>>,
+    updates: HashMap<String, UpdateStorage>,
 }
 
-#[allow(dead_code)]
-static MODULE_REGISTRY: Mutex<ModuleUpdateRegistry> = Mutex::new(ModuleUpdateRegistry {
-    clock_updates: None,
-    battery_updates: None,
-});
+static MODULE_REGISTRY: std::sync::LazyLock<Mutex<ModuleUpdateRegistry>> =
+    std::sync::LazyLock::new(|| Mutex::new(ModuleUpdateRegistry::default()));
 
-/// Initialize with module subscriptions and start update threads with error recovery.
-#[allow(dead_code)]
-pub fn initialize_global_subscriptions(module_subscriptions: Vec<ModuleSubscription>) {
-    // Initialize the registry with error handling
+/// Initialize module subscriptions under the process runtime supervisor.
+pub fn initialize_global_subscriptions(
+    module_subscriptions: Vec<ModuleSubscription>,
+    spawner: &TaskSpawner,
+) -> Result<(), String> {
     {
-        let mut registry = match MODULE_REGISTRY.lock() {
-            Ok(reg) => reg,
-            Err(poisoned) => {
-                error!("Module registry mutex was poisoned, recovering...");
-                poisoned.into_inner()
-            }
-        };
-
-        for sub in &module_subscriptions {
-            match sub.name.as_str() {
-                "clock" => {
-                    registry.clock_updates = Some(Arc::new(Mutex::new(None)));
-                }
-                "battery" => {
-                    registry.battery_updates = Some(Arc::new(Mutex::new(None)));
-                }
-                _ => {
-                    warn!(
-                        "Subscription for unknown module '{}' will be monitored but not stored",
-                        sub.name
-                    );
-                }
-            }
+        let mut registry = registry_guard();
+        for subscription in &module_subscriptions {
+            registry
+                .updates
+                .entry(subscription.name.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(None)));
         }
     }
 
-    // Start subscription monitoring with error recovery
-    tokio::spawn(async move {
-        info!(
-            "Starting global subscription monitor for {} modules",
-            module_subscriptions.len()
-        );
+    info!(
+        modules = module_subscriptions.len(),
+        "registering module subscriptions with runtime supervisor"
+    );
 
-        // Keep all child workers in one owned task set so completion and panic
-        // handling remain structured inside the process-lifetime monitor.
-        let mut tasks = JoinSet::new();
+    for mut module in module_subscriptions {
+        let producer_name = format!("module:{}:producer", module.name);
+        let producer_token = spawner.cancellation_token();
+        let producer = module
+            .subscription
+            .take_worker()
+            .ok_or_else(|| format!("module '{}' subscription has no producer", module.name))?;
+        spawner
+            .try_spawn(producer_name, async move {
+                tokio::select! {
+                    _ = producer_token.cancelled() => {}
+                    _ = producer => {}
+                }
+            })
+            .map_err(|error| format!("failed to supervise module producer: {error}"))?;
 
-        for mut sub in module_subscriptions {
-            let name = sub.name.clone();
-
-            tasks.spawn(async move {
-                info!(
-                    "Starting resilient subscription handler for module: {}",
-                    name
-                );
-
-                while let Some(update) = sub.receiver.recv().await {
-                    info!("Module '{}' update: {:?}", name, update);
-
-                    // Store the update with error handling
-                    if let Err(e) = store_module_update_safe(&name, update) {
-                        warn!("Failed to store update for module '{}': {}", name, e);
+        let consumer_name = format!("module:{}:consumer", module.name);
+        let module_name = module.name.clone();
+        let consumer_token = spawner.cancellation_token();
+        spawner
+            .try_spawn(consumer_name, async move {
+                loop {
+                    let update = tokio::select! {
+                        _ = consumer_token.cancelled() => break,
+                        update = module.subscription.recv() => update,
+                    };
+                    let Some(update) = update else {
+                        break;
+                    };
+                    if let Err(error) = store_module_update_safe(&module_name, update) {
+                        warn!(module = %module_name, %error, "failed to store module update");
                     }
                 }
-
-                info!("Module '{}' subscription handler terminated", name);
-                name
-            });
-        }
-
-        while let Some(result) = tasks.join_next().await {
-            match result {
-                Ok(name) => {
-                    info!(module = %name, "module subscription task completed normally");
-                }
-                Err(error) if error.is_panic() => {
-                    error!(%error, "module subscription task panicked");
-                }
-                Err(error) => {
-                    error!(%error, "module subscription task was cancelled");
-                }
-            }
-        }
-
-        info!("All module subscription handlers have completed");
-    });
-}
-
-/// Store a module update in the global registry with error handling.
-#[allow(dead_code)]
-fn store_module_update_safe(module_name: &str, update: ModuleUpdate) -> Result<(), String> {
-    let registry = MODULE_REGISTRY
-        .lock()
-        .map_err(|e| format!("Failed to acquire registry lock: {}", e))?;
-
-    match module_name {
-        "clock" => {
-            if let Some(ref storage) = registry.clock_updates {
-                storage
-                    .lock()
-                    .map_err(|e| format!("Failed to acquire clock storage lock: {}", e))?
-                    .replace(update);
-            } else {
-                return Err("Clock storage not initialized".to_string());
-            }
-        }
-        "battery" => {
-            if let Some(ref storage) = registry.battery_updates {
-                storage
-                    .lock()
-                    .map_err(|e| format!("Failed to acquire battery storage lock: {}", e))?
-                    .replace(update);
-            } else {
-                return Err("Battery storage not initialized".to_string());
-            }
-        }
-        _ => {
-            return Err(format!("Unknown module: {}", module_name));
-        }
+                info!(module = %module_name, "module subscription consumer stopped");
+            })
+            .map_err(|error| format!("failed to supervise module consumer: {error}"))?;
     }
 
     Ok(())
 }
 
-/// Store a module update in the global registry.
-#[allow(dead_code)]
-pub fn store_module_update(module_name: &str, update: ModuleUpdate) {
-    let registry = match MODULE_REGISTRY.lock() {
+fn registry_guard() -> std::sync::MutexGuard<'static, ModuleUpdateRegistry> {
+    match MODULE_REGISTRY.lock() {
         Ok(registry) => registry,
         Err(poisoned) => {
-            warn!("Registry lock was poisoned while storing module update, attempting recovery");
+            error!("module registry mutex was poisoned, recovering");
             poisoned.into_inner()
         }
-    };
-
-    match module_name {
-        "clock" => {
-            if let Some(ref storage) = registry.clock_updates
-                && let Ok(mut stored) = storage.lock()
-            {
-                *stored = Some(update);
-            }
-        }
-        "battery" => {
-            if let Some(ref storage) = registry.battery_updates
-                && let Ok(mut stored) = storage.lock()
-            {
-                *stored = Some(update);
-            }
-        }
-        _ => {}
     }
 }
 
-/// Get the latest update for a module with error handling.
-#[allow(dead_code)]
+fn storage_for(module_name: &str) -> UpdateStorage {
+    registry_guard()
+        .updates
+        .entry(module_name.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(None)))
+        .clone()
+}
+
+fn store_module_update_safe(module_name: &str, update: ModuleUpdate) -> Result<(), String> {
+    storage_for(module_name)
+        .lock()
+        .map_err(|error| format!("failed to lock '{module_name}' update storage: {error}"))?
+        .replace(update);
+    Ok(())
+}
+
+#[cfg(test)]
+pub fn store_module_update(module_name: &str, update: ModuleUpdate) {
+    if let Err(error) = store_module_update_safe(module_name, update) {
+        warn!(module = module_name, %error, "failed to store module update");
+    }
+}
+
 pub fn get_latest_module_update(module_name: &str) -> Option<ModuleUpdate> {
-    let registry = match MODULE_REGISTRY.lock() {
-        Ok(reg) => reg,
-        Err(poisoned) => {
-            warn!("Registry lock was poisoned, attempting recovery");
-            poisoned.into_inner()
-        }
-    };
-
-    let storage = match module_name {
-        "clock" => registry.clock_updates.as_ref()?,
-        "battery" => registry.battery_updates.as_ref()?,
-        _ => {
-            warn!(
-                "Attempted to get update for unknown module: {}",
-                module_name
-            );
-            return None;
-        }
-    };
-
+    let storage = registry_guard().updates.get(module_name)?.clone();
     match storage.lock() {
         Ok(stored) => stored.clone(),
         Err(poisoned) => {
             warn!(
-                "Module '{}' storage lock was poisoned, attempting recovery",
-                module_name
+                module = module_name,
+                "module update storage was poisoned, recovering"
             );
             poisoned.into_inner().clone()
         }
     }
 }
 
-/// Check if a module has any stored updates with error handling.
-#[allow(dead_code)]
 pub fn has_module_updates(module_name: &str) -> bool {
-    let registry = match MODULE_REGISTRY.lock() {
-        Ok(reg) => reg,
-        Err(_) => return false,
-    };
-
-    match module_name {
-        "clock" => registry.clock_updates.is_some(),
-        "battery" => registry.battery_updates.is_some(),
-        _ => false,
-    }
+    registry_guard().updates.contains_key(module_name)
 }
 
 #[cfg(test)]
 mod tests {
-
     include!("subscription_manager_tests.rs");
 }

@@ -1,6 +1,6 @@
 use futures::StreamExt;
 
-use deskhalloumi_core::{Module, ModuleConfig, ModuleUpdate, Result};
+use deskhalloumi_core::{Module, ModuleConfig, ModuleUpdate, Result, runtime::ModuleSubscription};
 use deskhalloumi_lib::sysfs::power::{BatteryPowerDevice, PowerDevice, PowerDeviceKind};
 use iced::{
     Alignment, Element, Length,
@@ -80,9 +80,7 @@ impl Module for Battery {
         Ok(())
     }
 
-    async fn subscribe(
-        &mut self,
-    ) -> Result<Option<tokio::sync::mpsc::UnboundedReceiver<ModuleUpdate>>> {
+    async fn subscribe(&mut self) -> Result<Option<ModuleSubscription>> {
         // Find the battery device again for the subscription
         let devices = PowerDevice::read_all().await?;
         let battery_device = devices
@@ -92,21 +90,17 @@ impl Module for Battery {
 
         let device = BatteryPowerDevice(battery_device);
 
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-
-        tokio::spawn(async move {
+        Ok(Some(ModuleSubscription::new(move |updates| async move {
             let stream = device.listen_charge(std::time::Duration::from_secs(5));
 
             futures::pin_mut!(stream);
 
             while let Some(charge) = StreamExt::next(&mut stream).await {
-                let percentage = (charge * 100.0) as f32;
-                let _ = tx.send(ModuleUpdate::ProgressBar(charge as f32));
-                let _ = tx.send(ModuleUpdate::Text(format!("{}%", percentage as i32)));
+                if !updates.send(ModuleUpdate::ProgressBar(charge as f32)) {
+                    break;
+                }
             }
-        });
-
-        Ok(Some(rx))
+        })))
     }
 
     fn update_interval(&self) -> Option<u64> {

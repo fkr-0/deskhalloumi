@@ -110,52 +110,57 @@ workstreams:
     task: Replace blocking action command polling with tokio process handling.
   - id: ASYNC-02
     task: Bound generic action duration and captured stdout/stderr.
-  next:
   - id: ASYNC-03
     task: Introduce owned task supervision for process-lifetime workers.
-    suggested_approach:
-    - use JoinSet or a small supervisor abstraction
-    - propagate shutdown explicitly
-    - record task panic and cancellation outcomes
-    acceptance:
-    - Long-lived workers have an owner.
-    - Shutdown waits for bounded cleanup.
-    - No new fire-and-forget task is added without a documented process-lifetime reason.
+    evidence:
+    - deskhalloumi_core::runtime::RuntimeSupervisor owns a bounded spawn queue and JoinSet.
+    - The action-bus listener, connection workers, embedded hotkey daemon, and module producers/consumers are registered with the bar supervisor.
+    - The retained hotkey daemon worker remains explicitly owned by its reload supervisor.
   - id: ASYNC-04
-    task: Replace remaining synchronous process execution on UI-sensitive paths.
-    candidate_files:
-    - unilii/bin/src/widgets/audio.rs
-    - unilii/bin/src/widgets/power.rs
-    - unilii/bin/src/widgets/video.rs
-    - unilii/bin/src/widgets/wifi.rs
-    - unilii/bin/src/copyq_frontend/mod.rs
-    - unilii/lib/src/calendar/caldav.rs
-    acceptance:
-    - External commands do not block the Iced update path.
-    - Every command has timeout and output policy.
-    - Live command behavior remains overrideable in tests.
+    task: Replace synchronous process execution on active UI-sensitive paths.
+    evidence:
+    - Audio, Wi-Fi, power, video, CopyQ, filter-tab previews, i3 visualizer UI actions, tray network actions, mount discovery, Tmux, and CalDAV now use Tokio process handling.
+    - Disk usage uses statvfs instead of spawning df.
+    - Remaining std::process calls are confined to exec-style compatibility launchers, headless CLI helpers, and the separately synchronous scaffold bar runtime.
   - id: ASYNC-05
     task: Add bounded provider concurrency, coalescing, and backpressure metrics.
-    acceptance:
-    - Repeated refresh requests cannot create unbounded tasks.
-    - Latest-state providers coalesce redundant updates.
-    - Queue saturation is observable.
+    evidence:
+    - ProviderRefreshRegistry admits a bounded number of keyed refreshes and coalesces duplicate in-flight requests.
+    - Module producers publish through latest-value watch channels and record overwritten or closed updates.
+    - Task spawn queues are bounded and report saturation.
   - id: ASYNC-06
-    task: Define cancellation-safe reload and shutdown contracts for hotkey, action-bus, DBus, and provider workers.
+    task: Define cancellation-safe shutdown contracts for bar, action-bus, tray, hotkey, and provider workers.
+    evidence:
+    - The bar cancels and joins its runtime supervisor with a two-second shutdown bound.
+    - Action-bus socket ownership is scoped to the supervised listener.
+    - Module producers and consumers select on the shared cancellation token.
+    - Tray subscription children are retained in a JoinSet.
+  next:
+  - id: ASYNC-07
+    task: Add generation-aware provider state and retain last-known-good values across failed or late refreshes.
     acceptance:
-    - Candidate reload failure leaves the previous generation operational.
-    - Socket and X11 resources are released during cancellation.
+    - Late results from replaced generations cannot overwrite newer state.
+    - Provider state distinguishes loading, fresh, stale, and unavailable.
+  - id: ASYNC-08
+    task: Expose runtime metrics through a local diagnostic command or action-bus query.
+    acceptance:
+    - Operators can inspect task, action, timeout, truncation, refresh, and queue-pressure counters without stopping the bar.
+  - id: ASYNC-09
+    task: Decide whether the synchronous deskhalloumi-bar scaffold should adopt the shared Tokio runtime or remain a deliberately headless blocking CLI.
+    acceptance:
+    - The supported runtime boundary is explicit in documentation and tests.
 - id: ARCH
   name: architecture decomposition
   priority: P1
   status: active
+  completed:
+  - id: ARCH-02
+    task: Move ActionRunner policy into the shared deskhalloumi-core runtime boundary.
+  - id: ARCH-03
+    task: Replace the fixed clock/battery registry with generic latest-value module storage and polling.
   next:
   - id: ARCH-01
     task: Continue splitting main.rs into bootstrap, runtime ownership, action routing, and Iced adapter modules.
-  - id: ARCH-02
-    task: Move ActionRunner policy into a shared core/action boundary once all consumers use the same semantics.
-  - id: ARCH-03
-    task: Replace the fixed clock/battery global subscription registry with typed provider state or watch channels.
   - id: ARCH-04
     task: Consolidate menu lifecycle and filtering into one renderer-neutral model.
 - id: HOTKEY
@@ -210,21 +215,26 @@ quality_gates:
   - deterministic archive and checksum are generated
   - release notes exist under docs/releases
   - downloadable assets are attached to the GitHub Release
-metrics_to_add:
-- idle CPU and resident memory
-- active Tokio task count by subsystem
-- action duration and timeout count
-- output truncation count and discarded bytes
-- provider refresh coalescing and queue saturation
-- hotkey reload success, rollback, and duration
-- DBus and action-bus request latency
+runtime_metrics:
+  implemented:
+  - active supervised task count
+  - task starts, completions, cancellations, and panics
+  - action starts, completions, failures, duration total/max, and timeout count
+  - truncated stream count and discarded byte count
+  - provider refresh starts, completions, coalescing, and saturation
+  - coalesced and dropped update counts
+  remaining:
+  - idle CPU and resident memory
+  - hotkey reload success, rollback, and duration
+  - DBus and action-bus request latency
+  - per-provider stale age and generation
 risk_register:
 - risk: main.rs remains a high-coupling integration boundary.
   mitigation: extract ownership boundaries in small tested slices.
-- risk: system commands still block UI-sensitive paths.
-  mitigation: migrate them to the shared async command policy in ASYNC-04.
-- risk: detached tasks can survive configuration generations.
-  mitigation: introduce explicit supervisors and shutdown tokens in ASYNC-03 and ASYNC-06.
+- risk: headless compatibility and scaffold paths still use synchronous command helpers.
+  mitigation: keep them out of Iced update paths and decide their long-term runtime contract in ASYNC-09.
+- risk: late provider results can overwrite newer state during future live reload work.
+  mitigation: add generation-aware provider state and stale-result suppression in ASYNC-07.
 - risk: Linux release binaries are not portable across all distributions.
   mitigation: document the glibc/system-library boundary and add distro packaging or broader build targets.
 - risk: compatibility aliases expand maintenance cost.

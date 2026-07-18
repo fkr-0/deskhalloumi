@@ -101,7 +101,11 @@ fn test_module_subscriptions_initialization() {
 
     // Verify that subscription_manager::initialize_global_subscriptions exists
     // This is a compile-time check - if it doesn't exist, compilation fails
-    let _ = subscription_manager::initialize_global_subscriptions as fn(Vec<module_loader::ModuleSubscription>);
+    let _ = subscription_manager::initialize_global_subscriptions
+        as fn(
+            Vec<module_loader::ModuleSubscription>,
+            &deskhalloumi_core::runtime::TaskSpawner,
+        ) -> Result<(), String>;
 }
 
 #[test]

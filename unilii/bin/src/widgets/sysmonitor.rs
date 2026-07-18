@@ -3,8 +3,8 @@
 use super::{Widget, WidgetMessage};
 use iced::widget::text;
 use iced::{Color, Element};
+use std::ffi::CString;
 use std::fs;
-use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SystemStatsSnapshot {
@@ -143,18 +143,19 @@ fn parse_uptime_seconds(input: &str) -> Option<u64> {
 }
 
 fn read_root_disk_percent() -> Option<u8> {
-    let output = Command::new("df").args(["-P", "/"]).output().ok()?;
-    if !output.status.success() {
+    let path = CString::new("/").ok()?;
+    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `path` is NUL terminated and `stats` points to writable storage.
+    if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
         return None;
     }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .nth(1)?
-        .split_whitespace()
-        .nth(4)?
-        .trim_end_matches('%')
-        .parse::<u8>()
-        .ok()
+    // SAFETY: a successful `statvfs` call initialized the value.
+    let stats = unsafe { stats.assume_init() };
+    if stats.f_blocks == 0 {
+        return None;
+    }
+    let used = stats.f_blocks.saturating_sub(stats.f_bavail);
+    Some(((used as f64 * 100.0 / stats.f_blocks as f64).round() as u8).min(100))
 }
 
 pub fn format_uptime(seconds: u64) -> String {

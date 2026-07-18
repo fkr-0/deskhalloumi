@@ -38,6 +38,26 @@ owner and shutdown cannot leave external resources behind. New subsystems should
 instead retain a `JoinHandle`, `JoinSet`, or equivalent supervisor entry and
 wait for bounded cleanup during shutdown or reload.
 
+### Implemented shared boundary
+
+`deskhalloumi_core::runtime` is the canonical runtime boundary. It contains:
+
+- `ActionRunner` and `ActionCommand` for bounded text or binary subprocesses;
+- `RuntimeSupervisor` and `TaskSpawner` for a bounded spawn queue, owned
+  `JoinSet`, cancellation, panic observation, and bounded shutdown;
+- `ProviderRefreshRegistry` for global concurrency limits and per-provider
+  in-flight coalescing;
+- latest-value `ModuleSubscription` channels whose producers are returned to
+  the owning supervisor instead of spawning themselves;
+- `RuntimeMetrics` and `RuntimeMetricsSnapshot` for task, action, timeout,
+  truncation, refresh-pressure, and update-pressure counters.
+
+The main bar owns one supervisor. Its action-bus listener and connections,
+embedded hotkey daemon, module producers, and module consumers are children of
+that owner. Closing the main window cancels the tree and waits up to two seconds
+before forced abortion. The tray subscription uses its own scoped `JoinSet`, so
+dropping the subscription also drops its watcher child.
+
 ## Structured concurrency
 
 Use these patterns in descending order of preference:
@@ -78,7 +98,7 @@ keep pipes open.
 All new command execution should use one asynchronous policy rather than direct
 `std::process::Command` calls from UI-sensitive code.
 
-The current action runner provides:
+The shared core action runner provides:
 
 - `tokio::process::Command` instead of a blocking polling thread;
 - null stdin and piped stdout/stderr;
@@ -95,9 +115,16 @@ The default retained-output limit is 64 KiB per stream. Reading continues after
 the limit so a verbose child cannot deadlock on a full pipe. Callers may lower
 the limit for commands whose output is only status text.
 
-Direct synchronous commands remain in transitional modules. The internal
-roadmap tracks migration of audio, power, video, Wi-Fi, CopyQ, Tmux, CalDAV, and
-other command-backed providers to the shared policy.
+The active Iced paths for audio, power, video, Wi-Fi, CopyQ, Tmux, filter-tab,
+i3 visualization, tray networking, mount discovery, and system-menu actions now
+use this policy. CalDAV uses Tokio process handling with an independent network
+timeout and response-size cap because the library crate cannot depend back on
+the core crate. Root disk usage uses `statvfs` rather than spawning `df`.
+
+Synchronous process calls remain only in deliberately non-Iced boundaries:
+exec-style compatibility launchers, headless i3-visualizer helpers, the retained
+hotkey worker launcher, and the separately synchronous `deskhalloumi-bar`
+scaffold runtime. Their long-term contract is tracked in `roadmap.yml`.
 
 ## Timeouts
 
@@ -124,8 +151,19 @@ Choose channel semantics from the data:
 
 Unbounded channels are acceptable only when the producer is intrinsically
 bounded and documented. Provider refresh requests and action execution must not
-create unlimited queued work. Prefer coalescing repeated refreshes into one
-in-flight operation plus one pending refresh.
+create unlimited queued work.
+
+The runtime implements two concrete pressure policies:
+
+- `TaskSpawner` uses a bounded queue. `try_spawn` rejects saturation and records
+  a dropped-update counter rather than silently accumulating work.
+- `ProviderRefreshRegistry` permits only a configured number of concurrent
+  refreshes and allows only one in-flight refresh for each provider key.
+  Duplicate requests are coalesced; global saturation is reported separately.
+
+Clock, battery, and Tmux producers publish through latest-value watch channels.
+If a producer overwrites an unread value, that is recorded as a coalesced update;
+sending after receiver closure is recorded as dropped.
 
 ## Blocking boundaries
 
@@ -214,6 +252,24 @@ retry_attempt
 
 Do not log full command output by default. Output may contain secrets and can be
 large even after retention limits.
+
+The process-wide metrics snapshot currently records:
+
+```text
+active_tasks
+tasks_started / completed / cancelled / panicked
+actions_started / completed / failed
+action_timeouts
+action_duration_ms_total / action_duration_ms_max
+truncated_outputs / truncated_bytes
+provider_refreshes_started / completed / coalesced / saturated
+updates_coalesced / updates_dropped
+```
+
+Each action also emits a structured completion event containing its menu,
+action, duration, result class, output byte counts, and truncation flags. The
+bar logs the aggregate snapshot during supervised shutdown. A live diagnostic
+query is planned as `ASYNC-08` in `roadmap.yml`.
 
 ## Review checklist
 

@@ -19,8 +19,9 @@ impl fmt::Display for CalendarError {
 
 impl std::error::Error for CalendarError {}
 
+#[async_trait::async_trait]
 pub trait CalendarProvider: Send + Sync {
-    fn fetch_events(
+    async fn fetch_events(
         &self,
         account_id: &str,
         window_start_rfc3339: &str,

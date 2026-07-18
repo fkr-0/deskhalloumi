@@ -8,13 +8,13 @@ use deskhalloumi_core::filter_tab::{
     FilterTabMenuInput, FilterTabMenuOutcome, FilterTabMenuState, WindowMatchContext,
     default_filter_tabs, handle_filter_tab_input,
 };
+use deskhalloumi_core::runtime::{ActionCommand, ActionRunner};
 use filter_tab_view::{FilterTabPreview, FilterTabViewMessage, view_filter_tab_menu_with_previews};
 use iced::event::{self, Event};
 use iced::keyboard::{self, Key, Modifiers, key};
 use iced::{Size, Subscription, Task, Theme, window};
 use serde_json::Value;
-use std::collections::HashMap;
-use std::process::Command;
+use std::{collections::HashMap, ffi::OsString, time::Duration};
 
 const DEFAULT_APP_ID: &str = "unilii-filter-tab";
 const DEFAULT_TITLE: &str = "DeskHalloumi Filter Tab";
@@ -457,20 +457,26 @@ async fn capture_preview_image(request: PreviewRequest) -> (u32, Result<Vec<u8>,
         request.con_id,
         request.native_window_id,
     );
-    let result = Command::new("sh")
-        .arg("-c")
-        .arg(&command)
-        .output()
-        .map_err(|error| format!("failed to run preview command: {error}"))
-        .and_then(|output| {
-            if output.status.success() && !output.stdout.is_empty() {
-                Ok(output.stdout)
-            } else if output.status.success() {
-                Err("preview command returned no image bytes".to_string())
-            } else {
-                Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-            }
-        });
+    let outcome =
+        ActionRunner::with_timeout("filter-tab", "capture-preview", Duration::from_secs(2))
+            .with_output_limit(8 * 1024 * 1024)
+            .run_command_bytes(ActionCommand::new(
+                "sh",
+                vec![OsString::from("-c"), OsString::from(command)],
+            ))
+            .await;
+    let result = match outcome.result {
+        Ok(()) if outcome.stdout.is_empty() => {
+            Err("preview command returned no image bytes".to_string())
+        }
+        Ok(()) if outcome.stdout_truncated => Err(format!(
+            "preview command exceeded the 8 MiB image limit ({} bytes)",
+            outcome.stdout_bytes
+        )),
+        Ok(()) => Ok(outcome.stdout),
+        Err(error) if outcome.stderr.trim().is_empty() => Err(error),
+        Err(_) => Err(outcome.stderr.trim().to_string()),
+    };
     (request.con_id, result)
 }
 
@@ -486,14 +492,27 @@ async fn load_windows(options: FilterTabOptions) -> Result<Vec<WindowMatchContex
         return Ok(mock_windows());
     }
 
-    let output = Command::new(&options.i3_msg)
-        .args(["-t", "get_tree"])
-        .output()
-        .map_err(|error| format!("failed to run {}: {}", options.i3_msg, error))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    let outcome = ActionRunner::with_timeout("filter-tab", "get-tree", Duration::from_secs(4))
+        .with_output_limit(4 * 1024 * 1024)
+        .run_command(ActionCommand::new(
+            &options.i3_msg,
+            vec![OsString::from("-t"), OsString::from("get_tree")],
+        ))
+        .await;
+    if let Err(error) = outcome.result {
+        return Err(if outcome.stderr.trim().is_empty() {
+            error
+        } else {
+            outcome.stderr.trim().to_string()
+        });
     }
-    let value = serde_json::from_slice::<Value>(&output.stdout)
+    if outcome.stdout_truncated {
+        return Err(format!(
+            "i3 tree exceeded output limit ({} bytes)",
+            outcome.stdout_bytes
+        ));
+    }
+    let value = serde_json::from_str::<Value>(&outcome.stdout)
         .map_err(|error| format!("failed to parse i3 tree JSON: {error}"))?;
     Ok(collect_windows_from_i3_tree(&value))
 }
@@ -503,14 +522,15 @@ async fn execute_i3_command(
     command: String,
     success_message: String,
 ) -> Result<String, String> {
-    let output = Command::new(&i3_msg)
-        .arg(&command)
-        .output()
-        .map_err(|error| format!("failed to run {i3_msg}: {error}"))?;
-    if output.status.success() {
+    let outcome = ActionRunner::with_timeout("filter-tab", "i3-command", Duration::from_secs(4))
+        .run_command(ActionCommand::new(&i3_msg, vec![OsString::from(command)]))
+        .await;
+    if outcome.result.is_ok() {
         Ok(success_message)
+    } else if outcome.stderr.trim().is_empty() {
+        Err(outcome.result.expect_err("failed outcome has an error"))
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        Err(outcome.stderr.trim().to_string())
     }
 }
 

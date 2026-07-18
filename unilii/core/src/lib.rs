@@ -14,6 +14,7 @@ pub mod key_engine;
 pub mod key_import_sxhkd;
 pub mod keys;
 pub mod menu_process;
+pub mod runtime;
 pub mod x11_hotkeys;
 
 use async_trait::async_trait;
@@ -76,9 +77,7 @@ pub trait Module: Send + Sync {
 
     /// Subscribe to async events (called once at startup).
     /// Returns a stream of updates or None if not needed.
-    async fn subscribe(
-        &mut self,
-    ) -> Result<Option<tokio::sync::mpsc::UnboundedReceiver<ModuleUpdate>>> {
+    async fn subscribe(&mut self) -> Result<Option<runtime::ModuleSubscription>> {
         Ok(None)
     }
 

@@ -536,7 +536,8 @@ impl TrayStateManager {
             let app_id_clone = app_id.to_string();
             return Task::perform(
                 async move {
-                    let runner = crate::action_runner::ActionRunner::new("network", "refresh");
+                    let runner =
+                        deskhalloumi_core::runtime::ActionRunner::new("network", "refresh");
                     let outcome = runner
                         .run(async move {
                             crate::enhanced_tray::read_network_snapshot(
@@ -587,7 +588,7 @@ impl TrayStateManager {
             let app_id_clone = app_id.to_string();
             return Task::perform(
                 async move {
-                    let runner = crate::action_runner::ActionRunner::new("network", "toggle");
+                    let runner = deskhalloumi_core::runtime::ActionRunner::new("network", "toggle");
                     let outcome = runner
                         .run(async move {
                             match crate::enhanced_tray::set_wifi_enabled(
@@ -635,7 +636,8 @@ impl TrayStateManager {
     ) -> Task<TrayMessage> {
         Task::perform(
             async move {
-                let runner = crate::action_runner::ActionRunner::new("network", "spawn_command");
+                let runner =
+                    deskhalloumi_core::runtime::ActionRunner::new("network", "spawn_command");
                 let outcome = runner
                     .run(async move { crate::enhanced_tray::spawn_command(command).await })
                     .await;

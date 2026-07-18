@@ -10,10 +10,9 @@ use iced::keyboard::{self, Key, Modifiers, key};
 use iced::widget::{button, column, container, image, row, scrollable, text, text_input};
 use iced::{Alignment, Element, Length, Size, Subscription, Task, Theme, window};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fmt;
-use std::process::Command;
-use std::time::Duration;
+use std::{collections::HashMap, ffi::OsString, fmt, time::Duration};
+
+use deskhalloumi_core::runtime::{ActionCommand, ActionRunner};
 
 const DEFAULT_MAX_PREVIEW_CHARS: usize = 220;
 const DEFAULT_MAX_VISIBLE_ROWS: usize = 160;
@@ -172,94 +171,134 @@ impl CopyqClient {
         }
     }
 
-    pub fn list_items(&self) -> Result<Vec<ClipboardItem>, CopyqError> {
-        parse_clipboard_items_json(&self.eval(&build_history_eval_script(self.max_preview_chars))?)
+    pub async fn list_items(&self) -> Result<Vec<ClipboardItem>, CopyqError> {
+        parse_clipboard_items_json(
+            &self
+                .eval(&build_history_eval_script(self.max_preview_chars))
+                .await?,
+        )
     }
 
-    pub fn select_and_paste(&self, index: usize, paste: bool) -> Result<(), CopyqError> {
-        self.run_command(["select", &index.to_string()])?;
+    pub async fn select_and_paste(&self, index: usize, paste: bool) -> Result<(), CopyqError> {
+        self.run_command(["select", &index.to_string()]).await?;
         if paste {
-            self.run_command(["paste"])?;
+            self.run_command(["paste"]).await?;
         }
         Ok(())
     }
 
-    pub fn merge_select_and_paste(&self, indices: &[usize], paste: bool) -> Result<(), CopyqError> {
+    pub async fn merge_select_and_paste(
+        &self,
+        indices: &[usize],
+        paste: bool,
+    ) -> Result<(), CopyqError> {
         if indices.is_empty() {
             return Err(CopyqError::EmptyHistory);
         }
         if indices.len() == 1 {
-            return self.select_and_paste(indices[0], paste);
+            return self.select_and_paste(indices[0], paste).await;
         }
 
-        let selected_text = self.eval(&build_selected_items_eval_script(indices))?;
-        self.run_command(["add", selected_text.as_str()])?;
-        self.run_command(["select", "0"])?;
+        let selected_text = self
+            .eval(&build_selected_items_eval_script(indices))
+            .await?;
+        self.run_command(["add", selected_text.as_str()]).await?;
+        self.run_command(["select", "0"]).await?;
         if paste {
-            self.run_command(["paste"])?;
+            self.run_command(["paste"]).await?;
         }
         Ok(())
     }
 
-    pub fn read_image_bytes(&self, index: usize, mime_type: &str) -> Result<Vec<u8>, CopyqError> {
-        let output = Command::new(&self.copyq_bin)
-            .arg("read")
-            .arg(mime_type)
-            .arg(index.to_string())
-            .output()
-            .map_err(|error| CopyqError::CommandFailed {
-                program: self.copyq_bin.clone(),
-                message: error.to_string(),
-            })?;
-
-        if !output.status.success() {
+    pub async fn read_image_bytes(
+        &self,
+        index: usize,
+        mime_type: &str,
+    ) -> Result<Vec<u8>, CopyqError> {
+        let outcome = ActionRunner::with_timeout("copyq", "read-image", Duration::from_secs(5))
+            .with_output_limit(16 * 1024 * 1024)
+            .run_command_bytes(ActionCommand::new(
+                &self.copyq_bin,
+                vec![
+                    OsString::from("read"),
+                    OsString::from(mime_type),
+                    OsString::from(index.to_string()),
+                ],
+            ))
+            .await;
+        if let Err(error) = outcome.result {
             return Err(CopyqError::CommandFailed {
                 program: self.copyq_bin.clone(),
-                message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+                message: command_error(error, &outcome.stderr),
+            });
+        }
+        if outcome.stdout_truncated {
+            return Err(CopyqError::CommandFailed {
+                program: self.copyq_bin.clone(),
+                message: format!(
+                    "image exceeded the 16 MiB preview limit ({} bytes)",
+                    outcome.stdout_bytes
+                ),
             });
         }
 
-        Ok(output.stdout)
+        Ok(outcome.stdout)
     }
 
-    fn eval(&self, script: &str) -> Result<String, CopyqError> {
-        let output = Command::new(&self.copyq_bin)
-            .arg("eval")
-            .arg("--")
-            .arg(script)
-            .output()
-            .map_err(|error| CopyqError::CommandFailed {
-                program: self.copyq_bin.clone(),
-                message: error.to_string(),
-            })?;
-
-        if !output.status.success() {
+    async fn eval(&self, script: &str) -> Result<String, CopyqError> {
+        let outcome = ActionRunner::with_timeout("copyq", "eval", Duration::from_secs(5))
+            .with_output_limit(4 * 1024 * 1024)
+            .run_command(ActionCommand::new(
+                &self.copyq_bin,
+                vec![
+                    OsString::from("eval"),
+                    OsString::from("--"),
+                    OsString::from(script),
+                ],
+            ))
+            .await;
+        if let Err(error) = outcome.result {
             return Err(CopyqError::CommandFailed {
                 program: self.copyq_bin.clone(),
-                message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+                message: command_error(error, &outcome.stderr),
+            });
+        }
+        if outcome.stdout_truncated {
+            return Err(CopyqError::CommandFailed {
+                program: self.copyq_bin.clone(),
+                message: format!(
+                    "CopyQ output exceeded limit ({} bytes)",
+                    outcome.stdout_bytes
+                ),
             });
         }
 
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        Ok(outcome.stdout.trim().to_string())
     }
 
-    fn run_command<const N: usize>(&self, args: [&str; N]) -> Result<(), CopyqError> {
-        let output = Command::new(&self.copyq_bin)
-            .args(args)
-            .output()
-            .map_err(|error| CopyqError::CommandFailed {
-                program: self.copyq_bin.clone(),
-                message: error.to_string(),
-            })?;
-
-        if !output.status.success() {
+    async fn run_command<const N: usize>(&self, args: [&str; N]) -> Result<(), CopyqError> {
+        let outcome = ActionRunner::with_timeout("copyq", "command", Duration::from_secs(5))
+            .run_command(ActionCommand::new(
+                &self.copyq_bin,
+                args.into_iter().map(OsString::from).collect(),
+            ))
+            .await;
+        if let Err(error) = outcome.result {
             return Err(CopyqError::CommandFailed {
                 program: self.copyq_bin.clone(),
-                message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+                message: command_error(error, &outcome.stderr),
             });
         }
 
         Ok(())
+    }
+}
+
+fn command_error(error: String, stderr: &str) -> String {
+    if stderr.trim().is_empty() {
+        error
+    } else {
+        stderr.trim().to_string()
     }
 }
 
@@ -860,12 +899,14 @@ image…",
 async fn load_items(options: CopyqFrontendOptions) -> Result<Vec<ClipboardItem>, String> {
     CopyqClient::new(&options)
         .list_items()
+        .await
         .map_err(|error| error.to_string())
 }
 
 async fn activate_items(options: CopyqFrontendOptions, indices: Vec<usize>) -> Result<(), String> {
     CopyqClient::new(&options)
         .merge_select_and_paste(&indices, options.paste_on_activate)
+        .await
         .map_err(|error| error.to_string())
 }
 
@@ -876,6 +917,7 @@ async fn load_image(
 ) -> Result<Vec<u8>, String> {
     CopyqClient::new(&options)
         .read_image_bytes(index, &mime_type)
+        .await
         .map_err(|error| error.to_string())
 }
 

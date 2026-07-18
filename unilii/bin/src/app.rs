@@ -9,11 +9,22 @@ use crate::{
     enhanced_tray,
     module_loader::LoadedModule,
     tray,
-    widgets::{Audio, Power, SysMonitor, Video, WidgetMessage, Wifi},
+    widgets::{
+        Audio, Power, SysMonitor, Video, WidgetMessage, Wifi, audio::AudioSnapshot,
+        power::PowerSnapshot, video::VideoSnapshot, wifi::WifiSnapshot,
+    },
 };
-use deskhalloumi_core::{ModuleUpdate, config::Config, keys::KeybindingResult};
+use deskhalloumi_core::{
+    ModuleUpdate,
+    config::Config,
+    keys::KeybindingResult,
+    runtime::{ProviderRefreshRegistry, RuntimeSupervisor, TaskSpawner},
+};
 use iced::{Task, window};
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 use tracing::{error, info};
 
 /// A single panel in a multi-panel setup
@@ -88,8 +99,7 @@ impl UniliiPanelManager {
                 info!("Window closed: {:?}", id);
                 self.panels.remove(&id);
                 if self.panels.is_empty() {
-                    info!("Last panel closed, exiting");
-                    std::process::exit(0);
+                    info!("Last transitional panel closed");
                 }
                 Task::none()
             }
@@ -166,6 +176,9 @@ pub struct UniliiBar {
     pub audio: Audio,
     pub video: Video,
     pub power: Power,
+    pub runtime_supervisor: Arc<RuntimeSupervisor>,
+    pub runtime_spawner: TaskSpawner,
+    pub provider_refreshes: ProviderRefreshRegistry,
     pub system_menu: crate::menus::system::SystemMenuRuntime,
     pub shift_held: bool,
     pub tray_icons: Vec<tray::TrayIcon>,
@@ -184,6 +197,7 @@ pub enum Message {
     InitializePanels,
     WindowOpened(window::Id),
     WindowClosed(window::Id),
+    RuntimeShutdownComplete(Result<(), String>),
 
     // Panel messages
     ModuleUpdate(String, ModuleUpdate),
@@ -238,6 +252,11 @@ pub enum Message {
     // Legacy widget events
     LegacyWidget(WidgetMessage),
     LegacyWidgetTick(String),
+    AudioRefreshDone(Result<AudioSnapshot, String>),
+    WifiRefreshDone(Result<WifiSnapshot, String>),
+    VideoRefreshDone(Result<VideoSnapshot, String>),
+    PowerRefreshDone(Result<PowerSnapshot, String>),
+    PowerActionDone(Result<Option<PowerSnapshot>, String>),
 
     // Legacy tray events (keep for compatibility during transition)
     KeybindingAction(KeybindingResult),

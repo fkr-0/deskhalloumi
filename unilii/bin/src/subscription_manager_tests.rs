@@ -1,96 +1,87 @@
-use super::{initialize_global_subscriptions, get_latest_module_update, has_module_updates, store_module_update};
+use std::time::Duration;
+
+use deskhalloumi_core::{
+    ModuleUpdate,
+    runtime::{ModuleSubscription as RuntimeModuleSubscription, RuntimeSupervisor},
+};
+
+use super::{
+    get_latest_module_update, has_module_updates, initialize_global_subscriptions,
+    store_module_update,
+};
 use crate::module_loader::ModuleSubscription;
-use tokio::sync::mpsc;
-use deskhalloumi_core::ModuleUpdate;
 
 #[tokio::test]
 async fn test_subscription_manager_initialization() {
-    let subscriptions = vec![
-        ModuleSubscription {
-            name: "test_module".to_string(),
-            receiver: {
-                let (_tx, rx) = mpsc::unbounded_channel();
-                rx
-            },
-        }
-    ];
-    
-    // Should not panic when initializing
-    initialize_global_subscriptions(subscriptions);
-    
-    // Give it a moment to start
-    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    let supervisor = RuntimeSupervisor::start("subscription-test", 8);
+    let subscriptions = vec![ModuleSubscription {
+        name: "test_module".to_string(),
+        subscription: RuntimeModuleSubscription::new(|updates| async move {
+            let _ = updates.send(ModuleUpdate::Text("ready".to_string()));
+        }),
+    }];
+
+    initialize_global_subscriptions(subscriptions, &supervisor.spawner()).unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    supervisor.shutdown(Duration::from_secs(1)).await.unwrap();
+}
+
+#[test]
+fn test_arbitrary_module_update_storage() {
+    store_module_update("tmux", ModuleUpdate::Text("pane:%17".to_string()));
+    assert!(has_module_updates("tmux"));
+    assert!(matches!(
+        get_latest_module_update("tmux"),
+        Some(ModuleUpdate::Text(text)) if text == "pane:%17"
+    ));
 }
 
 #[tokio::test]
 async fn test_module_update_storage() {
-    // Initialize the registry first with a clock module subscription
-    let subscriptions = vec![
-        ModuleSubscription {
-            name: "clock".to_string(),
-            receiver: {
-                let (_tx, rx) = mpsc::unbounded_channel();
-                rx
-            },
-        }
-    ];
-    
-    initialize_global_subscriptions(subscriptions);
-    
-    // Give the initialization a moment to complete
-    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    
-    // Test storing and retrieving module updates
-    let update = ModuleUpdate::Text("12:34:56".to_string());
-    
-    // Store a clock update
-    store_module_update("clock", update.clone());
-    
-    // Check that it can be retrieved
-    let retrieved = get_latest_module_update("clock");
-    assert!(retrieved.is_some());
-    
-    if let Some(ModuleUpdate::Text(text)) = retrieved {
-        assert_eq!(text, "12:34:56");
-    }
+    let supervisor = RuntimeSupervisor::start("subscription-storage-test", 8);
+    let subscriptions = vec![ModuleSubscription {
+        name: "clock".to_string(),
+        subscription: RuntimeModuleSubscription::new(|updates| async move {
+            let _ = updates.send(ModuleUpdate::Text("12:34:56".to_string()));
+        }),
+    }];
+
+    initialize_global_subscriptions(subscriptions, &supervisor.spawner()).unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    assert!(matches!(
+        get_latest_module_update("clock"),
+        Some(ModuleUpdate::Text(text)) if text == "12:34:56"
+    ));
+    supervisor.shutdown(Duration::from_secs(1)).await.unwrap();
 }
 
-#[test] 
+#[test]
+fn test_manual_module_update_storage() {
+    store_module_update("clock", ModuleUpdate::Text("manual".to_string()));
+    assert!(matches!(
+        get_latest_module_update("clock"),
+        Some(ModuleUpdate::Text(text)) if text == "manual"
+    ));
+}
+
+#[test]
 fn test_has_module_updates() {
-    // Initially should have no updates for unknown modules
     assert!(!has_module_updates("unknown_module"));
-    
-    // After storing an update, should return true
-    store_module_update("battery", ModuleUpdate::ProgressBar(0.75));
-    // Note: has_module_updates checks if registry is initialized, not if there's data
 }
 
 #[test]
 fn test_get_latest_module_update_returns_none_for_unknown() {
-    let result = get_latest_module_update("unknown_module");
-    assert!(result.is_none());
+    assert!(get_latest_module_update("unknown_module").is_none());
 }
 
 #[test]
 fn test_module_update_types() {
-    // Test different types of module updates
     let text_update = ModuleUpdate::Text("test".to_string());
     let progress_update = ModuleUpdate::ProgressBar(0.5);
     let icon_update = ModuleUpdate::Icon("🔋".to_string());
-    
-    // Test that they can be cloned and matched  
-    match text_update.clone() {
-        ModuleUpdate::Text(text) => assert_eq!(text, "test"),
-        _ => panic!("Unexpected update type"),
-    }
-    
-    match progress_update.clone() {
-        ModuleUpdate::ProgressBar(value) => assert_eq!(value, 0.5),
-        _ => panic!("Unexpected update type"),
-    }
-    
-    match icon_update.clone() {
-        ModuleUpdate::Icon(icon) => assert_eq!(icon, "🔋"),
-        _ => panic!("Unexpected update type"),
-    }
+
+    assert!(matches!(text_update, ModuleUpdate::Text(text) if text == "test"));
+    assert!(matches!(progress_update, ModuleUpdate::ProgressBar(value) if value == 0.5));
+    assert!(matches!(icon_update, ModuleUpdate::Icon(icon) if icon == "🔋"));
 }

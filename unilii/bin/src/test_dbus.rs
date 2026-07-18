@@ -1,6 +1,5 @@
 use std::env;
 
-mod action_runner;
 mod enhanced_tray;
 mod menus;
 mod tray;

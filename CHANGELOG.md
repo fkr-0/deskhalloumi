@@ -20,6 +20,12 @@ after that tag belong under `[Unreleased]`.
   output byte/truncation metadata, and Unix descendant-process termination.
 - Structured module-subscription task monitoring with `JoinSet`, including
   explicit normal-completion, panic, and cancellation diagnostics.
+- A shared `deskhalloumi-core` runtime boundary containing bounded action
+  execution, owned task supervision, cancellation tokens, keyed provider
+  refresh admission, latest-value module channels, and process-wide counters.
+- Runtime metrics for active tasks, task outcomes, action durations and
+  timeouts, output truncation/discarded bytes, provider coalescing/saturation,
+  and dropped or overwritten updates.
 
 ### Changed
 
@@ -27,6 +33,13 @@ after that tag belong under `[Unreleased]`.
   directly in the download directory.
 - Release retries update the existing GitHub Release and replace its assets
   without moving the immutable source tag.
+- Clock, battery, and Tmux subscription producers now return owned worker
+  futures to the application supervisor instead of detaching themselves.
+- Audio, Wi-Fi, power, video, CopyQ, filter-tab previews, i3 visualizer actions,
+  tray networking, mount discovery, Tmux, and CalDAV command paths now execute
+  asynchronously with explicit duration and output limits.
+- Repeated provider refreshes are coalesced by key and globally bounded; closing
+  the main bar cancels and joins its runtime tree within a fixed shutdown window.
 
 ### Fixed
 
@@ -42,6 +55,8 @@ after that tag belong under `[Unreleased]`.
   branch CI remains on current stable and the codebase is kept clean under new lints.
 - CI toolchain installation explicitly includes `rustfmt` and `clippy`, avoiding
   missing-component failures when using rustup's minimal profile.
+- Removed unused alternate tray/update coordinators and stale standalone Wi-Fi
+  tests that still contained detached-task and live-command implementations.
 
 ## [0.2.0] - 2026-07-18
 

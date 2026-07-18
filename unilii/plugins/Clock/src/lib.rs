@@ -1,5 +1,5 @@
 use chrono::Local;
-use deskhalloumi_core::{Module, ModuleConfig, ModuleUpdate, Result};
+use deskhalloumi_core::{Module, ModuleConfig, ModuleUpdate, Result, runtime::ModuleSubscription};
 use iced::{Element, widget::text};
 
 pub struct Clock {
@@ -36,22 +36,20 @@ impl Module for Clock {
         Ok(())
     }
 
-    async fn subscribe(
-        &mut self,
-    ) -> Result<Option<tokio::sync::mpsc::UnboundedReceiver<ModuleUpdate>>> {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    async fn subscribe(&mut self) -> Result<Option<ModuleSubscription>> {
         let format = self.format.clone();
 
-        tokio::spawn(async move {
+        Ok(Some(ModuleSubscription::new(move |updates| async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
                 let time_str = Local::now().format(&format).to_string();
-                let _ = tx.send(ModuleUpdate::Text(time_str));
+                if !updates.send(ModuleUpdate::Text(time_str)) {
+                    break;
+                }
             }
-        });
-
-        Ok(Some(rx))
+        })))
     }
 
     fn update_interval(&self) -> Option<u64> {

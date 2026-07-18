@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 
 use deskhalloumi_core::{
-    DefaultModuleRegistry, ModuleConfig, ModuleRegistry, ModuleUpdate, Result, register_module,
+    DefaultModuleRegistry, ModuleConfig, ModuleRegistry, Result, register_module,
+    runtime::ModuleSubscription as RuntimeModuleSubscription,
 };
 use tracing::{info, warn};
 
@@ -18,9 +19,9 @@ pub struct ModuleSubscription {
     /// The module name.
     #[allow(dead_code)]
     pub name: String,
-    /// The receiver for module updates.
+    /// The latest-value update channel and its producer worker.
     #[allow(dead_code)]
-    pub receiver: tokio::sync::mpsc::UnboundedReceiver<ModuleUpdate>,
+    pub subscription: RuntimeModuleSubscription,
 }
 
 /// Registry manager that handles module registration and loading.
@@ -127,9 +128,9 @@ impl ModuleManager {
 
         // Set up subscription with error handling
         let subscription = match module.subscribe().await {
-            Ok(Some(rx)) => Some(ModuleSubscription {
+            Ok(Some(subscription)) => Some(ModuleSubscription {
                 name: name.to_string(),
-                receiver: rx,
+                subscription,
             }),
             Ok(None) => {
                 info!("Module '{}' does not provide subscriptions", name);

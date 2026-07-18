@@ -24,9 +24,9 @@ review:
   - 'All bugfixes and behavior changes must be TDD: failing test first, verified red, minimal green, verified green, then
     refactor.'
   - Do not treat compile success as behavioral success; tests and clippy currently disagree.
-  last_updated_at: '2026-05-16'
-  last_update_summary: 'T1.1-S10 completed: tray animation tick extracted from main.rs with focused tests and green workspace
-    gates.'
+  last_updated_at: '2026-07-18'
+  last_update_summary: 'Completed the supervised async runtime slice: shared action policy, owned workers, bounded shutdown,
+    provider refresh coalescing, latest-value module updates, and runtime metrics.'
 actual_bugs:
 - id: BUG-001
   title: unknown tray icon names fall back to initials instead of generic icon
@@ -2638,3 +2638,32 @@ feature_implementation_plan:
     - "Docs explain installation, i3/sway startup, config format, module behavior, troubleshooting, and known limitations."
     - "Tests cover config, scheduling, script timeouts, threshold formatting, registry contracts, and backend parsers."
 # END generated feature implementation plan: polybar_makepad
+
+runtime_modernization_2026_07_18:
+  status: complete
+  scope:
+  - shared action and runtime ownership boundary
+  - UI-sensitive subprocess migration
+  - task supervision, cancellation, and bounded shutdown
+  - provider refresh admission, coalescing, and latest-value delivery
+  - runtime metrics and documentation
+  implementation_evidence:
+  - unilii/core/src/runtime/action.rs
+  - unilii/core/src/runtime/supervisor.rs
+  - unilii/core/src/runtime/refresh.rs
+  - unilii/core/src/runtime/provider.rs
+  - unilii/core/src/runtime/metrics.rs
+  - unilii/bin/src/main.rs
+  - unilii/bin/src/subscription_manager.rs
+  - docs/async-runtime.md
+  verification:
+  - cargo fmt --all -- --check
+  - python3 scripts/check_release_metadata.py --candidate
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
+  - scripts/test_safe.sh
+  - scripts/test_i3_hotkeys.sh
+  - runtime supervisor cancellation stress test passed 50 consecutive runs
+  remaining:
+  - generation-aware stale-result suppression for live provider reloads
+  - live runtime-metrics query over CLI or action bus
+  - explicit decision for the separate synchronous deskhalloumi-bar scaffold runtime

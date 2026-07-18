@@ -1,14 +1,16 @@
 //! Video widget implementation for xrandr display management.
 
 use super::{Widget, WidgetMessage};
+use deskhalloumi_core::runtime::{ActionCommand, ActionRunner};
 use iced::widget::{button, column, container, row, scrollable, text};
 use iced::{Alignment, Color, Element, Length};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::time::Duration;
 
 const XRANDR_PRESETS_ENV: &str = "DESKHALLOUMI_XRANDR_PRESETS_YAML";
 const LEGACY_XRANDR_PRESETS_ENV: &str = "UNILII_XRANDR_PRESETS_YAML";
@@ -49,6 +51,13 @@ pub struct XrandrPreset {
 pub enum XrandrPresetCommand {
     Shell(String),
     Args(Vec<String>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoSnapshot {
+    pub displays: Vec<DisplayInfo>,
+    pub current_preset: Option<String>,
+    pub last_status: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,38 +125,42 @@ impl Video {
             preset_source,
             last_status: "Ready".to_string(),
         };
-        video.refresh_state();
+        video.reload_presets();
         video
     }
 
-    pub fn refresh_state(&mut self) {
-        match detect_displays() {
-            Ok(displays) => {
-                self.displays = displays;
-                self.last_status =
-                    format!("Detected {} display(s)", self.connected_display_count());
-            }
-            Err(err) => {
-                self.displays.clear();
-                self.last_status = err;
-            }
-        }
-
+    pub fn reload_presets(&mut self) {
         match self.load_presets() {
             Ok(presets) => {
                 self.presets = presets;
-                if self.presets.is_empty() {
-                    self.last_status = match &self.preset_source {
+                self.last_status = if self.presets.is_empty() {
+                    match &self.preset_source {
                         Some(path) => format!("No presets found in {}", path.display()),
                         None => "No preset file configured".to_string(),
-                    };
-                }
+                    }
+                } else {
+                    format!("Loaded {} display preset(s)", self.presets.len())
+                };
             }
-            Err(err) => {
+            Err(error) => {
                 self.presets.clear();
-                self.last_status = err;
+                self.last_status = error;
             }
         }
+    }
+
+    pub fn menu_is_open(&self) -> bool {
+        self.show_menu
+    }
+
+    pub fn preset(&self, key: &str) -> Option<XrandrPreset> {
+        self.presets.get(key).cloned()
+    }
+
+    pub fn apply_snapshot(&mut self, snapshot: VideoSnapshot) {
+        self.displays = snapshot.displays;
+        self.current_preset = snapshot.current_preset;
+        self.last_status = snapshot.last_status;
     }
 
     fn connected_display_count(&self) -> usize {
@@ -223,36 +236,6 @@ impl Video {
             })
             .collect()
     }
-
-    pub fn apply_preset(&mut self, preset_key: &str) {
-        let Some(preset) = self.presets.get(preset_key).cloned() else {
-            self.last_status = format!("Unknown preset: {}", preset_key);
-            return;
-        };
-
-        let status = match preset.command {
-            XrandrPresetCommand::Shell(command) => {
-                Command::new("sh").args(["-c", &command]).status()
-            }
-            XrandrPresetCommand::Args(args) => Command::new("xrandr").args(args).status(),
-        };
-
-        match status {
-            Ok(exit) if exit.success() => {
-                self.current_preset = Some(preset.key.clone());
-                self.last_status = format!("Applied preset: {}", preset.name);
-                if let Ok(displays) = detect_displays() {
-                    self.displays = displays;
-                }
-            }
-            Ok(exit) => {
-                self.last_status = format!("Preset '{}' failed with {}", preset.name, exit);
-            }
-            Err(err) => {
-                self.last_status = format!("Failed to execute '{}': {}", preset.name, err);
-            }
-        }
-    }
 }
 
 impl Widget for Video {
@@ -269,21 +252,10 @@ impl Widget for Video {
     }
 
     fn update(&mut self, message: WidgetMessage) {
-        if let WidgetMessage::Video(action) = message {
-            match action.as_str() {
-                "toggle_menu" => {
-                    self.show_menu = !self.show_menu;
-                    if self.show_menu {
-                        self.refresh_state();
-                    }
-                }
-                "refresh" => self.refresh_state(),
-                _ if action.starts_with("preset:") => {
-                    let preset = action.trim_start_matches("preset:");
-                    self.apply_preset(preset);
-                }
-                _ => {}
-            }
+        if let WidgetMessage::Video(action) = message
+            && action == "toggle_menu"
+        {
+            self.show_menu = !self.show_menu;
         }
     }
 
@@ -460,20 +432,67 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn detect_displays() -> Result<Vec<DisplayInfo>, String> {
-    let output = Command::new("xrandr")
-        .arg("--query")
-        .output()
-        .map_err(|err| format!("Failed to execute xrandr: {}", err))?;
+pub async fn read_video_snapshot(xrandr: String) -> Result<VideoSnapshot, String> {
+    let displays = detect_displays(&xrandr).await?;
+    let connected = displays.iter().filter(|display| display.connected).count();
+    Ok(VideoSnapshot {
+        displays,
+        current_preset: None,
+        last_status: format!("Detected {connected} display(s)"),
+    })
+}
 
-    if !output.status.success() {
-        return Err(format!("xrandr --query failed with {}", output.status));
+pub async fn apply_video_preset(
+    xrandr: String,
+    preset: XrandrPreset,
+) -> Result<VideoSnapshot, String> {
+    let command = match &preset.command {
+        XrandrPresetCommand::Shell(command) => {
+            ActionCommand::new("sh", vec![OsString::from("-c"), OsString::from(command)])
+        }
+        XrandrPresetCommand::Args(args) => {
+            ActionCommand::new(&xrandr, args.iter().map(OsString::from).collect())
+        }
+    };
+    let outcome =
+        ActionRunner::with_timeout("video-widget", "apply-preset", Duration::from_secs(12))
+            .run_command(command)
+            .await;
+    if let Err(error) = outcome.result {
+        return Err(if outcome.stderr.trim().is_empty() {
+            error
+        } else {
+            outcome.stderr.trim().to_string()
+        });
     }
+    let displays = detect_displays(&xrandr).await?;
+    Ok(VideoSnapshot {
+        displays,
+        current_preset: Some(preset.key.clone()),
+        last_status: format!("Applied preset: {}", preset.name),
+    })
+}
 
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|err| format!("xrandr output was not valid UTF-8: {}", err))?;
-
-    Ok(parse_xrandr_output(&stdout))
+async fn detect_displays(xrandr: &str) -> Result<Vec<DisplayInfo>, String> {
+    let outcome =
+        ActionRunner::with_timeout("video-widget", "query-displays", Duration::from_secs(5))
+            .with_output_limit(2 * 1024 * 1024)
+            .run_command(ActionCommand::new(xrandr, vec![OsString::from("--query")]))
+            .await;
+    if let Err(error) = outcome.result {
+        return Err(if outcome.stderr.trim().is_empty() {
+            error
+        } else {
+            outcome.stderr.trim().to_string()
+        });
+    }
+    if outcome.stdout_truncated {
+        return Err(format!(
+            "xrandr output exceeded limit ({} bytes)",
+            outcome.stdout_bytes
+        ));
+    }
+    Ok(parse_xrandr_output(&outcome.stdout))
 }
 
 fn parse_xrandr_output(output: &str) -> Vec<DisplayInfo> {

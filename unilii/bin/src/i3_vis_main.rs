@@ -5,12 +5,13 @@ use deskhalloumi_core::i3_vis::{
     I3VisInput, I3VisNode, I3VisNodeKind, I3VisOutcome, I3VisRow, I3VisState, handle_i3_vis_input,
     kind_icon, kind_label,
 };
+use deskhalloumi_core::runtime::{ActionCommand, ActionRunner};
 use iced::event::{self, Event};
 use iced::keyboard::{self, Key, Modifiers, key};
 use iced::widget::{button, column, container, row, scrollable, text};
 use iced::{Alignment, Element, Length, Size, Subscription, Task, Theme, window};
 use serde_json::Value;
-use std::process::Command;
+use std::{ffi::OsString, process::Command, time::Duration};
 
 const DEFAULT_APP_ID: &str = "unilii-i3-vis";
 const DEFAULT_TITLE: &str = "DeskHalloumi i3 Visualizer";
@@ -658,7 +659,32 @@ fn view_graph_row(row_data: I3VisRow) -> Element<'static, Message> {
 }
 
 async fn load_workspace_tree(options: I3VisOptions) -> Result<Option<I3VisNode>, String> {
-    load_workspace_tree_sync(&options)
+    if options.mock {
+        return Ok(Some(mock_tree()));
+    }
+    let outcome = ActionRunner::with_timeout("i3-vis", "get-tree", Duration::from_secs(4))
+        .with_output_limit(4 * 1024 * 1024)
+        .run_command(ActionCommand::new(
+            &options.i3_msg,
+            vec![OsString::from("-t"), OsString::from("get_tree")],
+        ))
+        .await;
+    if let Err(error) = outcome.result {
+        return Err(if outcome.stderr.trim().is_empty() {
+            error
+        } else {
+            outcome.stderr.trim().to_string()
+        });
+    }
+    if outcome.stdout_truncated {
+        return Err(format!(
+            "i3 tree exceeded output limit ({} bytes)",
+            outcome.stdout_bytes
+        ));
+    }
+    let value = serde_json::from_str::<Value>(&outcome.stdout)
+        .map_err(|error| format!("failed to parse i3 tree JSON: {error}"))?;
+    Ok(workspace_tree_from_i3_tree(&value))
 }
 
 fn load_workspace_tree_sync(options: &I3VisOptions) -> Result<Option<I3VisNode>, String> {
@@ -683,7 +709,16 @@ async fn execute_i3_command(
     command: String,
     success_message: String,
 ) -> Result<String, String> {
-    execute_i3_command_sync(&i3_msg, &command, success_message)
+    let outcome = ActionRunner::with_timeout("i3-vis", "i3-command", Duration::from_secs(4))
+        .run_command(ActionCommand::new(&i3_msg, vec![OsString::from(command)]))
+        .await;
+    if outcome.result.is_ok() {
+        Ok(success_message)
+    } else if outcome.stderr.trim().is_empty() {
+        Err(outcome.result.expect_err("failed outcome has an error"))
+    } else {
+        Err(outcome.stderr.trim().to_string())
+    }
 }
 
 fn execute_i3_command_sync(

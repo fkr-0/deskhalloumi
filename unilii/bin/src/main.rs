@@ -1,7 +1,6 @@
 #![allow(clippy::collapsible_if)]
 // FIXME(T1.1/T6): main.rs still owns large tray/menu update chains; collapse or extract during the main.rs split instead of hiding this permanently.
 
-mod action_runner;
 mod app;
 mod app_config;
 mod cli;
@@ -14,7 +13,6 @@ mod tray;
 mod update;
 mod widgets;
 
-use action_runner::{ActionCommand, ActionRunner};
 use app::{Message, UniliiBar};
 use app_config::{AppConfig, load_app_config};
 use clap::Parser;
@@ -35,6 +33,10 @@ use deskhalloumi_core::{
     menu_process::{
         MenuProcessManager, parse_menu_action, prepare_runtime_dir, process_instance_status,
     },
+    runtime::{
+        ActionCommand, ActionRunner, ProviderRefreshRegistry, RuntimeSupervisor, TaskSpawner,
+        global_runtime_metrics,
+    },
 };
 use iced::futures::SinkExt;
 use iced::keyboard::{Key, Modifiers, key};
@@ -50,7 +52,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -91,7 +93,13 @@ use update::tray_view::{
     enter_submenu, exit_submenu, show_aggregated, show_favorites, update_filter,
 };
 use widgets::{
-    Audio, Power, SysMonitor, Video, Widget, WidgetMessage, Wifi, key_char_digit, render_modules,
+    Audio, Power, SysMonitor, Video, Widget, WidgetMessage, Wifi,
+    audio::{apply_audio_selection, parse_audio_selection_action, read_audio_snapshot},
+    key_char_digit,
+    power::{PowerAction, execute_power_action, read_power_snapshot},
+    render_modules,
+    video::{apply_video_preset, read_video_snapshot},
+    wifi::{read_wifi_snapshot, set_wifi_enabled},
 };
 
 static KEYBINDING_ACTION_RECEIVER: OnceLock<
@@ -112,6 +120,17 @@ fn install_keybinding_action_receiver(
     Ok(())
 }
 
+struct StartupState {
+    config: deskhalloumi_core::config::Config,
+    app_config: app_config::AppConfig,
+    run_options: cli::RunOptions,
+    modules: HashMap<String, module_loader::LoadedModule>,
+    keybinding_actions_enabled: bool,
+    runtime_supervisor: Arc<RuntimeSupervisor>,
+    runtime_spawner: TaskSpawner,
+    provider_refreshes: ProviderRefreshRegistry,
+}
+
 struct ActionBusSocketGuard(PathBuf);
 
 impl Drop for ActionBusSocketGuard {
@@ -122,6 +141,7 @@ impl Drop for ActionBusSocketGuard {
 
 async fn start_action_bus_server(
     sender: tokio::sync::mpsc::UnboundedSender<KeybindingResult>,
+    spawner: &TaskSpawner,
 ) -> Result<(), String> {
     let path = default_action_bus_socket_path();
     let parent = path
@@ -142,22 +162,34 @@ async fn start_action_bus_server(
         .map_err(|error| format!("failed to bind action socket '{}': {error}", path.display()))?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
         .map_err(|error| format!("failed to secure action socket: {error}"))?;
-    tokio::spawn(async move {
-        let _guard = ActionBusSocketGuard(path);
-        loop {
-            let (stream, _) = match listener.accept().await {
-                Ok(value) => value,
-                Err(error) => {
-                    error!("DeskHalloumi action bus accept failed: {error}");
-                    break;
+
+    let server_spawner = spawner.clone();
+    let cancellation = server_spawner.cancellation_token();
+    spawner
+        .spawn("action-bus:listener", async move {
+            let _guard = ActionBusSocketGuard(path);
+            loop {
+                let accepted = tokio::select! {
+                    _ = cancellation.cancelled() => break,
+                    accepted = listener.accept() => accepted,
+                };
+                let (stream, _) = match accepted {
+                    Ok(value) => value,
+                    Err(error) => {
+                        error!(%error, "DeskHalloumi action bus accept failed");
+                        break;
+                    }
+                };
+                let connection_sender = sender.clone();
+                if let Err(error) = server_spawner.try_spawn("action-bus:connection", async move {
+                    handle_action_bus_connection(stream, connection_sender).await;
+                }) {
+                    warn!(%error, "action bus connection was rejected by runtime supervisor");
                 }
-            };
-            let sender = sender.clone();
-            tokio::spawn(async move {
-                handle_action_bus_connection(stream, sender).await;
-            });
-        }
-    });
+            }
+        })
+        .await
+        .map_err(|error| format!("failed to supervise action bus listener: {error}"))?;
     Ok(())
 }
 
@@ -232,8 +264,36 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
         Message::WindowOpened(_id) => {
             info!("WindowOpened message received (single panel mode)");
         }
-        Message::WindowClosed(_id) => {
-            info!("WindowClosed message received (single panel mode)");
+        Message::WindowClosed(id) => {
+            info!(?id, "WindowClosed message received (single panel mode)");
+            if Some(id) == bar.main_window_id {
+                bar.runtime_spawner.cancellation_token().cancel();
+                let supervisor = Arc::clone(&bar.runtime_supervisor);
+                return Task::perform(
+                    async move { supervisor.shutdown(Duration::from_secs(2)).await },
+                    Message::RuntimeShutdownComplete,
+                );
+            }
+        }
+        Message::RuntimeShutdownComplete(result) => {
+            if let Err(error) = result {
+                warn!(%error, "runtime supervisor required forced shutdown");
+            }
+            let metrics = global_runtime_metrics().snapshot();
+            info!(
+                active_tasks = metrics.active_tasks,
+                tasks_started = metrics.tasks_started,
+                tasks_completed = metrics.tasks_completed,
+                tasks_cancelled = metrics.tasks_cancelled,
+                tasks_panicked = metrics.tasks_panicked,
+                actions_completed = metrics.actions_completed,
+                action_timeouts = metrics.action_timeouts,
+                truncated_outputs = metrics.truncated_outputs,
+                updates_coalesced = metrics.updates_coalesced,
+                updates_dropped = metrics.updates_dropped,
+                "runtime shutdown metrics"
+            );
+            return iced::exit();
         }
         Message::ModuleUpdate(name, update) => {
             info!("module update: {name} -> {:?}", update);
@@ -565,14 +625,22 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                         has_menu: icon.has_menu,
                         menu_object_path: icon.menu_object_path.clone(),
                     };
-                    tokio::spawn(async move {
-                        let _ = enhanced_tray::invoke_dbus_menu_action(
-                            &enhanced_icon,
-                            item_id,
-                            &event_id,
-                        )
-                        .await;
-                    });
+                    if let Err(error) =
+                        bar.runtime_spawner
+                            .try_spawn("tray:dbus-menu-action", async move {
+                                if let Err(error) = enhanced_tray::invoke_dbus_menu_action(
+                                    &enhanced_icon,
+                                    item_id,
+                                    &event_id,
+                                )
+                                .await
+                                {
+                                    warn!(%error, "DBus tray menu action failed");
+                                }
+                            })
+                    {
+                        warn!(%error, "DBus tray menu action was not scheduled");
+                    }
                     if let Some(tray_state) = bar.enhanced_tray.as_mut() {
                         tray_state.animation_target = 0.0;
                     }
@@ -633,9 +701,14 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                     }
                 };
 
-                tokio::spawn(async move {
-                    tray::invoke_menu_action(&icon, converted_action).await;
-                });
+                if let Err(error) = bar
+                    .runtime_spawner
+                    .try_spawn("tray:item-action", async move {
+                        tray::invoke_menu_action(&icon, converted_action).await;
+                    })
+                {
+                    warn!(%error, "tray item action was not scheduled");
+                }
             }
 
             // Close enhanced tray menu after action
@@ -650,17 +723,40 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             });
         }
         Message::TrayNetworkRefresh(icon_key) => {
+            let permit = match bar
+                .provider_refreshes
+                .try_start(format!("tray-network:{icon_key}"))
+            {
+                Ok(permit) => permit,
+                Err(error) => {
+                    info!(%error, %icon_key, "network refresh coalesced or saturated");
+                    return Task::none();
+                }
+            };
             mark_special_view_loading(&mut bar.enhanced_tray, &icon_key, |app_id| {
                 resolve_tray_icon_key(&bar.tray_icons, app_id)
             });
 
             let nmcli_path = bar.run_options.nmcli_path.clone();
             return Task::perform(
-                enhanced_tray::read_network_snapshot(nmcli_path, true),
+                async move {
+                    let _permit = permit;
+                    enhanced_tray::read_network_snapshot(nmcli_path, true).await
+                },
                 move |result| Message::TrayNetworkSnapshot(icon_key.clone(), result),
             );
         }
         Message::TrayNetworkToggle(icon_key) => {
+            let permit = match bar
+                .provider_refreshes
+                .try_start(format!("tray-network:{icon_key}"))
+            {
+                Ok(permit) => permit,
+                Err(error) => {
+                    info!(%error, %icon_key, "network toggle coalesced or saturated");
+                    return Task::none();
+                }
+            };
             let desired_state = network_toggle_desired_state_and_mark_loading(
                 &mut bar.enhanced_tray,
                 &icon_key,
@@ -674,7 +770,10 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
 
             let nmcli_path = bar.run_options.nmcli_path.clone();
             return Task::perform(
-                enhanced_tray::set_wifi_enabled(nmcli_path, desired_state),
+                async move {
+                    let _permit = permit;
+                    enhanced_tray::set_wifi_enabled(nmcli_path, desired_state).await
+                },
                 move |result| Message::TrayNetworkToggleDone(icon_key.clone(), result),
             );
         }
@@ -692,11 +791,7 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                 return Task::none();
             }
 
-            let nmcli_path = bar.run_options.nmcli_path.clone();
-            return Task::perform(
-                enhanced_tray::read_network_snapshot(nmcli_path, true),
-                move |result| Message::TrayNetworkSnapshot(icon_key.clone(), result),
-            );
+            return Task::done(Message::TrayNetworkRefresh(icon_key));
         }
         Message::TrayMountSnapshot(icon_key, result) => {
             apply_mount_snapshot(&mut bar.enhanced_tray, &icon_key, result, |app_id| {
@@ -704,13 +799,27 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             });
         }
         Message::TrayMountRefresh(icon_key) => {
+            let permit = match bar
+                .provider_refreshes
+                .try_start(format!("tray-mount:{icon_key}"))
+            {
+                Ok(permit) => permit,
+                Err(error) => {
+                    info!(%error, %icon_key, "mount refresh coalesced or saturated");
+                    return Task::none();
+                }
+            };
             let mount_config = bar.config.menus.mount.clone();
             mark_special_view_loading(&mut bar.enhanced_tray, &icon_key, |app_id| {
                 resolve_tray_icon_key(&bar.tray_icons, app_id)
             });
-            return Task::perform(read_mount_snapshot(mount_config), move |result| {
-                Message::TrayMountSnapshot(icon_key.clone(), result)
-            });
+            return Task::perform(
+                async move {
+                    let _permit = permit;
+                    read_mount_snapshot(mount_config).await
+                },
+                move |result| Message::TrayMountSnapshot(icon_key.clone(), result),
+            );
         }
         Message::TrayCalendarSnapshot(icon_key, result) => {
             apply_calendar_snapshot(&mut bar.enhanced_tray, &icon_key, result, |app_id| {
@@ -718,6 +827,16 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             });
         }
         Message::TrayCalendarRefresh(icon_key) => {
+            let permit = match bar
+                .provider_refreshes
+                .try_start(format!("tray-calendar:{icon_key}"))
+            {
+                Ok(permit) => permit,
+                Err(error) => {
+                    info!(%error, %icon_key, "calendar refresh coalesced or saturated");
+                    return Task::none();
+                }
+            };
             let calendar_accounts = bar.config.menus.calendar.accounts.clone();
             let agenda_days = bar.config.menus.calendar.agenda_days;
 
@@ -726,7 +845,10 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             });
 
             return Task::perform(
-                read_calendar_snapshot(calendar_accounts, agenda_days),
+                async move {
+                    let _permit = permit;
+                    read_calendar_snapshot(calendar_accounts, agenda_days).await
+                },
                 move |result| Message::TrayCalendarSnapshot(icon_key.clone(), result),
             );
         }
@@ -834,33 +956,204 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                 Ok(message) => message,
                 Err(error) => format!("{action_id} failed: {error}"),
             });
-            bar.wifi.update_status();
-            bar.video.refresh_state();
-            bar.power.update_screensaver_status();
             bar.sysmonitor.update_stats();
             rebuild_system_menu_if_open(bar);
+            return Task::batch([
+                Task::done(Message::LegacyWidgetTick("wifi".to_string())),
+                Task::done(Message::LegacyWidgetTick("video".to_string())),
+                Task::done(Message::LegacyWidgetTick("power".to_string())),
+            ]);
         }
         Message::LegacyWidget(widget_message) => match widget_message.clone() {
             WidgetMessage::SysMonitor(_) => bar.sysmonitor.update(widget_message),
-            WidgetMessage::Wifi(_) => bar.wifi.update(widget_message),
-            WidgetMessage::Audio(_) => bar.audio.update(widget_message),
-            WidgetMessage::Video(_) => bar.video.update(widget_message),
-            WidgetMessage::Power(_) => bar.power.update(widget_message),
+            WidgetMessage::Wifi(action) => {
+                if action == "toggle_menu" {
+                    bar.wifi.update(widget_message);
+                    if bar.wifi.menu_is_open() {
+                        return start_wifi_refresh(bar, None);
+                    }
+                } else if action == "toggle_wifi" {
+                    return start_wifi_refresh(bar, Some(bar.wifi.desired_enabled_state()));
+                } else {
+                    bar.wifi.update(widget_message);
+                }
+            }
+            WidgetMessage::Audio(action) => {
+                if action == "toggle_menu" {
+                    bar.audio.update(widget_message);
+                    if bar.audio.menu_is_open() {
+                        return start_audio_refresh(bar, None);
+                    }
+                } else if let Some(selection) = parse_audio_selection_action(&action) {
+                    return start_audio_refresh(bar, Some(selection));
+                }
+            }
+            WidgetMessage::Video(action) => {
+                if action == "toggle_menu" {
+                    bar.video.update(widget_message);
+                    if bar.video.menu_is_open() {
+                        bar.video.reload_presets();
+                        return start_video_refresh(bar, None);
+                    }
+                } else if action == "refresh" {
+                    bar.video.reload_presets();
+                    return start_video_refresh(bar, None);
+                } else if let Some(key) = action.strip_prefix("preset:") {
+                    if let Some(preset) = bar.video.preset(key) {
+                        return start_video_refresh(bar, Some(preset));
+                    }
+                    warn!(preset = key, "requested unknown xrandr preset");
+                }
+            }
+            WidgetMessage::Power(action) => {
+                if action == "toggle_menu" {
+                    bar.power.update(widget_message);
+                    if bar.power.menu_is_open() {
+                        return start_power_refresh(bar);
+                    }
+                } else if let Some(action) =
+                    Power::requested_action(&action, bar.power.screensaver_enabled())
+                {
+                    return start_power_action(bar, action);
+                }
+            }
             WidgetMessage::Tray(_) => {}
         },
         Message::LegacyWidgetTick(name) => match name.as_str() {
             "sysmonitor" => bar.sysmonitor.update_stats(),
-            "wifi" => bar.wifi.update_status(),
-            "audio" => bar.audio.update_devices(),
-            "video" => bar.video.refresh_state(),
-            "power" => bar.power.update_screensaver_status(),
+            "wifi" => return start_wifi_refresh(bar, None),
+            "audio" => return start_audio_refresh(bar, None),
+            "video" => return start_video_refresh(bar, None),
+            "power" => return start_power_refresh(bar),
             _ => {}
+        },
+        Message::AudioRefreshDone(result) => match result {
+            Ok(snapshot) => bar.audio.apply_snapshot(snapshot),
+            Err(error) => warn!(%error, "audio widget refresh failed"),
+        },
+        Message::WifiRefreshDone(result) => match result {
+            Ok(snapshot) => bar.wifi.apply_snapshot(snapshot),
+            Err(error) => warn!(%error, "WiFi widget refresh failed"),
+        },
+        Message::VideoRefreshDone(result) => match result {
+            Ok(snapshot) => bar.video.apply_snapshot(snapshot),
+            Err(error) => warn!(%error, "video widget refresh failed"),
+        },
+        Message::PowerRefreshDone(result) => match result {
+            Ok(snapshot) => bar.power.apply_snapshot(snapshot),
+            Err(error) => warn!(%error, "power widget refresh failed"),
+        },
+        Message::PowerActionDone(result) => match result {
+            Ok(Some(snapshot)) => bar.power.apply_snapshot(snapshot),
+            Ok(None) => {}
+            Err(error) => warn!(%error, "power action failed"),
         },
         Message::KeybindingAction(action) => {
             return handle_keybinding_action(bar, action);
         }
     }
     Task::none()
+}
+
+fn start_audio_refresh(
+    bar: &mut UniliiBar,
+    selection: Option<widgets::audio::AudioSelectionAction>,
+) -> Task<Message> {
+    let permit = match bar.provider_refreshes.try_start("legacy-audio") {
+        Ok(permit) => permit,
+        Err(error) => {
+            info!(%error, "audio widget refresh coalesced or saturated");
+            return Task::none();
+        }
+    };
+    Task::perform(
+        async move {
+            let _permit = permit;
+            match selection {
+                Some(selection) => apply_audio_selection("pactl".to_string(), selection).await,
+                None => read_audio_snapshot("pactl".to_string()).await,
+            }
+        },
+        Message::AudioRefreshDone,
+    )
+}
+
+fn start_wifi_refresh(bar: &mut UniliiBar, enabled: Option<bool>) -> Task<Message> {
+    let permit = match bar.provider_refreshes.try_start("legacy-wifi") {
+        Ok(permit) => permit,
+        Err(error) => {
+            info!(%error, "WiFi widget refresh coalesced or saturated");
+            return Task::none();
+        }
+    };
+    let nmcli = bar.run_options.nmcli_path.clone();
+    Task::perform(
+        async move {
+            let _permit = permit;
+            match enabled {
+                Some(enabled) => set_wifi_enabled(nmcli, enabled).await,
+                None => read_wifi_snapshot(nmcli).await,
+            }
+        },
+        Message::WifiRefreshDone,
+    )
+}
+
+fn start_video_refresh(
+    bar: &mut UniliiBar,
+    preset: Option<widgets::video::XrandrPreset>,
+) -> Task<Message> {
+    let permit = match bar.provider_refreshes.try_start("legacy-video") {
+        Ok(permit) => permit,
+        Err(error) => {
+            info!(%error, "video widget refresh coalesced or saturated");
+            return Task::none();
+        }
+    };
+    Task::perform(
+        async move {
+            let _permit = permit;
+            match preset {
+                Some(preset) => apply_video_preset("xrandr".to_string(), preset).await,
+                None => read_video_snapshot("xrandr".to_string()).await,
+            }
+        },
+        Message::VideoRefreshDone,
+    )
+}
+
+fn start_power_refresh(bar: &mut UniliiBar) -> Task<Message> {
+    let permit = match bar.provider_refreshes.try_start("legacy-power") {
+        Ok(permit) => permit,
+        Err(error) => {
+            info!(%error, "power widget refresh coalesced or saturated");
+            return Task::none();
+        }
+    };
+    Task::perform(
+        async move {
+            let _permit = permit;
+            read_power_snapshot("xset".to_string()).await
+        },
+        Message::PowerRefreshDone,
+    )
+}
+
+fn start_power_action(bar: &mut UniliiBar, action: PowerAction) -> Task<Message> {
+    let permit = match bar.provider_refreshes.try_start("legacy-power") {
+        Ok(permit) => permit,
+        Err(error) => {
+            info!(%error, "power action coalesced or saturated");
+            return Task::none();
+        }
+    };
+    Task::perform(
+        async move {
+            let _permit = permit;
+            execute_power_action("xset".to_string(), "systemctl".to_string(), action).await
+        },
+        Message::PowerActionDone,
+    )
 }
 
 fn view(bar: &UniliiBar, window_id: window::Id) -> Element<'_, Message> {
@@ -1106,6 +1399,19 @@ fn subscribe(bar: &UniliiBar) -> Subscription<Message> {
             }));
         }
 
+        for (name, loaded) in &bar.modules {
+            if matches!(name.as_str(), "clock" | "battery") || !has_module_updates(name) {
+                continue;
+            }
+            subs.push(Subscription::run_with(
+                ModulePollSpec {
+                    name: name.clone(),
+                    interval_ms: loaded.module.update_interval().unwrap_or(1_000),
+                },
+                poll_module_updates,
+            ));
+        }
+
         subs
     };
 
@@ -1145,13 +1451,28 @@ fn subscribe(bar: &UniliiBar) -> Subscription<Message> {
     let tray_subscription = Subscription::run(|| {
         stream::channel(64, async move |mut output| {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            tokio::spawn(async move {
+            let mut workers = tokio::task::JoinSet::new();
+            workers.spawn(async move {
                 tray::run_tray_watcher(tx, 1500).await; // Use default poll interval
             });
 
-            while let Some(event) = rx.recv().await {
-                if output.send(Message::TrayEvent(event)).await.is_err() {
-                    break;
+            loop {
+                tokio::select! {
+                    event = rx.recv() => {
+                        let Some(event) = event else { break; };
+                        if output.send(Message::TrayEvent(event)).await.is_err() {
+                            break;
+                        }
+                    }
+                    worker = workers.join_next() => {
+                        match worker {
+                            Some(Ok(())) | None => break,
+                            Some(Err(error)) => {
+                                error!(%error, "tray watcher task failed");
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         })
@@ -1206,6 +1527,38 @@ fn map_window_key_release(key: Key, _modifiers: Modifiers) -> Option<Message> {
         key: format!("{:?}", key),
         pressed: false,
         is_shift: matches!(key, Key::Named(key::Named::Shift)),
+    })
+}
+
+#[derive(Debug, Clone, Hash)]
+struct ModulePollSpec {
+    name: String,
+    interval_ms: u64,
+}
+
+fn poll_module_updates(
+    spec: &ModulePollSpec,
+) -> impl iced::futures::Stream<Item = Message> + use<> {
+    use iced::stream;
+
+    let spec = spec.clone();
+    stream::channel(8, async move |mut output| {
+        let mut interval = tokio::time::interval(Duration::from_millis(spec.interval_ms.max(100)));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            interval.tick().await;
+            let Some(update) = get_latest_module_update(&spec.name) else {
+                continue;
+            };
+            if output
+                .send(Message::ModuleUpdate(spec.name.clone(), update))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
     })
 }
 
@@ -1372,13 +1725,16 @@ fn main() -> iced::Result {
         )
     })?;
 
-    let (config, loaded_app_config, run_options, modules, keybinding_actions_enabled): (
-        deskhalloumi_core::config::Config,
-        app_config::AppConfig,
-        cli::RunOptions,
-        std::collections::HashMap<String, module_loader::LoadedModule>,
-        bool,
-    ) = runtime.block_on(async {
+    let StartupState {
+        config,
+        app_config: loaded_app_config,
+        run_options,
+        modules,
+        keybinding_actions_enabled,
+        runtime_supervisor,
+        runtime_spawner,
+        provider_refreshes,
+    } = runtime.block_on(async {
         // Load configuration and modules at startup
         let config = load_config_with_path(cli.config.clone());
         let scan = deskhalloumi_lib::input::scan_keyboard_device_stats();
@@ -1402,10 +1758,14 @@ fn main() -> iced::Result {
             config.panels.first().map(|p| p.position_y).unwrap_or(0)
         );
 
+        let runtime_supervisor = Arc::new(RuntimeSupervisor::start("deskhalloumi-bar", 128));
+        let runtime_spawner = runtime_supervisor.spawner();
+        let provider_refreshes = ProviderRefreshRegistry::new(4);
+
         let (action_sender, action_receiver) =
             tokio::sync::mpsc::unbounded_channel::<KeybindingResult>();
         install_keybinding_action_receiver(action_receiver).map_err(std::io::Error::other)?;
-        start_action_bus_server(action_sender.clone())
+        start_action_bus_server(action_sender.clone(), &runtime_spawner)
             .await
             .map_err(std::io::Error::other)?;
         let keybinding_actions_enabled = true;
@@ -1418,13 +1778,22 @@ fn main() -> iced::Result {
             } else {
                 let keybindings = config.keybindings.clone();
                 let embedded_action_sender = action_sender.clone();
-                tokio::spawn(async move {
-                    let mut daemon = KeybindingDaemon::new(keybindings);
-                    daemon.set_action_sender(embedded_action_sender);
-                    if let Err(error) = daemon.run().await {
-                        error!("keybinding daemon exited with error: {}", error);
-                    }
-                });
+                let cancellation = runtime_spawner.cancellation_token();
+                runtime_spawner
+                    .spawn("embedded-hotkeyd", async move {
+                        let mut daemon = KeybindingDaemon::new(keybindings);
+                        daemon.set_action_sender(embedded_action_sender);
+                        tokio::select! {
+                            _ = cancellation.cancelled() => {}
+                            result = daemon.run() => {
+                                if let Err(error) = result {
+                                    error!(%error, "embedded keybinding daemon exited with error");
+                                }
+                            }
+                        }
+                    })
+                    .await
+                    .map_err(|error| std::io::Error::other(error.to_string()))?;
                 info!(
                     "keybinding daemon started with {} bindings and embedded action channel",
                     config.keybindings.len()
@@ -1476,19 +1845,23 @@ fn main() -> iced::Result {
 
         // Initialize the global subscription manager with error isolation
         if !module_subscriptions.is_empty() {
-            initialize_global_subscriptions(module_subscriptions);
+            initialize_global_subscriptions(module_subscriptions, &runtime_spawner)
+                .map_err(std::io::Error::other)?;
             info!("Subscription system initialized successfully");
         } else {
             warn!("No module subscriptions available, continuing without real-time updates");
         }
 
-        Ok((
+        Ok(StartupState {
             config,
-            loaded_app_config,
+            app_config: loaded_app_config,
             run_options,
             modules,
             keybinding_actions_enabled,
-        ))
+            runtime_supervisor,
+            runtime_spawner,
+            provider_refreshes,
+        })
     }).map_err(|error: Box<dyn std::error::Error>| {
         iced::Error::WindowCreationFailed(
             format!("runtime initialization failed: {error}").into(),
@@ -1518,6 +1891,9 @@ fn main() -> iced::Result {
     let window_settings = Rc::new(RefCell::new(Some(window_settings)));
     let run_options = Rc::new(RefCell::new(Some(run_options)));
     let keybinding_actions_enabled = Rc::new(RefCell::new(Some(keybinding_actions_enabled)));
+    let runtime_supervisor = Rc::new(RefCell::new(Some(runtime_supervisor)));
+    let runtime_spawner = Rc::new(RefCell::new(Some(runtime_spawner)));
+    let provider_refreshes = Rc::new(RefCell::new(Some(provider_refreshes)));
 
     // Create closure that can be called multiple times (Fn requirement)
     let initial_state = move || -> (UniliiBar, Task<Message>) {
@@ -1530,14 +1906,23 @@ fn main() -> iced::Result {
             .borrow_mut()
             .take()
             .unwrap_or(false);
+        let runtime_supervisor = runtime_supervisor
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| Arc::new(RuntimeSupervisor::start("deskhalloumi-bar-fallback", 32)));
+        let runtime_spawner = runtime_spawner
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| runtime_supervisor.spawner());
+        let provider_refreshes = provider_refreshes
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| ProviderRefreshRegistry::new(4));
         let mut sysmonitor = SysMonitor::new();
         sysmonitor.update_stats();
-        let mut wifi = Wifi::new();
-        wifi.update_status();
-        let mut audio = Audio::new();
-        audio.update_devices();
-        let mut power = Power::new();
-        power.update_screensaver_status();
+        let wifi = Wifi::new();
+        let audio = Audio::new();
+        let power = Power::new();
         let video = Video::with_preset_source(
             config
                 .menus
@@ -1563,6 +1948,9 @@ fn main() -> iced::Result {
                 audio,
                 video,
                 power,
+                runtime_supervisor,
+                runtime_spawner,
+                provider_refreshes,
                 system_menu: SystemMenuRuntime::default(),
                 shift_held: false,
                 tray_icons: Vec::new(),
@@ -1572,7 +1960,13 @@ fn main() -> iced::Result {
                 run_options,
                 keybinding_actions_enabled,
             },
-            open_main_window.map(Message::WindowOpened),
+            Task::batch([
+                open_main_window.map(Message::WindowOpened),
+                Task::done(Message::LegacyWidgetTick("wifi".to_string())),
+                Task::done(Message::LegacyWidgetTick("audio".to_string())),
+                Task::done(Message::LegacyWidgetTick("video".to_string())),
+                Task::done(Message::LegacyWidgetTick("power".to_string())),
+            ]),
         )
     };
 
@@ -2319,9 +2713,6 @@ fn open_system_menu(bar: &mut UniliiBar, section: &str) -> Task<Message> {
         }
         return resize_window_task(bar, false);
     }
-    bar.wifi.update_status();
-    bar.video.refresh_state();
-    bar.power.update_screensaver_status();
     bar.sysmonitor.update_stats();
     let path = if section == "root" {
         Vec::new()
@@ -2329,7 +2720,12 @@ fn open_system_menu(bar: &mut UniliiBar, section: &str) -> Task<Message> {
         vec![section.to_string()]
     };
     rebuild_system_menu_with_path(bar, path);
-    resize_window_task(bar, true)
+    Task::batch([
+        resize_window_task(bar, true),
+        Task::done(Message::LegacyWidgetTick("wifi".to_string())),
+        Task::done(Message::LegacyWidgetTick("video".to_string())),
+        Task::done(Message::LegacyWidgetTick("power".to_string())),
+    ])
 }
 
 fn rebuild_system_menu_with_path(bar: &mut UniliiBar, submenu_path: Vec<String>) {
@@ -2575,15 +2971,11 @@ fn handle_system_internal_action(
                 };
                 state.show();
             }
-            let nmcli_path = bar.run_options.nmcli_path.clone();
-            Task::perform(
-                enhanced_tray::read_network_snapshot(nmcli_path, force_scan),
-                |result| Message::TrayNetworkSnapshot(SYSTEM_MENU_KEY.to_string(), result),
-            )
+            let _ = force_scan;
+            Task::done(Message::TrayNetworkRefresh(SYSTEM_MENU_KEY.to_string()))
         }
         SystemInternalAction::ToggleWifi => {
             let desired = !bar.wifi.wifi_enabled();
-            let nmcli_path = bar.run_options.nmcli_path.clone();
             bar.system_menu.busy_action = Some(
                 if desired {
                     "Enable Wi-Fi"
@@ -2592,8 +2984,21 @@ fn handle_system_internal_action(
                 }
                 .to_string(),
             );
+            let permit = match bar.provider_refreshes.try_start("legacy-wifi") {
+                Ok(permit) => permit,
+                Err(error) => {
+                    bar.system_menu.busy_action = None;
+                    bar.system_menu.last_status = Some(format!("Wi-Fi action skipped: {error}"));
+                    rebuild_system_menu_if_open(bar);
+                    return Task::none();
+                }
+            };
+            let nmcli_path = bar.run_options.nmcli_path.clone();
             Task::perform(
-                enhanced_tray::set_wifi_enabled(nmcli_path, desired),
+                async move {
+                    let _permit = permit;
+                    set_wifi_enabled(nmcli_path, desired).await
+                },
                 move |result| {
                     Message::SystemActionDone(
                         "wifi-toggle".to_string(),
@@ -2609,10 +3014,9 @@ fn handle_system_internal_action(
             )
         }
         SystemInternalAction::RefreshDisplays => {
-            bar.video.refresh_state();
             bar.system_menu.last_status = Some("Display state refreshed".to_string());
             rebuild_system_menu_if_open(bar);
-            Task::none()
+            start_video_refresh(bar, None)
         }
         SystemInternalAction::ApplyDisplayPreset(key) => {
             let Some((_, title, _, command)) = bar
@@ -3008,18 +3412,35 @@ fn handle_evdev_tray_key(bar: &mut UniliiBar, code: &str, value: i32) -> Option<
 async fn read_mount_snapshot(
     config: deskhalloumi_core::config::MountMenuConfig,
 ) -> Result<crate::menus::mount::MountMenuSnapshot, String> {
-    let output = tokio::process::Command::new("sh")
-        .arg("-lc")
-        .arg("lsblk -P -o NAME,TYPE,FSTYPE,SIZE,MOUNTPOINT,RO,RM,LABEL,MODEL")
-        .output()
-        .await
-        .map_err(|e| format!("failed to run lsblk: {}", e))?;
-
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    let outcome = ActionRunner::with_timeout("mount-menu", "lsblk", Duration::from_secs(6))
+        .with_output_limit(2 * 1024 * 1024)
+        .run_command(ActionCommand::new(
+            "lsblk",
+            [
+                "-P",
+                "-o",
+                "NAME,TYPE,FSTYPE,SIZE,MOUNTPOINT,RO,RM,LABEL,MODEL",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+        ))
+        .await;
+    if let Err(error) = outcome.result {
+        return Err(if outcome.stderr.trim().is_empty() {
+            error
+        } else {
+            outcome.stderr.trim().to_string()
+        });
+    }
+    if outcome.stdout_truncated {
+        return Err(format!(
+            "lsblk output exceeded limit ({} bytes)",
+            outcome.stdout_bytes
+        ));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stdout = outcome.stdout;
     let mut devices = crate::menus::mount::parse_lsblk_pairs(&stdout);
     if devices.len() > config.max_local_rows {
         devices.truncate(config.max_local_rows);
@@ -3056,7 +3477,7 @@ async fn read_mount_snapshot(
         .collect::<Vec<_>>();
 
     let loop_mounts = if config.show_loop_devices {
-        read_loop_mounts(&devices)?
+        read_loop_mounts(&devices).await?
     } else {
         Vec::new()
     };
@@ -3122,19 +3543,26 @@ fn unescape_mount_field(value: &str) -> String {
         .replace("\\134", "\\")
 }
 
-fn read_loop_mounts(
+async fn read_loop_mounts(
     local_devices: &[crate::menus::mount::LocalDevice],
 ) -> Result<Vec<crate::menus::mount::LoopMount>, String> {
-    let output = match std::process::Command::new("sh")
-        .arg("-lc")
-        .arg("losetup --list --noheadings --raw --output NAME,RO,BACK-FILE")
-        .output()
-    {
-        Ok(output) => output,
-        Err(_) => return Ok(Vec::new()),
-    };
-
-    if !output.status.success() {
+    let outcome = ActionRunner::with_timeout("mount-menu", "losetup", Duration::from_secs(6))
+        .with_output_limit(2 * 1024 * 1024)
+        .run_command(ActionCommand::new(
+            "losetup",
+            [
+                "--list",
+                "--noheadings",
+                "--raw",
+                "--output",
+                "NAME,RO,BACK-FILE",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+        ))
+        .await;
+    if outcome.result.is_err() {
         return Ok(Vec::new());
     }
 
@@ -3144,7 +3572,7 @@ fn read_loop_mounts(
     }
 
     let mut loop_mounts = Vec::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
+    for line in outcome.stdout.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -3208,12 +3636,15 @@ async fn read_calendar_snapshot(
             secret_ref: account.secret_ref.clone(),
         });
 
-        match provider.fetch_events(
-            &account.id,
-            &window_start_rfc3339,
-            &window_end_rfc3339,
-            None,
-        ) {
+        match provider
+            .fetch_events(
+                &account.id,
+                &window_start_rfc3339,
+                &window_end_rfc3339,
+                None,
+            )
+            .await
+        {
             Ok((events, _sync_token)) => {
                 agenda_items.extend(events.into_iter().map(|event| {
                     crate::menus::calendar::CalendarAgendaItem {

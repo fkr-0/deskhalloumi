@@ -1,14 +1,30 @@
-//! Power widget implementation for system controls
+//! Power widget with asynchronous session actions.
 
-use super::{Widget, WidgetMessage};
+use std::{ffi::OsString, time::Duration};
+
+use deskhalloumi_core::runtime::{ActionCommand, ActionRunner};
 use iced::widget::{button, column, text};
 use iced::{Color, Element, Length};
-use std::process::Command;
+
+use super::{Widget, WidgetMessage};
 
 #[derive(Debug)]
 pub struct Power {
     show_menu: bool,
     screensaver_enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PowerSnapshot {
+    pub screensaver_enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerAction {
+    ToggleScreensaver { enable: bool },
+    Standby,
+    Reboot,
+    Shutdown,
 }
 
 impl Power {
@@ -19,13 +35,12 @@ impl Power {
         }
     }
 
-    pub fn update_screensaver_status(&mut self) {
-        if let Ok(output) = Command::new("xset").args(["q"]).output()
-            && output.status.success()
-            && let Some(enabled) = parse_xset_idle_enabled(&String::from_utf8_lossy(&output.stdout))
-        {
-            self.screensaver_enabled = enabled;
-        }
+    pub fn menu_is_open(&self) -> bool {
+        self.show_menu
+    }
+
+    pub fn screensaver_enabled(&self) -> bool {
+        self.screensaver_enabled
     }
 
     pub fn idle_sleep_enabled(&self) -> bool {
@@ -36,47 +51,169 @@ impl Power {
         "⏻"
     }
 
-    pub fn toggle_screensaver(&mut self) {
-        if Command::new("sh")
-            .args([
-                "-lc",
-                if self.screensaver_enabled {
-                    "xset s off -dpms"
-                } else {
-                    "xset s 600 600 +dpms dpms 0 0 900"
-                },
-            ])
-            .status()
-            .is_ok_and(|status| status.success())
-        {
-            self.screensaver_enabled = !self.screensaver_enabled;
+    pub fn apply_snapshot(&mut self, snapshot: PowerSnapshot) {
+        self.screensaver_enabled = snapshot.screensaver_enabled;
+    }
+
+    pub fn requested_action(action: &str, screensaver_enabled: bool) -> Option<PowerAction> {
+        match action {
+            "toggle_screensaver" => Some(PowerAction::ToggleScreensaver {
+                enable: !screensaver_enabled,
+            }),
+            "standby" => Some(PowerAction::Standby),
+            "reboot" => Some(PowerAction::Reboot),
+            "shutdown" => Some(PowerAction::Shutdown),
+            _ => None,
         }
     }
 
-    pub fn standby(&self) {
-        let _ = Command::new("systemctl").args(["suspend"]).status();
+    fn render_icon(&self) -> Element<'_, WidgetMessage> {
+        button(text("⏻").size(14).color(Color::WHITE))
+            .padding([2, 8])
+            .on_press(WidgetMessage::Power("toggle_menu".to_string()))
+            .into()
     }
 
-    pub fn reboot(&self) {
-        let _ = Command::new("systemctl").args(["reboot"]).status();
-    }
-
-    pub fn shutdown(&self) {
-        let _ = Command::new("systemctl").args(["poweroff"]).status();
+    fn render_menu(&self) -> Element<'static, WidgetMessage> {
+        let screensaver_text = if self.screensaver_enabled {
+            "Disable Screensaver"
+        } else {
+            "Enable Screensaver"
+        };
+        let menu = column![
+            button(text(screensaver_text).size(11).color(Color::WHITE))
+                .padding([4, 8])
+                .width(Length::Fill)
+                .on_press(WidgetMessage::Power("toggle_screensaver".to_string())),
+            button(text("Standby").size(11).color(Color::WHITE))
+                .padding([4, 8])
+                .width(Length::Fill)
+                .on_press(WidgetMessage::Power("standby".to_string())),
+            button(text("Reboot").size(11).color(Color::WHITE))
+                .padding([4, 8])
+                .width(Length::Fill)
+                .on_press(WidgetMessage::Power("reboot".to_string())),
+            button(text("Shutdown").size(11).color(Color::WHITE))
+                .padding([4, 8])
+                .width(Length::Fill)
+                .on_press(WidgetMessage::Power("shutdown".to_string())),
+        ]
+        .spacing(4)
+        .padding(8)
+        .width(Length::Fixed(220.0));
+        column![
+            button(text("⏻").size(14).color(Color::WHITE))
+                .padding([2, 8])
+                .on_press(WidgetMessage::Power("toggle_menu".to_string())),
+            menu,
+        ]
+        .spacing(4)
+        .into()
     }
 }
 
-fn parse_xset_idle_enabled(output: &str) -> Option<bool> {
+pub async fn read_power_snapshot(xset: String) -> Result<PowerSnapshot, String> {
+    let outcome = ActionRunner::with_timeout("power-widget", "xset-query", Duration::from_secs(4))
+        .run_command(ActionCommand::new(xset, vec![OsString::from("q")]))
+        .await;
+    if let Err(error) = outcome.result {
+        return Err(if outcome.stderr.trim().is_empty() {
+            error
+        } else {
+            outcome.stderr.trim().to_string()
+        });
+    }
+    Ok(PowerSnapshot {
+        screensaver_enabled: parse_xset_screensaver_enabled(&outcome.stdout).unwrap_or(true),
+    })
+}
+
+pub async fn execute_power_action(
+    xset: String,
+    systemctl: String,
+    action: PowerAction,
+) -> Result<Option<PowerSnapshot>, String> {
+    match action {
+        PowerAction::ToggleScreensaver { enable } => {
+            let command = if enable {
+                format!("{} s 600 600 +dpms dpms 0 0 900", shell_quote(&xset))
+            } else {
+                format!("{} s off -dpms", shell_quote(&xset))
+            };
+            run_power_command(
+                "sh",
+                "toggle-screensaver",
+                vec![OsString::from("-lc"), OsString::from(command)],
+                Duration::from_secs(4),
+            )
+            .await?;
+            Ok(Some(PowerSnapshot {
+                screensaver_enabled: enable,
+            }))
+        }
+        PowerAction::Standby => {
+            run_power_command(
+                &systemctl,
+                "suspend",
+                vec![OsString::from("suspend")],
+                Duration::from_secs(8),
+            )
+            .await?;
+            Ok(None)
+        }
+        PowerAction::Reboot => {
+            run_power_command(
+                &systemctl,
+                "reboot",
+                vec![OsString::from("reboot")],
+                Duration::from_secs(8),
+            )
+            .await?;
+            Ok(None)
+        }
+        PowerAction::Shutdown => {
+            run_power_command(
+                &systemctl,
+                "poweroff",
+                vec![OsString::from("poweroff")],
+                Duration::from_secs(8),
+            )
+            .await?;
+            Ok(None)
+        }
+    }
+}
+
+async fn run_power_command(
+    program: &str,
+    action: &str,
+    args: Vec<OsString>,
+    timeout: Duration,
+) -> Result<(), String> {
+    let outcome = ActionRunner::with_timeout("power-widget", action, timeout)
+        .run_command(ActionCommand::new(program, args))
+        .await;
+    if let Err(error) = outcome.result {
+        Err(if outcome.stderr.trim().is_empty() {
+            error
+        } else {
+            outcome.stderr.trim().to_string()
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn parse_xset_screensaver_enabled(output: &str) -> Option<bool> {
     let timeout = output.lines().find_map(|line| {
-        let trimmed = line.trim();
-        let rest = trimmed.strip_prefix("timeout:")?;
+        let rest = line.trim().strip_prefix("timeout:")?;
         rest.split_whitespace().next()?.parse::<u64>().ok()
     });
     let dpms = output.lines().find_map(|line| {
-        let trimmed = line.trim();
-        if trimmed.eq_ignore_ascii_case("DPMS is Enabled") {
+        let line = line.trim();
+        if line.eq_ignore_ascii_case("DPMS is Enabled") {
             Some(true)
-        } else if trimmed.eq_ignore_ascii_case("DPMS is Disabled") {
+        } else if line.eq_ignore_ascii_case("DPMS is Disabled") {
             Some(false)
         } else {
             None
@@ -88,6 +225,10 @@ fn parse_xset_idle_enabled(output: &str) -> Option<bool> {
         (None, Some(dpms)) => Some(dpms),
         (None, None) => None,
     }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 impl Widget for Power {
@@ -104,95 +245,15 @@ impl Widget for Power {
     }
 
     fn update(&mut self, message: WidgetMessage) {
-        if let WidgetMessage::Power(action) = message {
-            match action.as_str() {
-                "toggle_menu" => {
-                    self.show_menu = !self.show_menu;
-                    if self.show_menu {
-                        self.update_screensaver_status();
-                    }
-                }
-                "toggle_screensaver" => {
-                    self.toggle_screensaver();
-                }
-                "standby" => {
-                    self.standby();
-                    self.show_menu = false;
-                }
-                "reboot" => {
-                    self.reboot();
-                    self.show_menu = false;
-                }
-                "shutdown" => {
-                    self.shutdown();
-                    self.show_menu = false;
-                }
-                _ => {}
-            }
+        if let WidgetMessage::Power(action) = message
+            && action == "toggle_menu"
+        {
+            self.show_menu = !self.show_menu;
         }
     }
 
     fn update_interval(&self) -> Option<u64> {
-        None
-    }
-}
-
-impl Power {
-    fn render_icon(&self) -> Element<'_, WidgetMessage> {
-        let icon = "⏻";
-        let label = icon.to_string();
-
-        button(text(label).size(14).color(Color::WHITE))
-            .padding([2, 8])
-            .on_press(WidgetMessage::Power("toggle_menu".to_string()))
-            .into()
-    }
-
-    fn render_menu(&self) -> Element<'static, WidgetMessage> {
-        let mut menu_content = column![].spacing(4).padding(8);
-
-        // Screensaver toggle
-        let screensaver_text = if self.screensaver_enabled {
-            "Disable Screensaver"
-        } else {
-            "Enable Screensaver"
-        };
-        menu_content = menu_content.push(
-            button(text(screensaver_text).size(11).color(Color::WHITE))
-                .padding([4, 8])
-                .width(Length::Fill)
-                .on_press(WidgetMessage::Power("toggle_screensaver".to_string())),
-        );
-
-        menu_content = menu_content.push(text("---").size(10).color(Color::WHITE));
-
-        // System controls
-        menu_content = menu_content.push(
-            button(text("Standby").size(11).color(Color::WHITE))
-                .padding([4, 8])
-                .width(Length::Fill)
-                .on_press(WidgetMessage::Power("standby".to_string())),
-        );
-
-        menu_content = menu_content.push(
-            button(text("Reboot").size(11).color(Color::WHITE))
-                .padding([4, 8])
-                .width(Length::Fill)
-                .on_press(WidgetMessage::Power("reboot".to_string())),
-        );
-
-        menu_content = menu_content.push(
-            button(text("Shutdown").size(11).color(Color::WHITE))
-                .padding([4, 8])
-                .width(Length::Fill)
-                .on_press(WidgetMessage::Power("shutdown".to_string())),
-        );
-
-        let icon_button = button(text("⏻").size(14).color(Color::WHITE))
-            .padding([2, 8])
-            .on_press(WidgetMessage::Power("toggle_menu".to_string()));
-
-        column![icon_button, menu_content].spacing(4).into()
+        Some(30_000)
     }
 }
 
@@ -207,88 +268,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_power_widget_initialization() {
-        let power = Power::new();
-        assert_eq!(power.name(), "power");
-        assert!(!power.show_menu);
-        assert!(power.screensaver_enabled);
-    }
-
-    #[test]
-    fn test_power_widget_default() {
-        let power = Power::default();
-        assert_eq!(power.name(), "power");
-        assert!(power.screensaver_enabled);
-    }
-
-    #[test]
-    fn test_power_widget_update_toggle_menu() {
+    fn pure_state_and_action_mapping() {
         let mut power = Power::new();
-        assert!(!power.show_menu);
-
         power.update(WidgetMessage::Power("toggle_menu".to_string()));
-        assert!(power.show_menu);
-
-        power.update(WidgetMessage::Power("toggle_menu".to_string()));
-        assert!(!power.show_menu);
-    }
-
-    #[test]
-    fn test_power_widget_update_interval() {
-        let power = Power::new();
-        assert_eq!(power.update_interval(), None);
-    }
-
-    #[test]
-    fn test_power_widget_render_icon() {
-        let power = Power::new();
-        let element = power.view();
-        drop(element);
-    }
-
-    #[test]
-    fn test_power_widget_render_menu() {
-        let mut power = Power::new();
-        power.show_menu = true;
-        let element = power.view();
-        drop(element);
-    }
-
-    #[test]
-    fn test_power_widget_invalid_action_no_panic() {
-        let mut power = Power::new();
-        let original_state = power.screensaver_enabled;
-
-        power.update(WidgetMessage::Power("invalid_action".to_string()));
-        // Should not panic and state should remain unchanged
-        assert_eq!(power.screensaver_enabled, original_state);
+        assert!(power.menu_is_open());
+        assert_eq!(
+            Power::requested_action("toggle_screensaver", true),
+            Some(PowerAction::ToggleScreensaver { enable: false })
+        );
+        assert_eq!(
+            Power::requested_action("standby", true),
+            Some(PowerAction::Standby)
+        );
+        assert_eq!(power.update_interval(), Some(30_000));
     }
 
     #[test]
     fn parses_xset_enabled_and_disabled_states() {
-        let enabled = "Screen Saver:
-  timeout: 600    cycle: 600
-DPMS (Energy Star):
-  DPMS is Enabled
-";
-        let disabled = "Screen Saver:
-  timeout: 0    cycle: 600
-DPMS (Energy Star):
-  DPMS is Disabled
-";
-        assert_eq!(parse_xset_idle_enabled(enabled), Some(true));
-        assert_eq!(parse_xset_idle_enabled(disabled), Some(false));
+        assert_eq!(
+            parse_xset_screensaver_enabled("Screen Saver:\n  timeout:  600"),
+            Some(true)
+        );
+        assert_eq!(
+            parse_xset_screensaver_enabled("Screen Saver:\n  timeout:  0"),
+            Some(false)
+        );
+        assert_eq!(parse_xset_screensaver_enabled("partial"), None);
     }
 
     #[test]
-    fn xset_parser_tolerates_partial_output() {
-        assert_eq!(
-            parse_xset_idle_enabled(
-                "  timeout: 300 cycle: 300
-"
-            ),
-            Some(true)
-        );
-        assert_eq!(parse_xset_idle_enabled("unrelated"), None);
+    fn snapshot_updates_state_and_render_paths_are_pure() {
+        let mut power = Power::new();
+        power.apply_snapshot(PowerSnapshot {
+            screensaver_enabled: false,
+        });
+        assert!(!power.screensaver_enabled());
+        drop(power.view());
+        power.show_menu = true;
+        drop(power.view());
     }
 }

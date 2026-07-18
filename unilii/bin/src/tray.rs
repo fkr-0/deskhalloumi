@@ -7,6 +7,8 @@ use tokio::time::{Duration, sleep};
 use tracing::warn;
 use zbus::{Connection, Proxy, zvariant::OwnedObjectPath};
 
+use deskhalloumi_core::runtime::{ActionCommand, ActionRunner};
+
 const WATCHER_SERVICE: &str = "org.kde.StatusNotifierWatcher";
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 const WATCHER_INTERFACE: &str = "org.kde.StatusNotifierWatcher";
@@ -196,7 +198,7 @@ pub async fn spawn_command(command: String) -> Result<(), String> {
         return Err("cannot spawn an empty command".to_string());
     }
 
-    std::process::Command::new("sh")
+    tokio::process::Command::new("sh")
         .arg("-c")
         .arg(&command)
         .spawn()
@@ -470,25 +472,22 @@ fn is_network_label(label: &str) -> bool {
 }
 
 async fn run_nmcli(nmcli_path: &str, args: &[&str]) -> Result<String, String> {
-    let nmcli = nmcli_path.to_string();
-    let args_vec: Vec<String> = args.iter().map(|value| value.to_string()).collect();
-    let output = tokio::task::spawn_blocking(move || {
-        std::process::Command::new(nmcli).args(args_vec).output()
-    })
-    .await
-    .map_err(|error| format!("failed to join nmcli task: {error}"))?
-    .map_err(|error| format!("failed to execute nmcli: {error}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let outcome = ActionRunner::with_timeout("network", "nmcli", Duration::from_secs(10))
+        .run_command(ActionCommand::new(
+            nmcli_path,
+            args.iter().map(std::ffi::OsString::from).collect(),
+        ))
+        .await;
+    if let Err(error) = outcome.result {
+        let stderr = outcome.stderr.trim();
         return Err(if stderr.is_empty() {
-            format!("nmcli failed with status {}", output.status)
+            error
         } else {
             format!("nmcli failed: {stderr}")
         });
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    Ok(outcome.stdout)
 }
 
 fn parse_device_status(output: &str) -> Option<(String, String, bool)> {

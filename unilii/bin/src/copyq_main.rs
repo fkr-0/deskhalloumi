@@ -102,7 +102,12 @@ fn main() -> iced::Result {
     };
 
     if args.print_json {
-        match CopyqClient::new(&options).list_items() {
+        let runtime = tokio::runtime::Runtime::new().map_err(|error| {
+            iced::Error::WindowCreationFailed(
+                format!("failed to create CopyQ command runtime: {error}").into(),
+            )
+        })?;
+        match runtime.block_on(CopyqClient::new(&options).list_items()) {
             Ok(items) => println!(
                 "{}",
                 serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".into())

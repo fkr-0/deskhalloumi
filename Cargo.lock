@@ -1112,6 +1112,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
  "toml",
  "tracing",
  "wait-timeout",
@@ -1124,6 +1125,7 @@ name = "deskhalloumi-lib"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "evdev",
  "futures",
@@ -4851,6 +4853,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

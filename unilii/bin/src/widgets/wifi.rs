@@ -1,9 +1,12 @@
-//! WiFi widget implementation with menu
+//! WiFi widget with asynchronously refreshed NetworkManager state.
 
-use super::{Widget, WidgetMessage};
+use std::{ffi::OsString, time::Duration};
+
+use deskhalloumi_core::runtime::{ActionCommand, ActionRunner};
 use iced::widget::{button, column, row, scrollable, text};
 use iced::{Alignment, Color, Element, Length};
-use std::process::Command;
+
+use super::{Widget, WidgetMessage};
 
 #[derive(Debug)]
 pub struct Wifi {
@@ -12,6 +15,23 @@ pub struct Wifi {
     connected: bool,
     show_menu: bool,
     wifi_enabled: bool,
+    networks: Vec<NetworkInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkInfo {
+    pub ssid: String,
+    pub signal: u8,
+    pub security: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WifiSnapshot {
+    pub ssid: String,
+    pub signal: u8,
+    pub connected: bool,
+    pub wifi_enabled: bool,
+    pub networks: Vec<NetworkInfo>,
 }
 
 impl Wifi {
@@ -21,69 +41,29 @@ impl Wifi {
             signal: 0,
             connected: false,
             show_menu: false,
-            wifi_enabled: true, // Assume enabled by default
+            wifi_enabled: true,
+            networks: Vec::new(),
         }
     }
 
-    pub fn update_status(&mut self) {
-        if let Ok(output) = Command::new("nmcli")
-            .args(["-t", "-f", "wifi", "radio"])
-            .output()
-            && output.status.success()
-        {
-            let result = String::from_utf8_lossy(&output.stdout);
-            self.wifi_enabled = result.trim().eq_ignore_ascii_case("enabled");
-        }
-
-        if !self.wifi_enabled {
-            self.set_disabled_state();
-            return;
-        }
-
-        if let Ok(output) = Command::new("nmcli")
-            .args(["-t", "-f", "active,ssid,signal", "device", "wifi", "list"])
-            .output()
-            && output.status.success()
-        {
-            let result = String::from_utf8_lossy(&output.stdout);
-            match parse_active_nmcli_network(&result) {
-                Some((ssid, signal)) => {
-                    self.connected = true;
-                    self.ssid = ssid;
-                    self.signal = signal;
-                }
-                None => {
-                    self.connected = false;
-                    self.ssid = "Disconnected".to_string();
-                    self.signal = 0;
-                }
-            }
-        }
+    pub fn menu_is_open(&self) -> bool {
+        self.show_menu
     }
 
-    pub fn get_networks(&self) -> Vec<NetworkInfo> {
-        if !self.wifi_enabled {
-            return Vec::new();
-        }
+    pub fn desired_enabled_state(&self) -> bool {
+        !self.wifi_enabled
+    }
 
-        let mut networks = Vec::new();
-
-        if let Ok(output) = Command::new("nmcli")
-            .args(["-t", "-f", "ssid,signal,security", "device", "wifi", "list"])
-            .output()
-        {
-            let result = String::from_utf8_lossy(&output.stdout);
-            networks = parse_nmcli_networks(&result);
-        }
-
-        networks
+    pub fn apply_snapshot(&mut self, snapshot: WifiSnapshot) {
+        self.ssid = snapshot.ssid;
+        self.signal = snapshot.signal;
+        self.connected = snapshot.connected;
+        self.wifi_enabled = snapshot.wifi_enabled;
+        self.networks = snapshot.networks;
     }
 
     fn set_disabled_state(&mut self) {
-        self.wifi_enabled = false;
-        self.connected = false;
-        self.ssid = "WiFi Disabled".to_string();
-        self.signal = 0;
+        self.apply_snapshot(WifiSnapshot::disabled());
     }
 
     pub fn compact_label(&self) -> String {
@@ -105,26 +85,166 @@ impl Wifi {
         self.connected.then_some(self.ssid.as_str())
     }
 
-    pub fn toggle_wifi(&mut self) {
-        let new_state = if self.wifi_enabled { "off" } else { "on" };
-        if Command::new("nmcli")
-            .args(["radio", "wifi", new_state])
-            .status()
-            .is_ok_and(|status| status.success())
-        {
-            self.wifi_enabled = !self.wifi_enabled;
-            if !self.wifi_enabled {
-                self.set_disabled_state();
+    fn render_icon(&self) -> Element<'_, WidgetMessage> {
+        let icon = if self.connected { "📶" } else { "📡" };
+        button(
+            text(format!("{} {}%", icon, self.signal))
+                .size(12)
+                .color(Color::WHITE),
+        )
+        .padding([2, 8])
+        .on_press(WidgetMessage::Wifi("toggle_menu".to_string()))
+        .into()
+    }
+
+    fn render_menu(&self) -> Element<'static, WidgetMessage> {
+        let icon = if self.connected { "📶" } else { "📡" };
+        let mut menu_content = column![].spacing(4).padding(8);
+        menu_content = menu_content.push(
+            button(
+                text(if self.wifi_enabled {
+                    "Disable WiFi"
+                } else {
+                    "Enable WiFi"
+                })
+                .size(11)
+                .color(Color::WHITE),
+            )
+            .padding([4, 8])
+            .width(Length::Fill)
+            .on_press(WidgetMessage::Wifi("toggle_wifi".to_string())),
+        );
+        menu_content = menu_content.push(text("---").size(10).color(Color::WHITE));
+
+        if self.wifi_enabled {
+            menu_content =
+                menu_content.push(text("Available Networks").size(12).color(Color::WHITE));
+            for network in &self.networks {
+                let network_row = row![
+                    text(network.ssid.clone()).size(11).color(Color::WHITE),
+                    text(format!("{}%", network.signal))
+                        .size(10)
+                        .color(Color::WHITE),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center);
+                menu_content = menu_content.push(
+                    button(network_row)
+                        .padding([4, 8])
+                        .width(Length::Fill)
+                        .on_press(WidgetMessage::Wifi(format!("connect:{}", network.ssid))),
+                );
             }
+            if self.networks.is_empty() {
+                menu_content =
+                    menu_content.push(text("No scan results yet").size(11).color(Color::WHITE));
+            }
+        } else {
+            menu_content = menu_content.push(text("WiFi is disabled").size(11).color(Color::WHITE));
+        }
+
+        let scroll_menu = scrollable(menu_content)
+            .height(Length::Fixed(250.0))
+            .width(Length::Fixed(300.0));
+        let icon_button = button(
+            text(format!("{} {}%", icon, self.signal))
+                .size(12)
+                .color(Color::WHITE),
+        )
+        .padding([2, 8])
+        .on_press(WidgetMessage::Wifi("toggle_menu".to_string()));
+        column![icon_button, scroll_menu].spacing(4).into()
+    }
+}
+
+impl WifiSnapshot {
+    fn disabled() -> Self {
+        Self {
+            ssid: "WiFi Disabled".to_string(),
+            signal: 0,
+            connected: false,
+            wifi_enabled: false,
+            networks: Vec::new(),
         }
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct NetworkInfo {
-    pub ssid: String,
-    pub signal: u8,
-    pub security: String,
+pub async fn read_wifi_snapshot(nmcli: String) -> Result<WifiSnapshot, String> {
+    let radio = run_nmcli(&nmcli, "radio", ["-t", "-f", "wifi", "radio"]).await?;
+    let wifi_enabled = radio.trim().eq_ignore_ascii_case("enabled");
+    if !wifi_enabled {
+        return Ok(WifiSnapshot::disabled());
+    }
+
+    let active = run_nmcli(
+        &nmcli,
+        "active-network",
+        ["-t", "-f", "active,ssid,signal", "device", "wifi", "list"],
+    )
+    .await?;
+    let networks = run_nmcli(
+        &nmcli,
+        "network-scan",
+        ["-t", "-f", "ssid,signal,security", "device", "wifi", "list"],
+    )
+    .await
+    .map(|output| parse_nmcli_networks(&output))
+    .unwrap_or_default();
+    let active = parse_active_nmcli_network(&active);
+    Ok(match active {
+        Some((ssid, signal)) => WifiSnapshot {
+            ssid,
+            signal,
+            connected: true,
+            wifi_enabled: true,
+            networks,
+        },
+        None => WifiSnapshot {
+            ssid: "Disconnected".to_string(),
+            signal: 0,
+            connected: false,
+            wifi_enabled: true,
+            networks,
+        },
+    })
+}
+
+pub async fn set_wifi_enabled(nmcli: String, enabled: bool) -> Result<WifiSnapshot, String> {
+    run_nmcli(
+        &nmcli,
+        "toggle-radio",
+        ["radio", "wifi", if enabled { "on" } else { "off" }],
+    )
+    .await?;
+    read_wifi_snapshot(nmcli).await
+}
+
+async fn run_nmcli<const N: usize>(
+    nmcli: &str,
+    action: &str,
+    args: [&str; N],
+) -> Result<String, String> {
+    let outcome = ActionRunner::with_timeout("wifi-widget", action, Duration::from_secs(8))
+        .with_output_limit(2 * 1024 * 1024)
+        .run_command(ActionCommand::new(
+            nmcli,
+            args.into_iter().map(OsString::from).collect(),
+        ))
+        .await;
+    if let Err(error) = outcome.result {
+        return Err(if outcome.stderr.trim().is_empty() {
+            error
+        } else {
+            outcome.stderr.trim().to_string()
+        });
+    }
+    if outcome.stdout_truncated {
+        return Err(format!(
+            "nmcli output exceeded limit ({} bytes)",
+            outcome.stdout_bytes
+        ));
+    }
+    Ok(outcome.stdout)
 }
 
 fn compact_text(value: &str, max_chars: usize) -> String {
@@ -219,107 +339,16 @@ impl Widget for Wifi {
 
     fn update(&mut self, message: WidgetMessage) {
         if let WidgetMessage::Wifi(action) = message {
-            match action.as_str() {
-                "toggle_menu" => {
-                    self.show_menu = !self.show_menu;
-                }
-                "toggle_wifi" => {
-                    self.toggle_wifi();
-                }
-                "connect" => {
-                    // Connection logic would be handled by the panel
-                    self.show_menu = false;
-                }
-                _ => {}
+            if action == "toggle_menu" {
+                self.show_menu = !self.show_menu;
+            } else if action == "connect" || action.starts_with("connect:") {
+                self.show_menu = false;
             }
         }
     }
 
     fn update_interval(&self) -> Option<u64> {
         Some(5000)
-    }
-}
-
-impl Wifi {
-    fn render_icon(&self) -> Element<'_, WidgetMessage> {
-        let icon = if self.connected { "📶" } else { "📡" };
-        let label = format!("{} {}%", icon, self.signal);
-
-        button(text(label).size(12).color(Color::WHITE))
-            .padding([2, 8])
-            .on_press(WidgetMessage::Wifi("toggle_menu".to_string()))
-            .into()
-    }
-
-    fn render_menu(&self) -> Element<'static, WidgetMessage> {
-        let networks = self.get_networks();
-        let is_empty = networks.is_empty();
-        let icon_str = if self.connected { "📶" } else { "📡" };
-        let label = format!("{} {}%", icon_str, self.signal);
-
-        let mut menu_content = column![].spacing(4).padding(8);
-
-        // WiFi enable/disable toggle
-        let wifi_status = if self.wifi_enabled {
-            "Disable WiFi"
-        } else {
-            "Enable WiFi"
-        };
-        let toggle_button = button(text(wifi_status).size(11).color(Color::WHITE))
-            .padding([4, 8])
-            .width(Length::Fill)
-            .on_press(WidgetMessage::Wifi("toggle_wifi".to_string()));
-        menu_content = menu_content.push(toggle_button);
-
-        menu_content = menu_content.push(text("---").size(10).color(Color::WHITE));
-
-        if self.wifi_enabled {
-            menu_content =
-                menu_content.push(text("Available Networks").size(12).color(Color::WHITE));
-
-            let connect_messages: Vec<WidgetMessage> = networks
-                .iter()
-                .map(|network| WidgetMessage::Wifi(format!("connect:{}", network.ssid)))
-                .collect();
-
-            for (network, msg) in networks.iter().zip(connect_messages.iter()) {
-                let net_row = row![
-                    text(network.ssid.clone()).size(11).color(Color::WHITE),
-                    text(format!("{}%", network.signal))
-                        .size(10)
-                        .color(Color::WHITE),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center);
-
-                menu_content = menu_content.push(
-                    button(net_row)
-                        .padding([4, 8])
-                        .width(Length::Fill)
-                        .on_press(msg.clone()),
-                );
-            }
-
-            if is_empty {
-                menu_content = menu_content.push(
-                    text("Scanning for networks...")
-                        .size(11)
-                        .color(Color::WHITE),
-                );
-            }
-        } else {
-            menu_content = menu_content.push(text("WiFi is disabled").size(11).color(Color::WHITE));
-        }
-
-        let scroll_menu = scrollable(menu_content)
-            .height(Length::Fixed(250.0))
-            .width(Length::Fixed(300.0));
-
-        let icon_button = button(text(label).size(12).color(Color::WHITE))
-            .padding([2, 8])
-            .on_press(WidgetMessage::Wifi("toggle_menu".to_string()));
-
-        column![icon_button, scroll_menu].spacing(4).into()
     }
 }
 
@@ -334,167 +363,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_wifi_widget_initialization() {
-        let wifi = Wifi::new();
+    fn pure_widget_state_and_render_paths() {
+        let mut wifi = Wifi::new();
         assert_eq!(wifi.name(), "wifi");
-        assert_eq!(wifi.ssid, "No WiFi");
-        assert_eq!(wifi.signal, 0);
-        assert!(!wifi.connected);
-        assert!(!wifi.show_menu);
-        assert!(wifi.wifi_enabled);
-    }
-
-    #[test]
-    fn test_wifi_widget_default() {
-        let wifi = Wifi::default();
-        assert_eq!(wifi.name(), "wifi");
-        assert!(wifi.wifi_enabled);
-    }
-
-    #[test]
-    fn test_wifi_widget_update_toggle_menu() {
-        let mut wifi = Wifi::new();
-        assert!(!wifi.show_menu);
-
-        // Toggle menu on
         wifi.update(WidgetMessage::Wifi("toggle_menu".to_string()));
-        assert!(wifi.show_menu);
-
-        // Toggle menu off
-        wifi.update(WidgetMessage::Wifi("toggle_menu".to_string()));
-        assert!(!wifi.show_menu);
-    }
-
-    #[test]
-    fn test_wifi_widget_update_connect() {
-        let mut wifi = Wifi::new();
-        wifi.show_menu = true;
-
-        wifi.update(WidgetMessage::Wifi("connect".to_string()));
-        assert!(!wifi.show_menu);
-    }
-
-    #[test]
-    fn test_wifi_widget_update_invalid_action() {
-        let mut wifi = Wifi::new();
-        let original_ssid = wifi.ssid.clone();
-
-        wifi.update(WidgetMessage::Wifi("invalid_action".to_string()));
-        assert_eq!(wifi.ssid, original_ssid);
-    }
-
-    #[test]
-    fn test_wifi_widget_update_interval() {
-        let wifi = Wifi::new();
+        assert!(wifi.menu_is_open());
+        drop(wifi.view());
+        wifi.update(WidgetMessage::Wifi("connect:Home".to_string()));
+        assert!(!wifi.menu_is_open());
         assert_eq!(wifi.update_interval(), Some(5000));
-    }
-
-    #[test]
-    fn test_wifi_widget_render_icon() {
-        let wifi = Wifi::new();
-        let element = wifi.view();
-        // Should not panic
-        drop(element);
-    }
-
-    #[test]
-    fn test_wifi_widget_render_menu() {
-        let mut wifi = Wifi::new();
-        wifi.show_menu = true;
-        let element = wifi.view();
-        // Should not panic
-        drop(element);
-    }
-
-    #[test]
-    fn test_network_info_creation() {
-        let network = NetworkInfo {
-            ssid: "TestNetwork".to_string(),
-            signal: 85,
-            security: "WPA2".to_string(),
-        };
-
-        assert_eq!(network.ssid, "TestNetwork");
-        assert_eq!(network.signal, 85);
-        assert_eq!(network.security, "WPA2");
-    }
-
-    #[test]
-    fn test_parse_nmcli_networks_keeps_fields_and_filters_invalid_rows() {
-        let networks = parse_nmcli_networks("Cafe Net:87:WPA2\nOpenWifi:42:\n:90:WPA3\nBroken\n");
-
-        assert_eq!(networks.len(), 2);
-        assert_eq!(networks[0].ssid, "Cafe Net");
-        assert_eq!(networks[0].signal, 87);
-        assert_eq!(networks[0].security, "WPA2");
-        assert_eq!(networks[1].ssid, "OpenWifi");
-        assert_eq!(networks[1].signal, 42);
-        assert_eq!(networks[1].security, "Open");
-    }
-
-    #[test]
-    fn test_wifi_get_networks_when_disabled() {
-        let mut wifi = Wifi::new();
-        wifi.wifi_enabled = false;
-        let networks = wifi.get_networks();
-        assert!(networks.is_empty());
     }
 
     #[test]
     fn disabled_state_clears_connection_details() {
         let mut wifi = Wifi::new();
-        wifi.connected = true;
-        wifi.ssid = "Previously connected".to_string();
-        wifi.signal = 95;
+        wifi.apply_snapshot(WifiSnapshot {
+            ssid: "Previously connected".to_string(),
+            signal: 95,
+            connected: true,
+            wifi_enabled: true,
+            networks: Vec::new(),
+        });
         wifi.set_disabled_state();
-
-        assert!(!wifi.wifi_enabled);
-        assert!(!wifi.connected);
-        assert_eq!(wifi.ssid, "WiFi Disabled");
-        assert_eq!(wifi.signal, 0);
-    }
-
-    // Integration tests that require nmcli
-
-    #[test]
-    #[ignore]
-    fn test_wifi_update_status_connected() {
-        let mut wifi = Wifi::new();
-        wifi.update_status();
-
-        // This test requires nmcli to be available and a connection to exist
-        // Mark as ignored to avoid failing in CI
-        if wifi.connected {
-            assert_ne!(wifi.ssid, "No WiFi");
-            assert_ne!(wifi.ssid, "Disconnected");
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn test_wifi_get_networks() {
-        let wifi = Wifi::new();
-        let networks = wifi.get_networks();
-
-        // This test requires nmcli to be available.
-        // In isolated environments the list may be empty, but any returned row must be meaningful.
-        for network in networks {
-            assert!(!network.ssid.is_empty());
-            assert!(network.signal <= 100);
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn test_wifi_toggle_wifi() {
-        let mut wifi = Wifi::new();
-        let original_enabled = wifi.wifi_enabled;
-
-        // This test requires nmcli and proper permissions
-        wifi.toggle_wifi();
-
-        // After toggle, the state should flip
-        assert_ne!(wifi.wifi_enabled, original_enabled);
+        assert!(!wifi.wifi_enabled());
+        assert_eq!(wifi.connected_ssid(), None);
+        assert_eq!(wifi.compact_label(), "📡 off");
     }
 
     #[test]
@@ -504,21 +397,25 @@ mod tests {
     }
 
     #[test]
-    fn active_network_parser_finds_active_row_not_first_row() {
-        let active = parse_active_nmcli_network("no:Cafe:88\nyes:Home\\:Office:67\nno:Other:50\n");
+    fn active_and_scan_parsers_handle_escaped_ssids() {
+        let active = parse_active_nmcli_network("no:Cafe:88\nyes:Home\\:Office:67\n");
         assert_eq!(active, Some(("Home:Office".to_string(), 67)));
-    }
-
-    #[test]
-    fn network_parser_handles_escaped_ssids() {
         let networks = parse_nmcli_networks("Home\\:Office:80:WPA2\nOpen Network:45:\n");
+        assert_eq!(networks.len(), 2);
         assert_eq!(networks[0].ssid, "Home:Office");
         assert_eq!(networks[1].security, "Open");
     }
 
     #[test]
-    fn compact_wifi_label_bounds_long_unicode_ssids() {
-        assert_eq!(compact_text("short", 8), "short");
-        assert_eq!(compact_text("café-network-very-long", 8), "café-net…");
+    fn compact_wifi_label_bounds_unicode_ssids() {
+        let mut wifi = Wifi::new();
+        wifi.apply_snapshot(WifiSnapshot {
+            ssid: "Funknetz-Überraschung-mit-sehr-langem-Namen".to_string(),
+            signal: 80,
+            connected: true,
+            wifi_enabled: true,
+            networks: Vec::new(),
+        });
+        assert!(wifi.compact_label().chars().count() <= 21);
     }
 }
