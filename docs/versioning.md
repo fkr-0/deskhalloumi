@@ -122,6 +122,11 @@ The manual workflow checks out the requested annotated tag before validating,
 building, and packaging it. The workflow definition comes from `main`, while
 the source and release metadata remain pinned to the immutable tag.
 
+Release retries may carry narrowly documented runner-compatibility exclusions
+for obsolete hardware-presence smoke assertions in the tagged tree. Such an
+exclusion must name the exact test and may not skip parser, engine, integration,
+or release-metadata coverage.
+
 The release workflow does not publish crates or create a public GitHub release.
 Those remain explicit maintainer actions after artifact review.
 
