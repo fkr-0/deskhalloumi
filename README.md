@@ -1,9 +1,40 @@
 # DeskHalloumi
 
+[![CI](https://github.com/fkr-0/deskhalloumi/actions/workflows/ci.yml/badge.svg)](https://github.com/fkr-0/deskhalloumi/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/tag/fkr-0/deskhalloumi?label=release)](https://github.com/fkr-0/deskhalloumi/tags)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 DeskHalloumi is a Rust desktop-control workspace built around Iced, Tokio,
 DBus/StatusNotifier integration, configurable menus, a panel, global hotkeys,
 and small plugin crates. It was previously named `unilii`; compatibility
 commands and config fallbacks remain available during the pre-1.0 migration.
+
+Canonical repository: <https://github.com/fkr-0/deskhalloumi>
+
+## Release 0.2.0
+
+`v0.2.0`, released on July 18, 2026, is the first DeskHalloumi-branded release.
+It introduces the compatibility-first rename, standalone and generated i3/X11
+hotkeys, recursive i3 conflict auditing, selective native X11 semantics,
+dynamic evdev keyboard hot-plug, the versioned desktop action bus, and the
+expanded menu and popup frontends.
+
+- [Release notes](docs/releases/0.2.0.md)
+- [Complete changelog](CHANGELOG.md)
+- [Versioning and release policy](docs/versioning.md)
+- [Tag `v0.2.0`](https://github.com/fkr-0/deskhalloumi/tree/v0.2.0)
+
+Clone the repository with:
+
+```sh
+git clone git@github.com:fkr-0/deskhalloumi.git
+cd deskhalloumi
+```
+
+Pushing an annotated version tag runs the release workflow, which validates the
+tag and uploads a deterministic Linux archive plus SHA-256 checksum as a GitHub
+Actions artifact. It does not automatically publish crates or create a GitHub
+Release entry.
 
 ## Workspace layout
 
@@ -34,7 +65,8 @@ commands and config fallbacks remain available during the pre-1.0 migration.
         └── Tmux/
 ```
 
-The root directory also contains review artifacts and external/reference material in the current dirty working tree. Treat directories such as `iced_examples/` and `wiUp/` as non-canonical unless a task explicitly says otherwise.
+Ignored local review/reference directories such as `iced_examples/` and `wiUp/`
+may exist in developer checkouts. They are not part of the canonical repository.
 
 
 ## Hotkey service and managed menus
@@ -179,11 +211,12 @@ limits are documented in [the rename plan](docs/project-renaming.md).
 - `main.rs` is still too large and is being split incrementally.
 - Some transitional modules carry local `FIXME(T6)` dead-code allowances until the tray/menu architecture is fully consolidated.
 - Enhanced tray events now have module-level update tests, but a full Iced daemon/update-path integration test is still pending.
-- The root contains untracked/reference material that should not be treated as canonical source without checking `tasks.yml`.
 
 ## License
 
-The workspace manifests currently declare `MIT` for the active workspace packages. Check the package manifests and any imported/reference material before redistributing artifacts from the dirty working tree.
+DeskHalloumi is distributed under the [MIT License](LICENSE). Third-party
+dependencies and any separately obtained local reference material retain their
+own licenses.
 
 ## System menubar
 

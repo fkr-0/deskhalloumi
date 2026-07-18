@@ -5,7 +5,8 @@
 The active Cargo workspace declares a shared version of `0.2.0` in the root
 `Cargo.toml`, and the main crates inherit it with `version.workspace = true`.
 The released commit includes a dated changelog section, automated
-release-metadata checks, and the annotated `v0.2.0` tag.
+release-metadata checks, and the annotated `v0.2.0` tag. The canonical remote is
+`https://github.com/fkr-0/deskhalloumi`.
 
 This document defines the contract; a version heading alone does not claim that
 the release has already been published or tagged.
@@ -98,13 +99,31 @@ A compatibility alias is part of the public contract once released.
    python3 scripts/check_release_metadata.py --release --require-clean
    ```
 
-10. Push the annotated tag. `.github/workflows/release.yml` checks that the tag
-    object is annotated and points at `HEAD`, reruns all release gates, builds
-    the primary and compatibility binaries, and uploads a deterministic Linux
-    archive with a SHA-256 checksum.
+10. Push the reviewed branch and annotated tag explicitly:
+
+    ```sh
+    git push origin main
+    git push origin vX.Y.Z
+    ```
+
+11. Verify the tag-triggered workflow. `.github/workflows/release.yml` checks
+    that the tag object is annotated and points at the checked-out commit,
+    reruns all release gates, builds the primary and compatibility binaries,
+    and uploads a deterministic Linux archive with a SHA-256 checksum.
 
 The release workflow does not publish crates or create a public GitHub release.
 Those remain explicit maintainer actions after artifact review.
+
+## Post-release maintenance
+
+- Treat a pushed annotated release tag as immutable. Never force-move or replace
+  it to include later documentation or packaging corrections.
+- Put post-tag changes under `[Unreleased]` and commit them on the development
+  branch.
+- Use a patch release when a correction must be represented by a new immutable
+  source tag or redistributed artifact.
+- Documentation may link to the stable tag tree and to the comparison from that
+  tag to `HEAD`.
 
 ## Current release
 

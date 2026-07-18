@@ -1,6 +1,16 @@
-# Contributing to unilii
+# Contributing to DeskHalloumi
 
-Thanks for working on `unilii`. This repository is a desktop/session-facing Rust workspace, so local tests must be careful not to mutate a developer's running window manager, network, audio, power, login, or notification session.
+Thanks for working on DeskHalloumi. The canonical repository is
+<https://github.com/fkr-0/deskhalloumi>. This is a desktop/session-facing Rust
+workspace, so local tests must be careful not to mutate a developer's running
+window manager, network, audio, power, login, or notification session.
+
+Clone it with:
+
+```sh
+git clone git@github.com:fkr-0/deskhalloumi.git
+cd deskhalloumi
+```
 
 ## Default safe test command
 
@@ -22,8 +32,8 @@ cargo test --workspace
 Focused tests are fine while iterating, for example:
 
 ```sh
-cargo test -p unilii-core bar
-cargo test -p unilii-bin --bin unilii-bar
+cargo test -p deskhalloumi-core bar
+cargo test -p deskhalloumi-bin --bin deskhalloumi-bar
 ```
 
 Run `scripts/test_safe.sh` before considering the slice complete.
@@ -63,3 +73,6 @@ Live-session integration tests are future work and must be opt-in. They should r
 2. Run the focused gate.
 3. Run `scripts/test_safe.sh` when production code, scripts, docs, or test policy changes.
 4. Update `tasks.yml` with implementation evidence, limitations, and any emerging follow-up tasks.
+
+Documentation-only corrections made after a release tag belong under
+`[Unreleased]`; never move or replace an already published annotated tag.

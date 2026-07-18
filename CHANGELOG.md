@@ -45,6 +45,8 @@ after that tag belong under `[Unreleased]`.
 - An in-app CopyQ shortcut guide available from the header or with `F1`.
 - Dynamic evdev keyboard hot-plug handling that adds newly connected keyboards,
   retires removed streams independently, and suppresses stale path generations.
+- Canonical GitHub repository and package metadata, an MIT license file, public
+  release notes, and license inclusion in deterministic release archives.
 
 ### Changed
 
@@ -102,3 +104,6 @@ after that tag belong under `[Unreleased]`.
   untouched and reporting grab conflicts before committing a new generation.
 - sxhkd Cartesian brace expansion is capped at 4096 generated values to prevent
   accidental configuration blow-ups during migration.
+
+[Unreleased]: https://github.com/fkr-0/deskhalloumi/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/fkr-0/deskhalloumi/tree/v0.2.0

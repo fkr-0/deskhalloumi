@@ -99,7 +99,7 @@ jobs:
             install -m755 "target/release/${binary}" "${stage}/bin/${binary}"
           done
 
-          install -m644 README.md CHANGELOG.md CONFIGURATION.md KEYBINDINGS.md \
+          install -m644 README.md CHANGELOG.md CONFIGURATION.md KEYBINDINGS.md LICENSE \
             "${stage}/share/doc/deskhalloumi/"
           cp -R docs contrib examples "${stage}/share/doc/deskhalloumi/"
 

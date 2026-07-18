@@ -15,6 +15,9 @@ version = "0.2.0"
 edition = "2024"
 license = "MIT"
 authors = ["DeskHalloumi contributors"]
+repository = "https://github.com/fkr-0/deskhalloumi"
+homepage = "https://github.com/fkr-0/deskhalloumi"
+documentation = "https://github.com/fkr-0/deskhalloumi/tree/main/docs"
 
 [workspace.dependencies]
 iced = { version = "0.14", features = [
