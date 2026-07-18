@@ -1,0 +1,26 @@
+[bar]
+height = 28
+position = "top"
+hot_reload = true
+
+[layout]
+left = ["workspaces"]
+center = ["window_title"]
+right = ["clock"]
+
+[[module]]
+id = "workspaces"
+type = "workspaces"
+backend = "i3"
+
+[[module]]
+id = "window_title"
+type = "window_title"
+backend = "i3"
+format = "{title}"
+
+[[module]]
+id = "clock"
+type = "clock"
+format = "%H:%M"
+interval_ms = 1000

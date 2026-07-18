@@ -8,16 +8,35 @@ mod cli;
 mod enhanced_tray;
 mod menus;
 mod module_loader;
+mod startup;
 mod subscription_manager;
 mod tray;
 mod update;
 mod widgets;
 
+use action_runner::{ActionCommand, ActionRunner};
 use app::{Message, UniliiBar};
 use app_config::{AppConfig, load_app_config};
 use clap::Parser;
 use cli::{Cli, Commands, verbose_to_level};
-use iced::futures::{SinkExt, StreamExt};
+use deskhalloumi_core::{
+    ModuleUpdate,
+    action_bus::{
+        ACTION_BUS_MAX_FRAME_BYTES, ACTION_BUS_PROTOCOL_VERSION, ActionBusRequest,
+        ActionBusResponse, DesktopAction, default_action_bus_socket_path,
+    },
+    bar::{default_bar_config_path, load_bar_config, starter_bar_config_toml},
+    config::{Config, MenuUiConfig, load_config_with_path},
+    key_import_sxhkd::import_sxhkd_config,
+    keys::{
+        BarDaemonAction, CommandType, KeyDryRunEvent, KeybindingDaemon, KeybindingResult,
+        TrayDaemonAction, dry_run_bindings, parse_bar_action, parse_tray_action,
+    },
+    menu_process::{
+        MenuProcessManager, parse_menu_action, prepare_runtime_dir, process_instance_status,
+    },
+};
+use iced::futures::SinkExt;
 use iced::keyboard::{Key, Modifiers, key};
 use iced::widget::{
     Space, button, column, container, image, row, scrollable, svg, text, text_input,
@@ -26,35 +45,184 @@ use iced::{Alignment, Element, Length, Subscription, Task, window};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
+use std::ffi::OsString;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{UnixListener, UnixStream};
 use tracing::{error, info, warn};
-use unilii_core::{
-    ModuleUpdate,
-    config::load_config_with_path,
-    key_import_sxhkd::import_sxhkd_config,
-    keys::{KeyDryRunEvent, KeybindingDaemon, dry_run_bindings},
-};
 
 use enhanced_tray::{EnhancedTrayState, TrayViewState};
-use update::enhanced_tray_events::apply_enhanced_tray_event;
-use update::tray_animation::apply_animation_tick;
-use update::tray_navigation::{navigate_left, navigate_right};
-use update::tray_view::{enter_submenu, exit_submenu, show_aggregated, show_favorites, update_filter};
-use update::tray_text_input::{clear_text_input_value, set_text_input_value};
-use update::tray_menu_fetch::{apply_menu_fetch_result, TrayMenuFetchOutcome};
-use update::tray_favorites::toggle_favorite;
-use update::tray_icon_press::{open_tray_icon_state, open_tray_icon_state_with_menu, should_close_current_tray_view, to_enhanced_tray_icon, TrayIconOpenKind};
-use update::tray_snapshots::{apply_calendar_snapshot, apply_mount_snapshot, apply_network_snapshot, apply_spawn_command_done, apply_spawn_command_started, mark_special_view_loading, network_toggle_desired_state_and_mark_loading};
+use menus::presentation::{
+    ActionItemOptions, action_item as presentation_action_item, bounded_text, confirmation_submenu,
+    is_section_item, is_status_item, quickjump_hint_for_visible_index, split_label,
+    strip_mnemonic_markers,
+};
+use menus::system::{
+    PendingSystemAction, SYSTEM_MENU_APP_ID, SYSTEM_MENU_KEY, SystemDisplayPreset,
+    SystemDisplaySnapshot, SystemInternalAction, SystemMenuRuntime, SystemMenuSnapshot,
+    build_system_menu, button_label, parse_internal_action,
+};
 use module_loader::ModuleManager;
+use startup::{build_window_settings, default_panel_config};
 use subscription_manager::{
     get_latest_module_update, has_module_updates, initialize_global_subscriptions,
+};
+use update::enhanced_tray_events::apply_enhanced_tray_event;
+use update::tray_animation::apply_animation_tick;
+use update::tray_favorites::toggle_favorite;
+use update::tray_icon_press::{
+    TrayIconOpenKind, open_tray_icon_state, open_tray_icon_state_with_menu,
+    should_close_current_tray_view, to_enhanced_tray_icon,
+};
+use update::tray_menu_fetch::{TrayMenuFetchOutcome, apply_menu_fetch_result};
+use update::tray_navigation::{navigate_left, navigate_right};
+use update::tray_snapshots::{
+    apply_calendar_snapshot, apply_mount_snapshot, apply_network_snapshot,
+    apply_spawn_command_done, apply_spawn_command_started, mark_special_view_loading,
+    network_toggle_desired_state_and_mark_loading,
+};
+use update::tray_text_input::{clear_text_input_value, set_text_input_value};
+use update::tray_view::{
+    enter_submenu, exit_submenu, show_aggregated, show_favorites, update_filter,
 };
 use widgets::{
     Audio, Power, SysMonitor, Video, Widget, WidgetMessage, Wifi, key_char_digit, render_modules,
 };
+
+static KEYBINDING_ACTION_RECEIVER: OnceLock<
+    Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<KeybindingResult>>>,
+> = OnceLock::new();
+
+fn install_keybinding_action_receiver(
+    receiver: tokio::sync::mpsc::UnboundedReceiver<KeybindingResult>,
+) -> Result<(), String> {
+    let slot = KEYBINDING_ACTION_RECEIVER.get_or_init(|| Mutex::new(None));
+    let mut guard = slot
+        .lock()
+        .map_err(|error| format!("failed to lock keybinding action receiver: {error}"))?;
+    if guard.is_some() {
+        return Err("keybinding action receiver is already installed".to_string());
+    }
+    *guard = Some(receiver);
+    Ok(())
+}
+
+struct ActionBusSocketGuard(PathBuf);
+
+impl Drop for ActionBusSocketGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+async fn start_action_bus_server(
+    sender: tokio::sync::mpsc::UnboundedSender<KeybindingResult>,
+) -> Result<(), String> {
+    let path = default_action_bus_socket_path();
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("action socket '{}' has no parent", path.display()))?;
+    prepare_runtime_dir(parent)?;
+    if path.exists() {
+        if std::os::unix::net::UnixStream::connect(&path).is_ok() {
+            return Err(format!(
+                "DeskHalloumi action bus is already active at '{}'",
+                path.display()
+            ));
+        }
+        fs::remove_file(&path)
+            .map_err(|error| format!("failed to remove stale action socket: {error}"))?;
+    }
+    let listener = UnixListener::bind(&path)
+        .map_err(|error| format!("failed to bind action socket '{}': {error}", path.display()))?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("failed to secure action socket: {error}"))?;
+    tokio::spawn(async move {
+        let _guard = ActionBusSocketGuard(path);
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(value) => value,
+                Err(error) => {
+                    error!("DeskHalloumi action bus accept failed: {error}");
+                    break;
+                }
+            };
+            let sender = sender.clone();
+            tokio::spawn(async move {
+                handle_action_bus_connection(stream, sender).await;
+            });
+        }
+    });
+    Ok(())
+}
+
+async fn handle_action_bus_connection(
+    stream: UnixStream,
+    sender: tokio::sync::mpsc::UnboundedSender<KeybindingResult>,
+) {
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    let response = match tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut line))
+        .await
+    {
+        Err(_) => ActionBusResponse::error("unknown", "timed out reading action request"),
+        Ok(Err(error)) => ActionBusResponse::error("unknown", format!("read failed: {error}")),
+        Ok(Ok(0)) => ActionBusResponse::error("unknown", "empty action request"),
+        Ok(Ok(_)) if line.len() > ACTION_BUS_MAX_FRAME_BYTES => {
+            ActionBusResponse::error("unknown", "action request exceeds 64 KiB")
+        }
+        Ok(Ok(_)) => match serde_json::from_str::<ActionBusRequest>(line.trim()) {
+            Err(error) => ActionBusResponse::error("unknown", format!("invalid request: {error}")),
+            Ok(request) => match request.validate() {
+                Err(error) => ActionBusResponse::error(request.request_id, error),
+                Ok(()) => {
+                    let result = match request.action {
+                        DesktopAction::Bar(command) => KeybindingResult::BarAction(command),
+                        DesktopAction::Tray(command) => KeybindingResult::TrayAction(command),
+                        DesktopAction::Widget(command) => KeybindingResult::WidgetAction(command),
+                        DesktopAction::Shell(_) | DesktopAction::Menu(_) => {
+                            let response = ActionBusResponse::error(
+                                request.request_id,
+                                "shell and managed-menu actions are executed by hotkeyd, not the bar",
+                            );
+                            write_action_bus_response(reader.into_inner(), &response).await;
+                            return;
+                        }
+                    };
+                    match sender.send(result) {
+                        Ok(()) => ActionBusResponse::ok(request.request_id, "queued"),
+                        Err(_) => ActionBusResponse::error(
+                            request.request_id,
+                            "bar action receiver is no longer available",
+                        ),
+                    }
+                }
+            },
+        },
+    };
+    debug_assert_eq!(response.protocol_version, ACTION_BUS_PROTOCOL_VERSION);
+    write_action_bus_response(reader.into_inner(), &response).await;
+}
+
+async fn write_action_bus_response(mut stream: UnixStream, response: &ActionBusResponse) {
+    if let Ok(mut payload) = serde_json::to_vec(response) {
+        payload.push(b'\n');
+        let _ = stream.write_all(&payload).await;
+        let _ = stream.shutdown().await;
+    }
+}
+
+fn take_keybinding_action_receiver()
+-> Option<tokio::sync::mpsc::UnboundedReceiver<KeybindingResult>> {
+    KEYBINDING_ACTION_RECEIVER
+        .get()
+        .and_then(|slot| slot.lock().ok()?.take())
+}
 
 fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
     match message {
@@ -76,14 +244,7 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             }
         }
         Message::KeyboardInput { code, value } => {
-            info!("keyboard event: code={code}, value={value}");
-            if code == "KEY_LEFTSHIFT" || code == "KEY_RIGHTSHIFT" {
-                bar.shift_held = value != 0;
-                info!("shift state changed: held={}", bar.shift_held);
-            }
-            if let Some(task) = handle_evdev_tray_key(bar, &code, value) {
-                return task;
-            }
+            return handle_global_key_event(bar, &code, value);
         }
         Message::WindowKeyboardInput {
             key,
@@ -106,10 +267,12 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                         if let Some(ch) = extract_key_char(&key) {
                             let alphabet =
                                 quickjump_alphabet_for_view(&bar.config.menus.custom, tray_state);
+                            let quickjump_targets =
+                                selectable_menu_indices_with_config(&bar.config, tray_state);
                             match handle_quickjump_key(
                                 &mut bar.tray_quickjump_input,
                                 &alphabet,
-                                get_current_menu_item_count(tray_state),
+                                quickjump_targets.len(),
                                 ch,
                             ) {
                                 QuickjumpOutcome::Ignored
@@ -117,17 +280,23 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                                 | QuickjumpOutcome::Reset => {
                                     return Task::none();
                                 }
-                                QuickjumpOutcome::Activate(index) => {
+                                QuickjumpOutcome::Activate(position) => {
                                     bar.tray_quickjump_active = false;
                                     bar.tray_quickjump_input.clear();
+                                    let Some(index) = quickjump_targets.get(position).copied()
+                                    else {
+                                        return Task::none();
+                                    };
                                     if let Some((app_id, action)) =
-                                        get_menu_action_at_index(tray_state, index)
+                                        get_menu_action_at_index_with_config(
+                                            &bar.config,
+                                            tray_state,
+                                            index,
+                                        )
                                     {
-                                        tray_state.animation_target = 0.0;
-                                        return Task::batch(vec![
-                                            Task::done(Message::TrayMenuTriggered(app_id, action)),
-                                            resize_window_task(bar, false),
-                                        ]);
+                                        return Task::done(Message::TrayMenuTriggered(
+                                            app_id, action,
+                                        ));
                                     }
                                     return Task::none();
                                 }
@@ -136,64 +305,64 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                     }
                     match key.as_str() {
                         _ if key_matches_named(&key, "Escape") => {
-                            tray_state.animation_target = 0.0;
                             bar.tray_quickjump_active = false;
                             bar.tray_quickjump_input.clear();
+                            if submenu_is_open(tray_state) {
+                                return Task::done(Message::TrayExitSubmenu);
+                            }
+                            tray_state.animation_target = 0.0;
                             return resize_window_task(bar, false);
                         }
                         _ if key_matches_named(&key, "ArrowDown")
                             || key_matches_named(&key, "Tab") =>
                         {
-                            let count = get_current_menu_item_count(tray_state);
-                            if count > 0 {
-                                tray_state.selected_index = Some(match tray_state.selected_index {
-                                    None => 0,
-                                    Some(i) => (i + 1) % count,
-                                });
-                            }
+                            move_menu_selection_with_config(&bar.config, tray_state, true);
                             return Task::none();
                         }
                         _ if key_matches_named(&key, "ArrowUp") => {
-                            let count = get_current_menu_item_count(tray_state);
-                            if count > 0 {
-                                tray_state.selected_index = Some(match tray_state.selected_index {
-                                    None => count.saturating_sub(1),
-                                    Some(i) => {
-                                        if i == 0 {
-                                            count - 1
-                                        } else {
-                                            i - 1
-                                        }
-                                    }
-                                });
-                            }
+                            move_menu_selection_with_config(&bar.config, tray_state, false);
                             return Task::none();
                         }
                         _ if key_matches_named(&key, "ArrowLeft") => {
-                            return Task::done(Message::TrayNavigateLeft);
+                            return Task::done(if submenu_is_open(tray_state) {
+                                Message::TrayExitSubmenu
+                            } else {
+                                Message::TrayNavigateLeft
+                            });
                         }
                         _ if key_matches_named(&key, "ArrowRight") => {
+                            if let Some(idx) = tray_state.selected_index
+                                && let Some((app_id, action)) = get_menu_action_at_index_with_config(
+                                    &bar.config,
+                                    tray_state,
+                                    idx,
+                                )
+                                && matches!(
+                                    action,
+                                    enhanced_tray::TrayMenuAction::NavigateToSubmenu { .. }
+                                )
+                            {
+                                return Task::done(Message::TrayMenuTriggered(app_id, action));
+                            }
                             return Task::done(Message::TrayNavigateRight);
                         }
                         _ if key_matches_named(&key, "Enter") => {
                             if let Some(idx) = tray_state.selected_index {
-                                if let Some((app_id, action)) =
-                                    get_menu_action_at_index(tray_state, idx)
-                                {
-                                    tray_state.animation_target = 0.0;
-                                    return Task::batch(vec![
-                                        Task::done(Message::TrayMenuTriggered(app_id, action)),
-                                        resize_window_task(bar, false),
-                                    ]);
+                                if let Some((app_id, action)) = get_menu_action_at_index_with_config(
+                                    &bar.config,
+                                    tray_state,
+                                    idx,
+                                ) {
+                                    return Task::done(Message::TrayMenuTriggered(app_id, action));
                                 }
                             }
                             return Task::none();
                         }
                         _ if key_matches_char(&key, 'f') => {
-                            return Task::done(Message::TrayToggleFavorite(
-                                "".to_string(),
-                                "".to_string(),
-                            ));
+                            if let Some((app_id, item_id)) = selected_favorite_target(tray_state) {
+                                return Task::done(Message::TrayToggleFavorite(app_id, item_id));
+                            }
+                            return Task::none();
                         }
                         _ if key_matches_char(&key, 'a') => {
                             return Task::done(Message::TrayShowAggregated);
@@ -230,7 +399,8 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                     // Check if current app still exists
                     match &tray_state.current_view {
                         TrayViewState::SingleApp { app_id, .. } => {
-                            let still_exists = bar.tray_icons.iter().any(|icon| icon.id == *app_id);
+                            let still_exists = app_id == SYSTEM_MENU_APP_ID
+                                || bar.tray_icons.iter().any(|icon| icon.id == *app_id);
                             if !still_exists {
                                 bar.enhanced_tray = None;
                             }
@@ -238,7 +408,8 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                         TrayViewState::Network { app_id, .. }
                         | TrayViewState::Mount { app_id, .. }
                         | TrayViewState::Calendar { app_id, .. } => {
-                            let still_exists = bar.tray_icons.iter().any(|icon| icon.id == *app_id);
+                            let still_exists = app_id == SYSTEM_MENU_APP_ID
+                                || bar.tray_icons.iter().any(|icon| icon.id == *app_id);
                             if !still_exists {
                                 bar.enhanced_tray = None;
                             }
@@ -249,7 +420,10 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             }
         },
         Message::TrayIconPressed(icon_key) => {
-            if let Some(icon) = bar.tray_icons.iter().find(|icon| icon.key == icon_key)
+            if let Some(icon) = bar
+                .tray_icons
+                .iter()
+                .find(|icon| icon.key == icon_key || icon.id == icon_key)
                 && should_close_current_tray_view(bar.enhanced_tray.as_ref(), icon)
             {
                 if let Some(current) = bar.enhanced_tray.as_mut() {
@@ -291,7 +465,8 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                 }
 
                 if is_calendar_icon(icon) {
-                    bar.enhanced_tray = Some(open_tray_icon_state(icon, TrayIconOpenKind::Calendar));
+                    bar.enhanced_tray =
+                        Some(open_tray_icon_state(icon, TrayIconOpenKind::Calendar));
 
                     let app_id = icon.id.clone();
                     let calendar_accounts = bar.config.menus.calendar.accounts.clone();
@@ -307,7 +482,8 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
 
                 if is_custom_menu_icon(icon, &bar.config.menus.custom) {
                     let enhanced_icon = to_enhanced_tray_icon(icon, false);
-                    let custom_menu = build_custom_menu_items(&enhanced_icon, &bar.config.menus.custom);
+                    let custom_menu =
+                        build_custom_menu_items(&enhanced_icon, &bar.config.menus.custom);
                     bar.enhanced_tray = Some(open_tray_icon_state_with_menu(
                         icon,
                         TrayIconOpenKind::Regular,
@@ -345,6 +521,28 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             }
         }
         Message::TrayMenuTriggered(icon_key, action) => {
+            if icon_key == SYSTEM_MENU_KEY || icon_key == SYSTEM_MENU_APP_ID {
+                match action {
+                    enhanced_tray::TrayMenuAction::SpawnCommand(command) => {
+                        if let Some(action) = parse_internal_action(&command) {
+                            return handle_system_internal_action(bar, action);
+                        }
+                        return run_system_shell_command(
+                            bar,
+                            "system-command",
+                            "System command",
+                            command,
+                        );
+                    }
+                    enhanced_tray::TrayMenuAction::NavigateToSubmenu { submenu_path, .. } => {
+                        return Task::done(Message::TrayEnterSubmenu(
+                            SYSTEM_MENU_APP_ID.to_string(),
+                            submenu_path,
+                        ));
+                    }
+                    _ => return Task::none(),
+                }
+            }
             if let Some(icon) = bar
                 .tray_icons
                 .iter()
@@ -392,6 +590,24 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                     if cmd == "calendar:refresh" {
                         return Task::done(Message::TrayCalendarRefresh(icon.key.clone()));
                     }
+                    if cmd == "nmcli device wifi rescan" {
+                        return Task::done(Message::TrayNetworkRefresh(icon.key.clone()));
+                    }
+                    if cmd == "nmcli radio wifi on" || cmd == "nmcli radio wifi off" {
+                        return Task::done(Message::TrayNetworkToggle(icon.key.clone()));
+                    }
+                    let current_special_app =
+                        bar.enhanced_tray
+                            .as_ref()
+                            .and_then(|state| match &state.current_view {
+                                TrayViewState::Network { app_id, .. }
+                                | TrayViewState::Mount { app_id, .. }
+                                | TrayViewState::Calendar { app_id, .. } => Some(app_id.as_str()),
+                                _ => None,
+                            });
+                    if current_special_app == Some(icon.id.as_str()) {
+                        return Task::done(Message::TraySpawnCommand(icon.key.clone(), cmd));
+                    }
                 }
                 let converted_action = match action {
                     enhanced_tray::TrayMenuAction::Activate => tray::TrayMenuAction::Activate,
@@ -430,18 +646,12 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
         }
         Message::TrayNetworkSnapshot(icon_key, result) => {
             apply_network_snapshot(&mut bar.enhanced_tray, &icon_key, result, |app_id| {
-                bar.tray_icons
-                    .iter()
-                    .find(|icon| icon.id == app_id)
-                    .map(|icon| icon.key.clone())
+                resolve_tray_icon_key(&bar.tray_icons, app_id)
             });
         }
         Message::TrayNetworkRefresh(icon_key) => {
             mark_special_view_loading(&mut bar.enhanced_tray, &icon_key, |app_id| {
-                bar.tray_icons
-                    .iter()
-                    .find(|icon| icon.id == app_id)
-                    .map(|icon| icon.key.clone())
+                resolve_tray_icon_key(&bar.tray_icons, app_id)
             });
 
             let nmcli_path = bar.run_options.nmcli_path.clone();
@@ -470,10 +680,7 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
         }
         Message::TrayNetworkToggleDone(icon_key, result) => {
             mark_special_view_loading(&mut bar.enhanced_tray, &icon_key, |app_id| {
-                bar.tray_icons
-                    .iter()
-                    .find(|icon| icon.id == app_id)
-                    .map(|icon| icon.key.clone())
+                resolve_tray_icon_key(&bar.tray_icons, app_id)
             });
             if let Err(message) = result {
                 apply_network_snapshot(&mut bar.enhanced_tray, &icon_key, Err(message), |app_id| {
@@ -493,19 +700,13 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
         }
         Message::TrayMountSnapshot(icon_key, result) => {
             apply_mount_snapshot(&mut bar.enhanced_tray, &icon_key, result, |app_id| {
-                bar.tray_icons
-                    .iter()
-                    .find(|icon| icon.id == app_id)
-                    .map(|icon| icon.key.clone())
+                resolve_tray_icon_key(&bar.tray_icons, app_id)
             });
         }
         Message::TrayMountRefresh(icon_key) => {
             let mount_config = bar.config.menus.mount.clone();
             mark_special_view_loading(&mut bar.enhanced_tray, &icon_key, |app_id| {
-                bar.tray_icons
-                    .iter()
-                    .find(|icon| icon.id == app_id)
-                    .map(|icon| icon.key.clone())
+                resolve_tray_icon_key(&bar.tray_icons, app_id)
             });
             return Task::perform(read_mount_snapshot(mount_config), move |result| {
                 Message::TrayMountSnapshot(icon_key.clone(), result)
@@ -513,10 +714,7 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
         }
         Message::TrayCalendarSnapshot(icon_key, result) => {
             apply_calendar_snapshot(&mut bar.enhanced_tray, &icon_key, result, |app_id| {
-                bar.tray_icons
-                    .iter()
-                    .find(|icon| icon.id == app_id)
-                    .map(|icon| icon.key.clone())
+                resolve_tray_icon_key(&bar.tray_icons, app_id)
             });
         }
         Message::TrayCalendarRefresh(icon_key) => {
@@ -524,10 +722,7 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             let agenda_days = bar.config.menus.calendar.agenda_days;
 
             mark_special_view_loading(&mut bar.enhanced_tray, &icon_key, |app_id| {
-                bar.tray_icons
-                    .iter()
-                    .find(|icon| icon.id == app_id)
-                    .map(|icon| icon.key.clone())
+                resolve_tray_icon_key(&bar.tray_icons, app_id)
             });
 
             return Task::perform(
@@ -537,10 +732,7 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
         }
         Message::TraySpawnCommand(icon_key, command) => {
             apply_spawn_command_started(&mut bar.enhanced_tray, &icon_key, |app_id| {
-                bar.tray_icons
-                    .iter()
-                    .find(|icon| icon.id == app_id)
-                    .map(|icon| icon.key.clone())
+                resolve_tray_icon_key(&bar.tray_icons, app_id)
             });
 
             return Task::perform(tray::spawn_command(command), move |result| {
@@ -548,12 +740,30 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             });
         }
         Message::TraySpawnCommandDone(icon_key, result) => {
+            let refresh = if result.is_ok() {
+                bar.enhanced_tray
+                    .as_ref()
+                    .and_then(|state| match &state.current_view {
+                        TrayViewState::Network { .. } => {
+                            Some(Message::TrayNetworkRefresh(icon_key.clone()))
+                        }
+                        TrayViewState::Mount { .. } => {
+                            Some(Message::TrayMountRefresh(icon_key.clone()))
+                        }
+                        TrayViewState::Calendar { .. } => {
+                            Some(Message::TrayCalendarRefresh(icon_key.clone()))
+                        }
+                        _ => None,
+                    })
+            } else {
+                None
+            };
             apply_spawn_command_done(&mut bar.enhanced_tray, &icon_key, result, |app_id| {
-                bar.tray_icons
-                    .iter()
-                    .find(|icon| icon.id == app_id)
-                    .map(|icon| icon.key.clone())
+                resolve_tray_icon_key(&bar.tray_icons, app_id)
             });
+            if let Some(refresh) = refresh {
+                return Task::done(refresh);
+            }
         }
         Message::TrayAnimateTick => {
             apply_animation_tick(&mut bar.enhanced_tray);
@@ -573,8 +783,8 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
         Message::TrayShowFavorites => {
             show_favorites(&mut bar.enhanced_tray);
         }
-        Message::TrayToggleFavorite(_app_id, item_id) => {
-            toggle_favorite(&mut bar.enhanced_tray, &item_id);
+        Message::TrayToggleFavorite(app_id, item_id) => {
+            toggle_favorite(&mut bar.enhanced_tray, &app_id, &item_id);
         }
         Message::TrayFilterUpdate(filter_text) => {
             update_filter(&mut bar.enhanced_tray, filter_text);
@@ -603,7 +813,10 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                     info!("Menu fetched and populated for app: {}", app_id);
                 }
                 TrayMenuFetchOutcome::KeptExistingEmptyFetch => {
-                    info!("Fetched empty DBus menu for {}; keeping fallback menu", app_id);
+                    info!(
+                        "Fetched empty DBus menu for {}; keeping fallback menu",
+                        app_id
+                    );
                 }
                 TrayMenuFetchOutcome::FallbackPopulated { error, .. }
                 | TrayMenuFetchOutcome::FetchFailedNoKnownApp { error } => {
@@ -611,6 +824,21 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                 }
                 TrayMenuFetchOutcome::NoState => {}
             }
+        }
+        Message::SystemMenuPressed(section) => {
+            return open_system_menu(bar, &section);
+        }
+        Message::SystemActionDone(action_id, result) => {
+            bar.system_menu.busy_action = None;
+            bar.system_menu.last_status = Some(match result {
+                Ok(message) => message,
+                Err(error) => format!("{action_id} failed: {error}"),
+            });
+            bar.wifi.update_status();
+            bar.video.refresh_state();
+            bar.power.update_screensaver_status();
+            bar.sysmonitor.update_stats();
+            rebuild_system_menu_if_open(bar);
         }
         Message::LegacyWidget(widget_message) => match widget_message.clone() {
             WidgetMessage::SysMonitor(_) => bar.sysmonitor.update(widget_message),
@@ -628,7 +856,9 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             "power" => bar.power.update_screensaver_status(),
             _ => {}
         },
-        Message::KeybindingAction(_) => {}
+        Message::KeybindingAction(action) => {
+            return handle_keybinding_action(bar, action);
+        }
     }
     Task::none()
 }
@@ -643,11 +873,50 @@ fn view(bar: &UniliiBar, window_id: window::Id) -> Element<'_, Message> {
     }
 
     let mut right_widgets: Vec<Element<'_, Message>> = render_modules(&bar.modules);
-    right_widgets.push(bar.sysmonitor.view().map(Message::LegacyWidget));
-    right_widgets.push(bar.wifi.view().map(Message::LegacyWidget));
+
+    if bar.config.menus.system.enabled {
+        let system_snapshot = system_menu_snapshot(bar);
+        let system_open =
+            bar.enhanced_tray
+                .as_ref()
+                .is_some_and(|state| match &state.current_view {
+                    TrayViewState::SingleApp { app_id, .. }
+                    | TrayViewState::Network { app_id, .. } => app_id == SYSTEM_MENU_APP_ID,
+                    _ => false,
+                });
+        let system_buttons = bar
+            .config
+            .menus
+            .system
+            .buttons
+            .iter()
+            .filter(|button_config| button_config.enabled)
+            .fold(
+                row!().spacing(1).align_y(iced::Alignment::Center),
+                |row, button_config| {
+                    let label = button_label(button_config, &system_snapshot);
+                    let section = button_config.section.clone();
+                    let mut menu_button = button(text(label).size(11))
+                        .padding([2, 7])
+                        .on_press(Message::SystemMenuPressed(section));
+                    menu_button = if system_open {
+                        menu_button.style(button::primary)
+                    } else {
+                        menu_button.style(button::text)
+                    };
+                    row.push(menu_button)
+                },
+            );
+        right_widgets.push(system_buttons.into());
+    }
+
+    if !bar.config.menus.system.enabled || !bar.config.menus.system.replace_legacy_widgets {
+        right_widgets.push(bar.sysmonitor.view().map(Message::LegacyWidget));
+        right_widgets.push(bar.wifi.view().map(Message::LegacyWidget));
+        right_widgets.push(bar.video.view().map(Message::LegacyWidget));
+        right_widgets.push(bar.power.view().map(Message::LegacyWidget));
+    }
     right_widgets.push(bar.audio.view().map(Message::LegacyWidget));
-    right_widgets.push(bar.video.view().map(Message::LegacyWidget));
-    right_widgets.push(bar.power.view().map(Message::LegacyWidget));
 
     // Tray icons — show digit hints when shift is held
     let tray_row = bar.tray_icons.iter().enumerate().fold(
@@ -771,13 +1040,13 @@ fn subscribe(bar: &UniliiBar) -> Subscription<Message> {
                             } else {
                                 // Fallback to reading battery directly
                                 if let Ok(devices) =
-                                    unilii_lib::sysfs::power::PowerDevice::read_all().await
+                                    deskhalloumi_lib::sysfs::power::PowerDevice::read_all().await
                                 {
                                     if let Some(battery) = devices.into_iter().find(|d| {
-                                        d.kind == unilii_lib::sysfs::power::PowerDeviceKind::Battery
+                                        d.kind == deskhalloumi_lib::sysfs::power::PowerDeviceKind::Battery
                                     }) {
                                         let device =
-                                            unilii_lib::sysfs::power::BatteryPowerDevice(battery);
+                                            deskhalloumi_lib::sysfs::power::BatteryPowerDevice(battery);
                                         if let Ok(charge) = device.read_charge().await {
                                             let percentage = (charge * 100.0) as i32;
                                             ModuleUpdate::Text(format!("🔋 {}%", percentage))
@@ -808,12 +1077,13 @@ fn subscribe(bar: &UniliiBar) -> Subscription<Message> {
                         interval.tick().await;
                         // Try to read battery info
                         let update = if let Ok(devices) =
-                            unilii_lib::sysfs::power::PowerDevice::read_all().await
+                            deskhalloumi_lib::sysfs::power::PowerDevice::read_all().await
                         {
                             if let Some(battery) = devices.into_iter().find(|d| {
-                                d.kind == unilii_lib::sysfs::power::PowerDeviceKind::Battery
+                                d.kind == deskhalloumi_lib::sysfs::power::PowerDeviceKind::Battery
                             }) {
-                                let device = unilii_lib::sysfs::power::BatteryPowerDevice(battery);
+                                let device =
+                                    deskhalloumi_lib::sysfs::power::BatteryPowerDevice(battery);
                                 if let Ok(charge) = device.read_charge().await {
                                     let percentage = (charge * 100.0) as i32;
                                     ModuleUpdate::Text(format!("🔋 {}%", percentage))
@@ -839,42 +1109,23 @@ fn subscribe(bar: &UniliiBar) -> Subscription<Message> {
         subs
     };
 
-    let keyboard_subscription = Subscription::run(|| {
-        stream::channel(64, async move |mut output| {
-            let listener = match unilii_lib::input::listen_keyboard_events_experimental() {
-                Ok(stream) => {
-                    info!("keyboard listener initialized: experimental tokio-udev path");
-                    Ok(stream)
-                }
-                Err(e) => {
-                    error!("experimental keyboard listener failed, falling back: {}", e);
-                    unilii_lib::input::listen_keyboard_events()
-                }
-            };
-
-            match listener {
-                Ok(mut stream) => {
-                    while let Some(event) = stream.next().await {
-                        info!(
-                            "keyboard stream event received: code={:?}, value={}",
-                            event.code, event.value
-                        );
-                        if output
-                            .send(Message::KeyboardInput {
-                                code: format!("{:?}", event.code),
-                                value: event.value,
-                            })
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
+    let keybinding_action_subscription = bar.keybinding_actions_enabled.then(|| {
+        Subscription::run(|| {
+            stream::channel(64, async move |mut output| {
+                let Some(mut receiver) = take_keybinding_action_receiver() else {
+                    warn!("embedded keybinding action subscription has no receiver");
+                    return;
+                };
+                while let Some(action) = receiver.recv().await {
+                    if output
+                        .send(Message::KeybindingAction(action))
+                        .await
+                        .is_err()
+                    {
+                        break;
                     }
                 }
-                Err(e) => {
-                    error!("Failed to initialize keyboard listener: {}", e);
-                }
-            }
+            })
         })
     });
 
@@ -932,7 +1183,9 @@ fn subscribe(bar: &UniliiBar) -> Subscription<Message> {
     ];
 
     let mut subscriptions = module_subscriptions;
-    subscriptions.push(keyboard_subscription);
+    if let Some(subscription) = keybinding_action_subscription {
+        subscriptions.push(subscription);
+    }
     subscriptions.push(window_key_subscription);
     subscriptions.push(tray_subscription);
     subscriptions.push(tray_animation_subscription);
@@ -967,6 +1220,7 @@ fn main() -> iced::Result {
             nmcli_path: "nmcli".to_string(),
             tray_poll_ms: 1500,
             debug_focus: false,
+            no_hotkeyd: false,
         })
         .run_options()
         .unwrap_or_default();
@@ -984,8 +1238,66 @@ fn main() -> iced::Result {
             println!("  - battery  : Display battery status");
             return Ok(());
         }
+        Some(Commands::InitBarConfig { output, force }) => {
+            if let Some(path) = output.clone().or_else(default_bar_config_path) {
+                if path.exists() && !force {
+                    return Err(iced::Error::WindowCreationFailed(
+                        format!(
+                            "bar config '{}' already exists; pass --force to overwrite",
+                            path.display()
+                        )
+                        .into(),
+                    ));
+                }
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).map_err(|error| {
+                        iced::Error::WindowCreationFailed(
+                            format!(
+                                "failed to create config directory '{}': {}",
+                                parent.display(),
+                                error
+                            )
+                            .into(),
+                        )
+                    })?;
+                }
+                fs::write(&path, starter_bar_config_toml()).map_err(|error| {
+                    iced::Error::WindowCreationFailed(
+                        format!("failed to write bar config '{}': {}", path.display(), error)
+                            .into(),
+                    )
+                })?;
+                println!("wrote bar config: {}", path.display());
+            } else {
+                print!("{}", starter_bar_config_toml());
+            }
+            return Ok(());
+        }
+        Some(Commands::ValidateBarConfig { config }) => {
+            let path = config
+                .clone()
+                .or_else(default_bar_config_path)
+                .ok_or_else(|| {
+                    iced::Error::WindowCreationFailed(
+                        "no bar config path provided and no default config path is available"
+                            .into(),
+                    )
+                })?;
+            let config = load_bar_config(&path).map_err(|error| {
+                iced::Error::WindowCreationFailed(
+                    format!("invalid bar config '{}': {}", path.display(), error).into(),
+                )
+            })?;
+            println!(
+                "bar config ok: {} modules, height={}px, position={:?}",
+                config.modules.len(),
+                config.bar.height,
+                config.bar.position
+            );
+            return Ok(());
+        }
         Some(Commands::Version) => {
-            println!("unilii {}", env!("CARGO_PKG_VERSION"));
+            println!("DeskHalloumi {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
         Some(Commands::KeyDryRun {
@@ -1051,7 +1363,7 @@ fn main() -> iced::Result {
         _ => {}
     }
 
-    info!("unilii startup: begin");
+    info!("DeskHalloumi startup: begin");
 
     // Run async initialization in a tokio runtime.
     let runtime = tokio::runtime::Runtime::new().map_err(|error| {
@@ -1060,15 +1372,16 @@ fn main() -> iced::Result {
         )
     })?;
 
-    let (config, loaded_app_config, run_options, modules): (
-        unilii_core::config::Config,
+    let (config, loaded_app_config, run_options, modules, keybinding_actions_enabled): (
+        deskhalloumi_core::config::Config,
         app_config::AppConfig,
         cli::RunOptions,
         std::collections::HashMap<String, module_loader::LoadedModule>,
+        bool,
     ) = runtime.block_on(async {
         // Load configuration and modules at startup
         let config = load_config_with_path(cli.config.clone());
-        let scan = unilii_lib::input::scan_keyboard_device_stats();
+        let scan = deskhalloumi_lib::input::scan_keyboard_device_stats();
         if scan.total_devices == 0 {
             error!(
                 "keyboard diagnostics: /dev/input appears inaccessible (total_devices=0). \
@@ -1089,17 +1402,37 @@ fn main() -> iced::Result {
             config.panels.first().map(|p| p.position_y).unwrap_or(0)
         );
 
-        if !config.keybindings.is_empty() {
-            let keybindings = config.keybindings.clone();
-            tokio::spawn(async move {
-                let daemon = KeybindingDaemon::new(keybindings);
-                if let Err(error) = daemon.run().await {
-                    error!("keybinding daemon exited with error: {}", error);
-                }
-            });
+        let (action_sender, action_receiver) =
+            tokio::sync::mpsc::unbounded_channel::<KeybindingResult>();
+        install_keybinding_action_receiver(action_receiver).map_err(std::io::Error::other)?;
+        start_action_bus_server(action_sender.clone())
+            .await
+            .map_err(std::io::Error::other)?;
+        let keybinding_actions_enabled = true;
+        if !run_options.no_hotkeyd && !config.keybindings.is_empty() {
+            if let Some(pid) = process_instance_status("hotkeyd") {
+                warn!(
+                    "standalone/global hotkey daemon already owns input as pid={};                      skipping bar-embedded daemon (equivalent to --no-hotkeyd)",
+                    pid
+                );
+            } else {
+                let keybindings = config.keybindings.clone();
+                let embedded_action_sender = action_sender.clone();
+                tokio::spawn(async move {
+                    let mut daemon = KeybindingDaemon::new(keybindings);
+                    daemon.set_action_sender(embedded_action_sender);
+                    if let Err(error) = daemon.run().await {
+                        error!("keybinding daemon exited with error: {}", error);
+                    }
+                });
+                info!(
+                    "keybinding daemon started with {} bindings and embedded action channel",
+                    config.keybindings.len()
+                );
+            }
+        } else if run_options.no_hotkeyd && !config.keybindings.is_empty() {
             info!(
-                "keybinding daemon started with {} bindings",
-                config.keybindings.len()
+                "bar-embedded hotkey daemon disabled; expecting standalone deskhalloumi-hotkeyd"
             );
         }
 
@@ -1117,7 +1450,12 @@ fn main() -> iced::Result {
         };
 
         if let Some(path) = &loaded_app_config.app.xrandr_presets_yaml {
-            unsafe { env::set_var("UNILII_XRANDR_PRESETS_YAML", path); }
+            unsafe {
+                env::set_var("DESKHALLOUMI_XRANDR_PRESETS_YAML", path);
+                if env::var_os("UNILII_XRANDR_PRESETS_YAML").is_none() {
+                    env::set_var("UNILII_XRANDR_PRESETS_YAML", path);
+                }
+            }
             info!("Configured xrandr presets YAML: {}", path);
         }
 
@@ -1144,7 +1482,13 @@ fn main() -> iced::Result {
             warn!("No module subscriptions available, continuing without real-time updates");
         }
 
-        Ok((config, loaded_app_config, run_options, modules))
+        Ok((
+            config,
+            loaded_app_config,
+            run_options,
+            modules,
+            keybinding_actions_enabled,
+        ))
     }).map_err(|error: Box<dyn std::error::Error>| {
         iced::Error::WindowCreationFailed(
             format!("runtime initialization failed: {error}").into(),
@@ -1152,55 +1496,20 @@ fn main() -> iced::Result {
     })?;
 
     // Get window settings from first panel config
-    let first_panel =
-        config
-            .panels
-            .first()
-            .cloned()
-            .unwrap_or_else(|| unilii_core::config::PanelConfig {
-                name: "default".to_string(),
-                width: 1024,
-                height: 24,
-                position_x: 0,
-                position_y: 0,
-                background_color: Some("#1e1e1e".to_string()),
-                text_color: Some("#ffffff".to_string()),
-            });
-
-    let window_position = iced::window::Position::Specific(iced::Point {
-        x: first_panel.position_x as f32,
-        y: first_panel.position_y as f32,
-    });
-
-    let debug_window_height = first_panel.height as f32;
-
-    let mut window_settings = window::Settings {
-        size: iced::Size::new(first_panel.width as f32, debug_window_height),
-        position: window_position,
-        resizable: false,
-        decorations: false,
-        level: window::Level::AlwaysOnTop,
-        ..window::Settings::default()
-    };
+    let first_panel = config
+        .panels
+        .first()
+        .cloned()
+        .unwrap_or_else(default_panel_config);
+    let window_settings = build_window_settings(&first_panel, &run_options);
 
     #[cfg(target_os = "linux")]
-    {
-        window_settings.platform_specific = window::settings::PlatformSpecific {
-            application_id: "com.unilii.bar".to_string(),
-            override_redirect: !run_options.debug_focus,
-        };
-        if run_options.debug_focus {
-            window_settings.decorations = true;
-            window_settings.resizable = true;
-            window_settings.level = window::Level::Normal;
-        }
-        info!(
-            "linux window settings: application_id=com.unilii.bar, override_redirect={}, debug_focus_mode={}",
-            !run_options.debug_focus, run_options.debug_focus
-        );
-    }
+    info!(
+        "linux window settings: application_id=com.unilii.bar, override_redirect={}, debug_focus_mode={}",
+        !run_options.debug_focus, run_options.debug_focus
+    );
 
-    info!("unilii startup: load finished, launching iced application");
+    info!("DeskHalloumi startup: load finished, launching iced application");
 
     // Wrap pre-loaded data in Rc<RefCell<>> for Fn-compatible closure
     let modules = Rc::new(RefCell::new(Some(modules)));
@@ -1208,6 +1517,7 @@ fn main() -> iced::Result {
     let app_config = Rc::new(RefCell::new(Some(loaded_app_config)));
     let window_settings = Rc::new(RefCell::new(Some(window_settings)));
     let run_options = Rc::new(RefCell::new(Some(run_options)));
+    let keybinding_actions_enabled = Rc::new(RefCell::new(Some(keybinding_actions_enabled)));
 
     // Create closure that can be called multiple times (Fn requirement)
     let initial_state = move || -> (UniliiBar, Task<Message>) {
@@ -1216,6 +1526,10 @@ fn main() -> iced::Result {
         let app_config = app_config.borrow_mut().take().unwrap_or_default();
         let window_settings = window_settings.borrow_mut().take().unwrap_or_default();
         let run_options = run_options.borrow_mut().take().unwrap_or_default();
+        let keybinding_actions_enabled = keybinding_actions_enabled
+            .borrow_mut()
+            .take()
+            .unwrap_or(false);
         let mut sysmonitor = SysMonitor::new();
         sysmonitor.update_stats();
         let mut wifi = Wifi::new();
@@ -1225,10 +1539,12 @@ fn main() -> iced::Result {
         let mut power = Power::new();
         power.update_screensaver_status();
         let video = Video::with_preset_source(
-            app_config
-                .app
+            config
+                .menus
+                .system
                 .xrandr_presets_yaml
                 .clone()
+                .or_else(|| app_config.app.xrandr_presets_yaml.clone())
                 .map(PathBuf::from),
         );
         let (main_window_id, open_main_window) = window::open(window_settings);
@@ -1247,12 +1563,14 @@ fn main() -> iced::Result {
                 audio,
                 video,
                 power,
+                system_menu: SystemMenuRuntime::default(),
                 shift_held: false,
                 tray_icons: Vec::new(),
                 enhanced_tray: None,
                 tray_quickjump_active: false,
                 tray_quickjump_input: String::new(),
                 run_options,
+                keybinding_actions_enabled,
             },
             open_main_window.map(Message::WindowOpened),
         )
@@ -1442,7 +1760,7 @@ mod tests {
         ));
     }
     #[test]
-    fn network_view_count_matches_controls_plus_visible_networks() {
+    fn network_view_count_includes_semantic_status_and_section_rows() {
         let mut state = enhanced_tray::EnhancedTrayState::new();
         state.current_view = enhanced_tray::TrayViewState::Network {
             app_id: "nm-applet".into(),
@@ -1469,12 +1787,63 @@ mod tests {
             error: None,
         };
 
-        assert_eq!(get_current_menu_item_count(&state), 5);
-        assert_eq!(current_menu_items_len(&state), 5);
+        // Three controls, connection status, two section headings, two networks,
+        // and the explicit empty saved-connections state.
+        assert_eq!(get_current_menu_item_count(&state), 9);
+        assert_eq!(current_menu_items_len(&state), 9);
+        assert_eq!(selectable_menu_indices(&state), vec![0, 1, 2, 6]);
     }
 
     #[test]
-    fn network_view_actions_follow_control_then_network_order() {
+    fn menu_selection_skips_disabled_labels_and_separators() {
+        let make_item = |id: &str, enabled: bool, separator: bool| enhanced_tray::TrayMenuItem {
+            id: id.to_string(),
+            label: id.to_string(),
+            action: enhanced_tray::TrayMenuAction::SpawnCommand(format!("echo {id}")),
+            icon: None,
+            submenu: Vec::new(),
+            enabled,
+            visible: true,
+            checkable: false,
+            checked: false,
+            shortcut: None,
+            is_separator: separator,
+            app_id: SYSTEM_MENU_APP_ID.to_string(),
+            full_path: id.to_string(),
+            widget_type: enhanced_tray::TrayWidgetType::Button,
+            default_value: None,
+            placeholder: None,
+        };
+        let mut state = EnhancedTrayState::new();
+        state.tree.update_app(system_menu_icon());
+        state.tree.update_app_menu(
+            SYSTEM_MENU_APP_ID,
+            vec![
+                make_item("status", false, false),
+                make_item("separator", false, true),
+                make_item("confirm", true, false),
+                make_item("cancel", true, false),
+            ],
+        );
+        state.current_view = TrayViewState::SingleApp {
+            app_id: SYSTEM_MENU_APP_ID.to_string(),
+            navigation: state.tree.get_app_navigation(SYSTEM_MENU_APP_ID),
+            submenu_path: Vec::new(),
+        };
+        state.selected_index = None;
+
+        assert_eq!(selectable_menu_indices(&state), vec![2, 3]);
+        move_menu_selection(&mut state, true);
+        assert_eq!(state.selected_index, Some(2));
+        move_menu_selection(&mut state, false);
+        assert_eq!(state.selected_index, Some(3));
+        assert!(get_menu_action_at_index(&state, 0).is_none());
+        assert!(get_menu_action_at_index(&state, 2).is_some());
+    }
+
+    #[test]
+    fn network_view_actions_follow_canonical_semantic_row_order() {
+        // unilii-audit: allow-live-session-command-reference -- this test only asserts menu action data; it does not execute commands.
         let mut state = enhanced_tray::EnhancedTrayState::new();
         state.current_view = enhanced_tray::TrayViewState::Network {
             app_id: "nm-applet".into(),
@@ -1512,10 +1881,13 @@ mod tests {
                 "nm-connection-editor".into()
             ))
         );
+        // Status and section-heading rows are deliberately not actionable.
+        assert!(get_menu_action_at_index(&state, 3).is_none());
+        assert!(get_menu_action_at_index(&state, 4).is_none());
         assert_eq!(
-            get_menu_action_at_index(&state, 3).map(|(_, action)| action),
+            get_menu_action_at_index(&state, 5).map(|(_, action)| action),
             Some(enhanced_tray::TrayMenuAction::SpawnCommand(
-                "nmcli device wifi connect \"cafe\"".into()
+                "nmcli device wifi connect 'cafe'".into()
             ))
         );
     }
@@ -1523,8 +1895,56 @@ mod tests {
 
 // == Enhanced Tray Helper Functions ==
 
-/// Get the number of menu items in the current view state
-fn get_current_menu_item_count(tray_state: &EnhancedTrayState) -> usize {
+/// Build the canonical ordered rows for specialized menus.
+fn specialized_menu_items(
+    config: &Config,
+    tray_state: &EnhancedTrayState,
+) -> Option<Vec<enhanced_tray::TrayMenuItem>> {
+    match &tray_state.current_view {
+        TrayViewState::Network {
+            app_id,
+            data,
+            loading,
+            error,
+        } => Some(crate::menus::wifi::build_menu_items(
+            app_id,
+            data.as_ref(),
+            *loading,
+            error.as_deref(),
+            &config.menus.wifi,
+        )),
+        TrayViewState::Mount {
+            app_id,
+            data,
+            loading,
+            error,
+        } => Some(crate::menus::mount::build_menu_items(
+            app_id,
+            data.as_ref(),
+            *loading,
+            error.as_deref(),
+            &config.menus.mount,
+        )),
+        TrayViewState::Calendar {
+            app_id,
+            data,
+            loading,
+            error,
+        } => Some(crate::menus::calendar::build_menu_items(
+            app_id,
+            data.as_ref(),
+            *loading,
+            error.as_deref(),
+            &config.menus.calendar,
+        )),
+        _ => None,
+    }
+}
+
+fn get_current_menu_item_count_with_config(
+    config: &Config,
+    tray_state: &EnhancedTrayState,
+) -> usize {
     match &tray_state.current_view {
         TrayViewState::SingleApp {
             app_id,
@@ -1533,35 +1953,22 @@ fn get_current_menu_item_count(tray_state: &EnhancedTrayState) -> usize {
         } => resolve_current_single_app_items(tray_state, app_id, submenu_path)
             .map(|items| items.iter().filter(|item| item.visible).count())
             .unwrap_or(0),
-        TrayViewState::Aggregated { items, .. } | TrayViewState::Favorites { items } => items.len(),
-        TrayViewState::Network { data, .. } => 3
-            + data
-                .as_ref()
-                .filter(|snapshot| snapshot.enabled)
-                .map(|snapshot| snapshot.networks.len().min(6))
-                .unwrap_or(0),
-        TrayViewState::Mount { data, .. } => {
-            2 + data
-                .as_ref()
-                .map(|snapshot| {
-                    snapshot.local_devices.len().min(8)
-                        + snapshot.sshfs_profiles.len().min(6)
-                        + snapshot.loop_mounts.len().min(6)
-                        + snapshot.vcvolume_profiles.len().min(6)
-                })
-                .unwrap_or(0)
+        TrayViewState::Aggregated { items, .. } | TrayViewState::Favorites { items } => {
+            items.iter().filter(|item| item.visible).count()
         }
-        TrayViewState::Calendar { data, .. } => {
-            2 + data
-                .as_ref()
-                .map(|snapshot| snapshot.account_ids.len().min(6) + snapshot.events.len().min(6))
-                .unwrap_or(0)
-        }
+        _ => specialized_menu_items(config, tray_state)
+            .map(|items| items.into_iter().filter(|item| item.visible).count())
+            .unwrap_or(0),
     }
 }
 
-/// Get the menu action at a specific index in the current view state
-fn get_menu_action_at_index(
+#[cfg(test)]
+fn get_current_menu_item_count(tray_state: &EnhancedTrayState) -> usize {
+    get_current_menu_item_count_with_config(&Config::default(), tray_state)
+}
+
+fn get_menu_action_at_index_with_config(
+    config: &Config,
     tray_state: &EnhancedTrayState,
     index: usize,
 ) -> Option<(String, enhanced_tray::TrayMenuAction)> {
@@ -1572,139 +1979,48 @@ fn get_menu_action_at_index(
             ..
         } => resolve_current_single_app_items(tray_state, app_id, submenu_path)
             .and_then(|items| items.iter().filter(|item| item.visible).nth(index))
+            .filter(|item| crate::menus::presentation::is_selectable(item))
             .map(|item| (app_id.clone(), item.action.clone())),
         TrayViewState::Aggregated { items, .. } | TrayViewState::Favorites { items } => items
             .get(index)
+            .filter(|item| crate::menus::presentation::is_selectable(item))
             .map(|item| (item.app_id.clone(), item.action.clone())),
-        TrayViewState::Network { app_id, data, .. } => {
-            let is_enabled = data.as_ref().map(|snapshot| snapshot.enabled).unwrap_or(false);
-            let action = match index {
-                0 => enhanced_tray::TrayMenuAction::SpawnCommand(if is_enabled {
-                    "nmcli radio wifi off".to_string()
-                } else {
-                    "nmcli radio wifi on".to_string()
-                }),
-                1 => {
-                    enhanced_tray::TrayMenuAction::SpawnCommand("nmcli device wifi rescan".to_string())
-                }
-                2 => {
-                    enhanced_tray::TrayMenuAction::SpawnCommand("nm-connection-editor".to_string())
-                }
-                _ => {
-                    let network_index = index.saturating_sub(3);
-                    if let Some(network) = data
-                        .as_ref()
-                        .filter(|snapshot| snapshot.enabled)
-                        .and_then(|snapshot| snapshot.networks.get(network_index))
-                    {
-                        enhanced_tray::TrayMenuAction::SpawnCommand(format!(
-                            "nmcli device wifi connect \"{}\"",
-                            network.ssid
-                        ))
-                    } else {
-                        enhanced_tray::TrayMenuAction::SpawnCommand("true".to_string())
-                    }
-                }
-            };
-            Some((app_id.clone(), action))
-        }
-        TrayViewState::Mount { app_id, data, .. } => {
-            if index == 0 {
-                return Some((
-                    app_id.clone(),
-                    enhanced_tray::TrayMenuAction::SpawnCommand("mount:refresh".to_string()),
-                ));
-            }
-            if index == 1 {
-                return Some((
-                    app_id.clone(),
-                    enhanced_tray::TrayMenuAction::SpawnCommand("gnome-disks".to_string()),
-                ));
-            }
-            let Some(snapshot) = data.as_ref() else {
-                return Some((
-                    app_id.clone(),
-                    enhanced_tray::TrayMenuAction::SpawnCommand("true".to_string()),
-                ));
-            };
-            let mut cursor = index.saturating_sub(2);
-
-            let local_count = snapshot.local_devices.len().min(8);
-            if cursor < local_count {
-                let device = &snapshot.local_devices[cursor];
-                let command = if device.mountpoint.is_some() {
-                    crate::menus::mount::build_unmount_command(&format!("/dev/{}", device.name))
-                } else {
-                    crate::menus::mount::build_mount_command(&format!("/dev/{}", device.name), None)
-                };
-                return Some((
-                    app_id.clone(),
-                    enhanced_tray::TrayMenuAction::SpawnCommand(command),
-                ));
-            }
-            cursor = cursor.saturating_sub(local_count);
-
-            let sshfs_count = snapshot.sshfs_profiles.len().min(6);
-            if cursor < sshfs_count {
-                let profile = &snapshot.sshfs_profiles[cursor];
-                let command = if profile.state == crate::menus::mount::MountState::Mounted {
-                    crate::menus::mount::build_sshfs_unmount_command(profile)
-                } else {
-                    crate::menus::mount::build_sshfs_mount_command(profile)
-                };
-                return Some((
-                    app_id.clone(),
-                    enhanced_tray::TrayMenuAction::SpawnCommand(command),
-                ));
-            }
-            cursor = cursor.saturating_sub(sshfs_count);
-
-            let loop_count = snapshot.loop_mounts.len().min(6);
-            if cursor < loop_count {
-                let loop_mount = &snapshot.loop_mounts[cursor];
-                let command = if let Some(loop_device) = &loop_mount.loop_device {
-                    crate::menus::mount::build_loop_detach_command(loop_device)
-                } else {
-                    crate::menus::mount::build_loop_attach_command(
-                        &loop_mount.image_path,
-                        loop_mount.read_only,
-                    )
-                };
-                return Some((
-                    app_id.clone(),
-                    enhanced_tray::TrayMenuAction::SpawnCommand(command),
-                ));
-            }
-            cursor = cursor.saturating_sub(loop_count);
-
-            let vc_count = snapshot.vcvolume_profiles.len().min(6);
-            if cursor < vc_count {
-                let profile = &snapshot.vcvolume_profiles[cursor];
-                let command = if profile.state == crate::menus::mount::MountState::Mounted {
-                    format!("umount '{}'", profile.mountpoint.replace('\'', "'\\''"))
-                } else {
-                    crate::menus::mount::build_vcvolume_mount_command(profile)
-                };
-                return Some((
-                    app_id.clone(),
-                    enhanced_tray::TrayMenuAction::SpawnCommand(command),
-                ));
-            }
-
-            Some((
-                app_id.clone(),
-                enhanced_tray::TrayMenuAction::SpawnCommand("true".to_string()),
-            ))
-        }
-        TrayViewState::Calendar { app_id, .. } => {
-            let action = match index {
-                0 => enhanced_tray::TrayMenuAction::SpawnCommand("calendar:refresh".to_string()),
-                _ => enhanced_tray::TrayMenuAction::SpawnCommand("gnome-calendar".to_string()),
-            };
-            Some((app_id.clone(), action))
-        }
+        _ => specialized_menu_items(config, tray_state)
+            .and_then(|items| items.into_iter().nth(index))
+            .filter(crate::menus::presentation::is_selectable)
+            .map(|item| (item.app_id, item.action)),
     }
 }
+
+#[cfg(test)]
+fn get_menu_action_at_index(
+    tray_state: &EnhancedTrayState,
+    index: usize,
+) -> Option<(String, enhanced_tray::TrayMenuAction)> {
+    get_menu_action_at_index_with_config(&Config::default(), tray_state, index)
+}
+
+fn selected_favorite_target(tray_state: &EnhancedTrayState) -> Option<(String, String)> {
+    let index = tray_state.selected_index?;
+    match &tray_state.current_view {
+        TrayViewState::SingleApp {
+            app_id,
+            submenu_path,
+            ..
+        } if app_id != SYSTEM_MENU_APP_ID => {
+            resolve_current_single_app_items(tray_state, app_id, submenu_path)
+                .and_then(|items| items.iter().filter(|item| item.visible).nth(index))
+                .filter(|item| crate::menus::presentation::is_selectable(item))
+                .map(|item| (app_id.clone(), item.id.clone()))
+        }
+        TrayViewState::Aggregated { items, .. } | TrayViewState::Favorites { items } => items
+            .get(index)
+            .filter(|item| crate::menus::presentation::is_selectable(item))
+            .map(|item| (item.app_id.clone(), item.id.clone())),
+        _ => None,
+    }
+}
+
 fn resolve_current_single_app_items<'a>(
     tray_state: &'a EnhancedTrayState,
     app_id: &str,
@@ -1760,7 +2076,7 @@ fn quickjump_supported_for_view(tray_state: &EnhancedTrayState) -> bool {
     )
 }
 fn quickjump_alphabet_for_view(
-    custom_config: &unilii_core::config::CustomMenuConfig,
+    custom_config: &deskhalloumi_core::config::CustomMenuConfig,
     tray_state: &EnhancedTrayState,
 ) -> String {
     if let TrayViewState::SingleApp { app_id, .. } = &tray_state.current_view {
@@ -1800,24 +2116,6 @@ fn handle_quickjump_key(
     }
     QuickjumpOutcome::Pending
 }
-fn sanitize_menu_label(label: &str) -> String {
-    label.replace('_', "")
-}
-fn quickjump_prefixed_label(
-    quickjump_active: bool,
-    quickjump_labels: &[String],
-    index: usize,
-    base: impl Into<String>,
-) -> String {
-    let base = base.into();
-    if !quickjump_active {
-        return base;
-    }
-    match quickjump_labels.get(index) {
-        Some(label) => format!("[{}] {}", label, base),
-        None => base,
-    }
-}
 fn evdev_digit_index(code: &str) -> Option<usize> {
     match code {
         "KEY_1" => Some(0),
@@ -1832,46 +2130,19 @@ fn evdev_digit_index(code: &str) -> Option<usize> {
         _ => None,
     }
 }
+fn current_menu_items_len_with_config(config: &Config, tray_state: &EnhancedTrayState) -> usize {
+    get_current_menu_item_count_with_config(config, tray_state)
+}
+
+#[cfg(test)]
 fn current_menu_items_len(tray_state: &EnhancedTrayState) -> usize {
-    match &tray_state.current_view {
-        TrayViewState::SingleApp {
-            app_id,
-            submenu_path,
-            ..
-        } => resolve_current_single_app_items(tray_state, app_id, submenu_path)
-            .map(|items| items.iter().filter(|item| item.visible).count())
-            .unwrap_or(0),
-        TrayViewState::Aggregated { items, .. } | TrayViewState::Favorites { items } => items.len(),
-        TrayViewState::Network { data, .. } => 3
-            + data
-                .as_ref()
-                .filter(|snapshot| snapshot.enabled)
-                .map(|snapshot| snapshot.networks.len().min(6))
-                .unwrap_or(0),
-        TrayViewState::Mount { data, .. } => {
-            2 + data
-                .as_ref()
-                .map(|snapshot| {
-                    snapshot.local_devices.len().min(8)
-                        + snapshot.sshfs_profiles.len().min(6)
-                        + snapshot.loop_mounts.len().min(6)
-                        + snapshot.vcvolume_profiles.len().min(6)
-                })
-                .unwrap_or(0)
-        }
-        TrayViewState::Calendar { data, .. } => {
-            2 + data
-                .as_ref()
-                .map(|d| d.account_ids.len().min(6) + d.events.len().min(6))
-                .unwrap_or(0)
-        }
-    }
+    current_menu_items_len_with_config(&Config::default(), tray_state)
 }
 fn tray_window_width(bar: &UniliiBar) -> f32 {
     let menu_items = bar
         .enhanced_tray
         .as_ref()
-        .map(current_menu_items_len)
+        .map(|tray| current_menu_items_len_with_config(&bar.config, tray))
         .unwrap_or(6)
         .clamp(1, 12) as f32;
     let base_width = match bar.enhanced_tray.as_ref().map(|tray| &tray.current_view) {
@@ -1895,11 +2166,18 @@ fn tray_window_height(bar: &UniliiBar) -> f32 {
     let menu_items = bar
         .enhanced_tray
         .as_ref()
-        .map(current_menu_items_len)
-        .unwrap_or(6)
-        .clamp(1, 12) as f32;
-    (bar_height + 42.0 + 26.0 + (menu_items * 34.0) + 20.0)
-        .clamp(bar_height + 120.0, bar_height + 460.0)
+        .map(|tray| current_menu_items_len_with_config(&bar.config, tray))
+        .unwrap_or(6);
+    let ui = &bar.config.menus.ui;
+    let body_height = if menu_items > ui.max_visible_rows {
+        ui.scroll_height as f32
+    } else {
+        menu_items.max(1) as f32 * 42.0
+    };
+    (bar_height + 112.0 + body_height).clamp(
+        bar_height + 180.0,
+        bar_height + ui.scroll_height as f32 + 180.0,
+    )
 }
 fn tray_window_settings(bar: &UniliiBar) -> window::Settings {
     let panel = bar.config.panels.first();
@@ -1949,6 +2227,696 @@ fn resize_window_task(bar: &mut UniliiBar, menu_open: bool) -> Task<Message> {
     }
     Task::none()
 }
+fn handle_global_key_event(bar: &mut UniliiBar, code: &str, value: i32) -> Task<Message> {
+    info!("keyboard event: code={code}, value={value}");
+    if code == "KEY_LEFTSHIFT" || code == "KEY_RIGHTSHIFT" {
+        bar.shift_held = value != 0;
+        info!("shift state changed: held={}", bar.shift_held);
+    }
+    handle_evdev_tray_key(bar, code, value).unwrap_or_else(Task::none)
+}
+
+fn system_menu_snapshot(bar: &UniliiBar) -> SystemMenuSnapshot {
+    let stats = bar.sysmonitor.snapshot();
+    SystemMenuSnapshot {
+        wifi_enabled: bar.wifi.wifi_enabled(),
+        connected_ssid: bar.wifi.connected_ssid().map(str::to_string),
+        wifi_label: bar.wifi.compact_label(),
+        display_label: bar.video.compact_label(),
+        displays: bar
+            .video
+            .displays()
+            .iter()
+            .map(|display| SystemDisplaySnapshot {
+                name: display.name.clone(),
+                mode: display.mode.clone(),
+                primary: display.primary,
+            })
+            .collect(),
+        display_status: bar.video.last_status().to_string(),
+        display_presets: bar
+            .video
+            .preset_entries()
+            .into_iter()
+            .map(|(key, name, description, command)| SystemDisplayPreset {
+                key,
+                name,
+                description,
+                command,
+            })
+            .collect(),
+        stats_label: bar.sysmonitor.compact_label(),
+        cpu_percent: stats.cpu_percent,
+        memory_percent: stats.memory_percent,
+        load_average: stats.load_average,
+        root_disk_percent: stats.root_disk_percent,
+        uptime_label: crate::widgets::sysmonitor::format_uptime(stats.uptime_seconds),
+        idle_sleep_enabled: bar.power.idle_sleep_enabled(),
+    }
+}
+
+fn system_menu_icon() -> enhanced_tray::TrayIcon {
+    enhanced_tray::TrayIcon {
+        key: SYSTEM_MENU_KEY.to_string(),
+        service: "com.unilii.system-menu".to_string(),
+        path: "/com/unilii/SystemMenu".to_string(),
+        id: SYSTEM_MENU_APP_ID.to_string(),
+        title: "System menu".to_string(),
+        icon_name: Some("preferences-system".to_string()),
+        icon_pixmap: None,
+        status: "Active".to_string(),
+        has_menu: true,
+        menu_object_path: None,
+    }
+}
+
+fn system_menu_is_open_for(bar: &UniliiBar, section: &str) -> bool {
+    if bar.tray_window_id.is_none() {
+        return false;
+    }
+    bar.enhanced_tray
+        .as_ref()
+        .is_some_and(|state| match &state.current_view {
+            TrayViewState::SingleApp {
+                app_id,
+                submenu_path,
+                ..
+            } if app_id == SYSTEM_MENU_APP_ID => {
+                section == "root" && submenu_path.is_empty()
+                    || submenu_path.first().is_some_and(|value| value == section)
+            }
+            TrayViewState::Network { app_id, .. } => {
+                app_id == SYSTEM_MENU_APP_ID && section == "wifi"
+            }
+            _ => false,
+        })
+}
+
+fn open_system_menu(bar: &mut UniliiBar, section: &str) -> Task<Message> {
+    if system_menu_is_open_for(bar, section) {
+        if let Some(state) = bar.enhanced_tray.as_mut() {
+            state.hide();
+        }
+        return resize_window_task(bar, false);
+    }
+    bar.wifi.update_status();
+    bar.video.refresh_state();
+    bar.power.update_screensaver_status();
+    bar.sysmonitor.update_stats();
+    let path = if section == "root" {
+        Vec::new()
+    } else {
+        vec![section.to_string()]
+    };
+    rebuild_system_menu_with_path(bar, path);
+    resize_window_task(bar, true)
+}
+
+fn rebuild_system_menu_with_path(bar: &mut UniliiBar, submenu_path: Vec<String>) {
+    let icon = system_menu_icon();
+    let snapshot = system_menu_snapshot(bar);
+    let items = build_system_menu(
+        &bar.config.menus.system,
+        &snapshot,
+        &bar.config.keybindings,
+        &bar.system_menu,
+    );
+    let initial_items = submenu_path
+        .first()
+        .and_then(|section| {
+            items
+                .iter()
+                .find(|item| item.id == *section)
+                .map(|item| item.submenu.as_slice())
+        })
+        .unwrap_or(items.as_slice());
+    let initial_selection = initial_items
+        .iter()
+        .filter(|item| item.visible)
+        .enumerate()
+        .find_map(|(index, item)| (item.enabled && !item.is_separator).then_some(index));
+    let mut state = EnhancedTrayState::new();
+    state.tree.update_app(icon);
+    state.tree.update_app_menu(SYSTEM_MENU_APP_ID, items);
+    let navigation = state.tree.get_app_navigation(SYSTEM_MENU_APP_ID);
+    state.current_view = TrayViewState::SingleApp {
+        app_id: SYSTEM_MENU_APP_ID.to_string(),
+        navigation,
+        submenu_path,
+    };
+    state.selected_index = initial_selection;
+    state.show();
+    bar.enhanced_tray = Some(state);
+}
+
+fn rebuild_system_menu_if_open(bar: &mut UniliiBar) {
+    let path = bar
+        .enhanced_tray
+        .as_ref()
+        .and_then(|state| match &state.current_view {
+            TrayViewState::SingleApp {
+                app_id,
+                submenu_path,
+                ..
+            } if app_id == SYSTEM_MENU_APP_ID => Some(submenu_path.clone()),
+            _ => None,
+        });
+    if let Some(path) = path {
+        rebuild_system_menu_with_path(bar, path);
+    }
+}
+
+fn system_command_for(bar: &UniliiBar, id: &str) -> Option<(String, String)> {
+    let config = &bar.config.menus.system;
+    let result = match id {
+        "wifi-settings" => (
+            "Network settings".to_string(),
+            bar.config.menus.wifi.settings_command.clone(),
+        ),
+        "stats" => ("System monitor".to_string(), config.stats_command.clone()),
+        "lock" => ("Lock session".to_string(), config.lock_command.clone()),
+        "suspend" => ("Suspend".to_string(), config.suspend_command.clone()),
+        "logout" => ("Log out".to_string(), config.logout_command.clone()),
+        "reboot" => (
+            "Restart computer".to_string(),
+            config.reboot_command.clone(),
+        ),
+        "poweroff" => (
+            "Shut down computer".to_string(),
+            config.poweroff_command.clone(),
+        ),
+        "idle-toggle" if bar.power.idle_sleep_enabled() => (
+            "Disable inactivity sleep".to_string(),
+            config.idle_disable_command.clone(),
+        ),
+        "idle-toggle" => (
+            "Enable inactivity sleep".to_string(),
+            config.idle_enable_command.clone(),
+        ),
+        _ => return None,
+    };
+    (!result.1.trim().is_empty()).then_some(result)
+}
+
+fn pending_system_action(bar: &UniliiBar, id: &str) -> Option<PendingSystemAction> {
+    if let Some(extra_id) = id.strip_prefix("extra:") {
+        let item = bar
+            .config
+            .menus
+            .system
+            .extra_items
+            .iter()
+            .find(|item| item.id == extra_id)?;
+        return Some(PendingSystemAction {
+            id: format!("extra:{extra_id}"),
+            title: item.title.clone(),
+            command: item.command.clone(),
+            return_section: "extra".to_string(),
+        });
+    }
+    let (title, command) = system_command_for(bar, id)?;
+    Some(PendingSystemAction {
+        id: id.to_string(),
+        title,
+        command,
+        return_section: "power".to_string(),
+    })
+}
+
+fn run_system_shell_command(
+    bar: &mut UniliiBar,
+    action_id: &str,
+    title: &str,
+    command: String,
+) -> Task<Message> {
+    if command.trim().is_empty() {
+        bar.system_menu.last_status = Some(format!("{title}: no command configured"));
+        rebuild_system_menu_if_open(bar);
+        return Task::none();
+    }
+    let action_id_owned = action_id.to_string();
+    let completion_action_id = action_id_owned.clone();
+    let title_owned = title.to_string();
+    bar.system_menu.busy_action = Some(title_owned.clone());
+    bar.system_menu.last_status = None;
+    rebuild_system_menu_if_open(bar);
+    let timeout = Duration::from_millis(bar.config.menus.system.command_timeout_ms.max(100));
+    Task::perform(
+        async move {
+            let runner =
+                ActionRunner::with_timeout("system-menu", action_id_owned.clone(), timeout);
+            let outcome = runner
+                .run_command(ActionCommand::new(
+                    "sh",
+                    vec![OsString::from("-lc"), OsString::from(command)],
+                ))
+                .await;
+            match outcome.result {
+                Ok(()) => {
+                    let detail = outcome.stdout.trim();
+                    Ok(if detail.is_empty() {
+                        format!("{title_owned} completed")
+                    } else {
+                        format!("{title_owned}: {detail}")
+                    })
+                }
+                Err(error) => {
+                    let stderr = outcome.stderr.trim();
+                    Err(if stderr.is_empty() {
+                        error
+                    } else {
+                        stderr.to_string()
+                    })
+                }
+            }
+        },
+        move |result| Message::SystemActionDone(completion_action_id.clone(), result),
+    )
+}
+
+fn handle_system_shortcut(bar: &mut UniliiBar, index: usize) -> Task<Message> {
+    let Some(binding) = bar.config.keybindings.get(index).cloned() else {
+        bar.system_menu.last_status = Some(format!("Shortcut index {index} no longer exists"));
+        rebuild_system_menu_if_open(bar);
+        return Task::none();
+    };
+    match binding.command_type {
+        CommandType::Shell => {
+            run_system_shell_command(bar, &binding.name, &binding.name, binding.command)
+        }
+        CommandType::Menu => match parse_menu_action(&binding.command).and_then(|action| {
+            MenuProcessManager::default()
+                .execute(&action)
+                .map(|outcome| format!("{outcome:?}"))
+        }) {
+            Ok(message) => {
+                bar.system_menu.last_status = Some(format!("{}: {message}", binding.name));
+                rebuild_system_menu_if_open(bar);
+                Task::none()
+            }
+            Err(error) => {
+                bar.system_menu.last_status = Some(format!("{} failed: {error}", binding.name));
+                rebuild_system_menu_if_open(bar);
+                Task::none()
+            }
+        },
+        CommandType::Tray => handle_tray_daemon_action(bar, parse_tray_action(&binding.command)),
+        CommandType::Bar => handle_bar_daemon_action(parse_bar_action(&binding.command)),
+        CommandType::Widget => {
+            bar.system_menu.last_status = Some(format!(
+                "{}: widget actions are not available",
+                binding.name
+            ));
+            rebuild_system_menu_if_open(bar);
+            Task::none()
+        }
+    }
+}
+
+fn handle_system_internal_action(
+    bar: &mut UniliiBar,
+    action: SystemInternalAction,
+) -> Task<Message> {
+    match action {
+        SystemInternalAction::OpenWifi | SystemInternalAction::RefreshWifi => {
+            let force_scan = matches!(action, SystemInternalAction::RefreshWifi);
+            bar.enhanced_tray = Some(EnhancedTrayState::new());
+            if let Some(state) = bar.enhanced_tray.as_mut() {
+                state.current_view = TrayViewState::Network {
+                    app_id: SYSTEM_MENU_APP_ID.to_string(),
+                    data: None,
+                    loading: true,
+                    error: None,
+                };
+                state.show();
+            }
+            let nmcli_path = bar.run_options.nmcli_path.clone();
+            Task::perform(
+                enhanced_tray::read_network_snapshot(nmcli_path, force_scan),
+                |result| Message::TrayNetworkSnapshot(SYSTEM_MENU_KEY.to_string(), result),
+            )
+        }
+        SystemInternalAction::ToggleWifi => {
+            let desired = !bar.wifi.wifi_enabled();
+            let nmcli_path = bar.run_options.nmcli_path.clone();
+            bar.system_menu.busy_action = Some(
+                if desired {
+                    "Enable Wi-Fi"
+                } else {
+                    "Disable Wi-Fi"
+                }
+                .to_string(),
+            );
+            Task::perform(
+                enhanced_tray::set_wifi_enabled(nmcli_path, desired),
+                move |result| {
+                    Message::SystemActionDone(
+                        "wifi-toggle".to_string(),
+                        result.map(|_| {
+                            if desired {
+                                "Wi-Fi enabled".to_string()
+                            } else {
+                                "Wi-Fi disabled".to_string()
+                            }
+                        }),
+                    )
+                },
+            )
+        }
+        SystemInternalAction::RefreshDisplays => {
+            bar.video.refresh_state();
+            bar.system_menu.last_status = Some("Display state refreshed".to_string());
+            rebuild_system_menu_if_open(bar);
+            Task::none()
+        }
+        SystemInternalAction::ApplyDisplayPreset(key) => {
+            let Some((_, title, _, command)) = bar
+                .video
+                .preset_entries()
+                .into_iter()
+                .find(|entry| entry.0 == key)
+            else {
+                bar.system_menu.last_status = Some(format!("Unknown display preset: {key}"));
+                rebuild_system_menu_if_open(bar);
+                return Task::none();
+            };
+            run_system_shell_command(bar, &format!("display-preset:{key}"), &title, command)
+        }
+        SystemInternalAction::RefreshStats => {
+            bar.sysmonitor.update_stats();
+            bar.system_menu.last_status = Some("System statistics refreshed".to_string());
+            rebuild_system_menu_if_open(bar);
+            Task::none()
+        }
+        SystemInternalAction::RunConfigured(id) => match system_command_for(bar, &id) {
+            Some((title, command)) => run_system_shell_command(bar, &id, &title, command),
+            None => {
+                bar.system_menu.last_status = Some(format!("No command configured for {id}"));
+                rebuild_system_menu_if_open(bar);
+                Task::none()
+            }
+        },
+        SystemInternalAction::Shortcut(index) => handle_system_shortcut(bar, index),
+        SystemInternalAction::Extra(id) => {
+            let Some(item) = bar
+                .config
+                .menus
+                .system
+                .extra_items
+                .iter()
+                .find(|item| item.id == id)
+                .cloned()
+            else {
+                bar.system_menu.last_status = Some(format!("Unknown extra action: {id}"));
+                rebuild_system_menu_if_open(bar);
+                return Task::none();
+            };
+            run_system_shell_command(bar, &format!("extra:{id}"), &item.title, item.command)
+        }
+        SystemInternalAction::Confirm(id) => {
+            bar.system_menu.pending_confirmation = pending_system_action(bar, &id);
+            rebuild_system_menu_with_path(bar, Vec::new());
+            Task::none()
+        }
+        SystemInternalAction::ConfirmExecute => {
+            let Some(pending) = bar.system_menu.pending_confirmation.take() else {
+                return Task::none();
+            };
+            run_system_shell_command(bar, &pending.id, &pending.title, pending.command)
+        }
+        SystemInternalAction::ConfirmCancel => {
+            let return_section = bar
+                .system_menu
+                .pending_confirmation
+                .take()
+                .map(|pending| pending.return_section)
+                .unwrap_or_else(|| "power".to_string());
+            bar.system_menu.last_status = Some("Action cancelled".to_string());
+            rebuild_system_menu_with_path(bar, vec![return_section]);
+            Task::none()
+        }
+    }
+}
+
+fn resolve_tray_icon_key(tray_icons: &[tray::TrayIcon], app_id: &str) -> Option<String> {
+    if app_id == SYSTEM_MENU_APP_ID {
+        return Some(SYSTEM_MENU_KEY.to_string());
+    }
+    tray_icons
+        .iter()
+        .find(|icon| icon.id == app_id)
+        .map(|icon| icon.key.clone())
+}
+
+fn ensure_tray_state_for_global_action(bar: &mut UniliiBar) {
+    if bar.enhanced_tray.is_some() {
+        return;
+    }
+    let mut state = EnhancedTrayState::new();
+    for icon in &bar.tray_icons {
+        state
+            .tree
+            .update_app(to_enhanced_tray_icon(icon, icon.has_menu));
+    }
+    state.show();
+    bar.enhanced_tray = Some(state);
+}
+
+fn open_existing_or_first_tray(bar: &mut UniliiBar) -> Task<Message> {
+    if let Some(state) = bar.enhanced_tray.as_mut() {
+        state.show();
+        return resize_window_task(bar, true);
+    }
+    if let Some(icon) = bar.tray_icons.first() {
+        return Task::done(Message::TrayIconPressed(icon.key.clone()));
+    }
+    warn!("tray action requested but no tray icons are available");
+    Task::none()
+}
+
+fn handle_tray_daemon_action(bar: &mut UniliiBar, action: TrayDaemonAction) -> Task<Message> {
+    match action {
+        TrayDaemonAction::OpenMenu => open_existing_or_first_tray(bar),
+        TrayDaemonAction::CloseMenu => {
+            if let Some(state) = bar.enhanced_tray.as_mut() {
+                state.hide();
+            }
+            resize_window_task(bar, false)
+        }
+        TrayDaemonAction::ToggleMenu => {
+            if bar.tray_window_id.is_some() {
+                if let Some(state) = bar.enhanced_tray.as_mut() {
+                    state.hide();
+                }
+                resize_window_task(bar, false)
+            } else {
+                open_existing_or_first_tray(bar)
+            }
+        }
+        TrayDaemonAction::ShowAggregated => {
+            ensure_tray_state_for_global_action(bar);
+            show_aggregated(&mut bar.enhanced_tray);
+            if let Some(state) = bar.enhanced_tray.as_mut() {
+                state.show();
+            }
+            resize_window_task(bar, true)
+        }
+        TrayDaemonAction::ShowFavorites => {
+            ensure_tray_state_for_global_action(bar);
+            show_favorites(&mut bar.enhanced_tray);
+            if let Some(state) = bar.enhanced_tray.as_mut() {
+                state.show();
+            }
+            resize_window_task(bar, true)
+        }
+        TrayDaemonAction::FocusNext => {
+            handle_evdev_tray_key(bar, "KEY_DOWN", 1).unwrap_or_else(Task::none)
+        }
+        TrayDaemonAction::FocusPrevious => {
+            handle_evdev_tray_key(bar, "KEY_UP", 1).unwrap_or_else(Task::none)
+        }
+        TrayDaemonAction::ActivateSelected => {
+            handle_evdev_tray_key(bar, "KEY_ENTER", 1).unwrap_or_else(Task::none)
+        }
+        TrayDaemonAction::OpenIndex(index) => {
+            if let Some(icon) = bar.tray_icons.get(index) {
+                Task::done(Message::TrayIconPressed(icon.key.clone()))
+            } else {
+                warn!(
+                    "tray open-index action out of range: index={} icons={}",
+                    index,
+                    bar.tray_icons.len()
+                );
+                Task::none()
+            }
+        }
+        TrayDaemonAction::RefreshStatus => {
+            let refresh = bar
+                .enhanced_tray
+                .as_ref()
+                .and_then(|state| match &state.current_view {
+                    TrayViewState::Network { app_id, .. } => {
+                        Some(Message::TrayNetworkRefresh(app_id.clone()))
+                    }
+                    TrayViewState::Mount { app_id, .. } => {
+                        Some(Message::TrayMountRefresh(app_id.clone()))
+                    }
+                    TrayViewState::Calendar { app_id, .. } => {
+                        Some(Message::TrayCalendarRefresh(app_id.clone()))
+                    }
+                    _ => None,
+                });
+            refresh.map(Task::done).unwrap_or_else(|| {
+                warn!("tray refresh-status is unavailable for the current view");
+                Task::none()
+            })
+        }
+        TrayDaemonAction::Raw(command) => {
+            warn!("unsupported tray hotkey action: {command}");
+            Task::none()
+        }
+    }
+}
+
+fn handle_bar_daemon_action(action: BarDaemonAction) -> Task<Message> {
+    match action {
+        BarDaemonAction::ReloadConfig => {
+            warn!(
+                "bar reload-config hotkey reached the embedded action bus, but live bar config reload is not implemented; restart the bar"
+            );
+        }
+        BarDaemonAction::ToggleModule(module) => {
+            warn!(
+                "bar toggle-module action for '{module}' is not implemented by the current module runtime"
+            );
+        }
+        BarDaemonAction::FocusModule(module) => {
+            warn!("bar focus-module action for '{module}' is not implemented");
+        }
+        BarDaemonAction::Raw(command) => {
+            warn!("unsupported bar hotkey action: {command}");
+        }
+    }
+    Task::none()
+}
+
+fn handle_keybinding_action(bar: &mut UniliiBar, action: KeybindingResult) -> Task<Message> {
+    match action {
+        KeybindingResult::RawKeyEvent { code, value } => handle_global_key_event(bar, &code, value),
+        KeybindingResult::TrayAction(command) => {
+            handle_tray_daemon_action(bar, parse_tray_action(&command))
+        }
+        KeybindingResult::BarAction(command) => {
+            handle_bar_daemon_action(parse_bar_action(&command))
+        }
+        KeybindingResult::WidgetAction(command) => {
+            let Some((widget, action)) = command.split_once(':') else {
+                warn!("widget action must use <widget>:<action>: {command}");
+                return Task::none();
+            };
+            match widget.trim().to_ascii_lowercase().as_str() {
+                "wifi" => Task::done(Message::LegacyWidget(WidgetMessage::Wifi(
+                    action.to_string(),
+                ))),
+                "audio" => Task::done(Message::LegacyWidget(WidgetMessage::Audio(
+                    action.to_string(),
+                ))),
+                "video" | "display" => Task::done(Message::LegacyWidget(WidgetMessage::Video(
+                    action.to_string(),
+                ))),
+                "power" => Task::done(Message::LegacyWidget(WidgetMessage::Power(
+                    action.to_string(),
+                ))),
+                "sysmonitor" | "system" if action == "refresh" => {
+                    bar.sysmonitor.update_stats();
+                    Task::none()
+                }
+                unknown => {
+                    warn!("unsupported widget action target '{unknown}': {command}");
+                    Task::none()
+                }
+            }
+        }
+        KeybindingResult::MenuAction(command) => {
+            info!("managed menu action completed in keybinding daemon: {command}");
+            Task::none()
+        }
+        KeybindingResult::ShellCommand(command) => {
+            info!("shell hotkey command started: {command}");
+            Task::none()
+        }
+        KeybindingResult::Unknown => {
+            warn!("received unknown keybinding action");
+            Task::none()
+        }
+    }
+}
+
+fn submenu_is_open(tray_state: &EnhancedTrayState) -> bool {
+    matches!(
+        &tray_state.current_view,
+        TrayViewState::SingleApp { submenu_path, .. } if !submenu_path.is_empty()
+    )
+}
+
+fn selectable_menu_indices_with_config(
+    config: &Config,
+    tray_state: &EnhancedTrayState,
+) -> Vec<usize> {
+    match &tray_state.current_view {
+        TrayViewState::SingleApp {
+            app_id,
+            submenu_path,
+            ..
+        } => resolve_current_single_app_items(tray_state, app_id, submenu_path)
+            .map(crate::menus::presentation::selectable_visible_indices)
+            .unwrap_or_default(),
+        TrayViewState::Aggregated { items, .. } | TrayViewState::Favorites { items } => items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                crate::menus::presentation::is_selectable(item).then_some(index)
+            })
+            .collect(),
+        _ => specialized_menu_items(config, tray_state)
+            .map(|items| crate::menus::presentation::selectable_visible_indices(&items))
+            .unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+fn selectable_menu_indices(tray_state: &EnhancedTrayState) -> Vec<usize> {
+    selectable_menu_indices_with_config(&Config::default(), tray_state)
+}
+
+fn move_menu_selection_with_config(
+    config: &Config,
+    tray_state: &mut EnhancedTrayState,
+    forward: bool,
+) {
+    let indices = selectable_menu_indices_with_config(config, tray_state);
+    if indices.is_empty() {
+        tray_state.selected_index = None;
+        return;
+    }
+    let current_position = tray_state
+        .selected_index
+        .and_then(|current| indices.iter().position(|index| *index == current));
+    let next_position = match (current_position, forward) {
+        (Some(position), true) => (position + 1) % indices.len(),
+        (Some(0), false) => indices.len() - 1,
+        (Some(position), false) => position - 1,
+        (None, true) => 0,
+        (None, false) => indices.len() - 1,
+    };
+    tray_state.selected_index = Some(indices[next_position]);
+}
+
+#[cfg(test)]
+fn move_menu_selection(tray_state: &mut EnhancedTrayState, forward: bool) {
+    move_menu_selection_with_config(&Config::default(), tray_state, forward)
+}
+
 fn handle_evdev_tray_key(bar: &mut UniliiBar, code: &str, value: i32) -> Option<Task<Message>> {
     if value == 0 {
         return None;
@@ -1956,45 +2924,46 @@ fn handle_evdev_tray_key(bar: &mut UniliiBar, code: &str, value: i32) -> Option<
     if let Some(tray_state) = bar.enhanced_tray.as_mut() {
         match code {
             "KEY_ESC" => {
+                if submenu_is_open(tray_state) {
+                    return Some(Task::done(Message::TrayExitSubmenu));
+                }
                 tray_state.animation_target = 0.0;
                 return Some(resize_window_task(bar, false));
             }
             "KEY_DOWN" | "KEY_TAB" => {
-                let count = get_current_menu_item_count(tray_state);
-                if count > 0 {
-                    tray_state.selected_index = Some(match tray_state.selected_index {
-                        None => 0,
-                        Some(i) => (i + 1) % count,
-                    });
-                }
+                move_menu_selection_with_config(&bar.config, tray_state, true);
                 return Some(Task::none());
             }
             "KEY_UP" => {
-                let count = get_current_menu_item_count(tray_state);
-                if count > 0 {
-                    tray_state.selected_index = Some(match tray_state.selected_index {
-                        None => count.saturating_sub(1),
-                        Some(i) => {
-                            if i == 0 {
-                                count - 1
-                            } else {
-                                i - 1
-                            }
-                        }
-                    });
-                }
+                move_menu_selection_with_config(&bar.config, tray_state, false);
                 return Some(Task::none());
             }
-            "KEY_LEFT" => return Some(Task::done(Message::TrayNavigateLeft)),
-            "KEY_RIGHT" => return Some(Task::done(Message::TrayNavigateRight)),
+            "KEY_LEFT" => {
+                return Some(Task::done(if submenu_is_open(tray_state) {
+                    Message::TrayExitSubmenu
+                } else {
+                    Message::TrayNavigateLeft
+                }));
+            }
+            "KEY_RIGHT" => {
+                if let Some(idx) = tray_state.selected_index
+                    && let Some((app_id, action)) =
+                        get_menu_action_at_index_with_config(&bar.config, tray_state, idx)
+                    && matches!(
+                        action,
+                        enhanced_tray::TrayMenuAction::NavigateToSubmenu { .. }
+                    )
+                {
+                    return Some(Task::done(Message::TrayMenuTriggered(app_id, action)));
+                }
+                return Some(Task::done(Message::TrayNavigateRight));
+            }
             "KEY_ENTER" | "KEY_KPENTER" => {
                 if let Some(idx) = tray_state.selected_index {
-                    if let Some((app_id, action)) = get_menu_action_at_index(tray_state, idx) {
-                        tray_state.animation_target = 0.0;
-                        return Some(Task::batch(vec![
-                            Task::done(Message::TrayMenuTriggered(app_id, action)),
-                            resize_window_task(bar, false),
-                        ]));
+                    if let Some((app_id, action)) =
+                        get_menu_action_at_index_with_config(&bar.config, tray_state, idx)
+                    {
+                        return Some(Task::done(Message::TrayMenuTriggered(app_id, action)));
                     }
                 }
                 return Some(Task::none());
@@ -2012,7 +2981,7 @@ fn handle_evdev_tray_key(bar: &mut UniliiBar, code: &str, value: i32) -> Option<
     None
 }
 async fn read_mount_snapshot(
-    config: unilii_core::config::MountMenuConfig,
+    config: deskhalloumi_core::config::MountMenuConfig,
 ) -> Result<crate::menus::mount::MountMenuSnapshot, String> {
     let output = tokio::process::Command::new("sh")
         .arg("-lc")
@@ -2179,10 +3148,10 @@ fn read_loop_mounts(
 }
 
 async fn read_calendar_snapshot(
-    accounts: Vec<unilii_core::config::CalendarAccountConfig>,
+    accounts: Vec<deskhalloumi_core::config::CalendarAccountConfig>,
     agenda_days: u32,
 ) -> Result<crate::menus::calendar::CalendarMenuSnapshot, String> {
-    use unilii_lib::calendar::{
+    use deskhalloumi_lib::calendar::{
         CalendarProvider, caldav::CalDavProvider, caldav::CalDavProviderConfig,
     };
 
@@ -2304,7 +3273,7 @@ fn is_calendar_icon(icon: &tray::TrayIcon) -> bool {
 
 fn is_custom_menu_icon(
     icon: &tray::TrayIcon,
-    config: &unilii_core::config::CustomMenuConfig,
+    config: &deskhalloumi_core::config::CustomMenuConfig,
 ) -> bool {
     if !config.enabled || config.items.is_empty() {
         return false;
@@ -2329,32 +3298,42 @@ fn is_custom_menu_icon(
 
 fn build_custom_menu_items(
     icon: &enhanced_tray::TrayIcon,
-    config: &unilii_core::config::CustomMenuConfig,
+    config: &deskhalloumi_core::config::CustomMenuConfig,
 ) -> Vec<enhanced_tray::TrayMenuItem> {
     let snapshot = crate::menus::custom::CustomMenuSnapshot::from_config(config);
     snapshot
         .items
         .into_iter()
-        .map(|item| enhanced_tray::TrayMenuItem {
-            id: item.id.clone(),
-            label: item.title,
-            action: enhanced_tray::TrayMenuAction::SpawnCommand(item.action_command),
-            icon: item
+        .map(|item| {
+            let icon_name = item
                 .icon_theme
                 .or(item.icon_svg_path)
-                .or(item.icon_image_path),
-            submenu: Vec::new(),
-            enabled: true,
-            visible: true,
-            checkable: false,
-            checked: false,
-            shortcut: None,
-            is_separator: false,
-            app_id: icon.id.clone(),
-            full_path: item.id,
-            widget_type: enhanced_tray::TrayWidgetType::Button,
-            default_value: None,
-            placeholder: None,
+                .or(item.icon_image_path);
+            if item.confirm {
+                confirmation_submenu(
+                    &icon.id,
+                    item.id,
+                    item.title,
+                    item.subtitle
+                        .unwrap_or_else(|| "Review this command before running it".to_string()),
+                    item.action_command,
+                    icon_name,
+                    Some("Confirm".to_string()),
+                )
+            } else {
+                presentation_action_item(
+                    &icon.id,
+                    item.id,
+                    item.title,
+                    enhanced_tray::TrayMenuAction::SpawnCommand(item.action_command),
+                    ActionItemOptions {
+                        subtitle: item.subtitle,
+                        icon: icon_name,
+                        shortcut: None,
+                        enabled: true,
+                    },
+                )
+            }
         })
         .collect()
 }
@@ -2632,7 +3611,7 @@ fn render_enhanced_tray_menu<'a>(
     let quickjump_labels = if bar.tray_quickjump_active && quickjump_supported_for_view(tray_state)
     {
         crate::menus::common::generate_quickjump_labels(
-            get_current_menu_item_count(tray_state),
+            selectable_menu_indices_with_config(&bar.config, tray_state).len(),
             &quickjump_alphabet_for_view(&bar.config.menus.custom, tray_state),
         )
     } else {
@@ -2649,53 +3628,24 @@ fn render_enhanced_tray_menu<'a>(
             bar.tray_quickjump_active,
             &bar.tray_quickjump_input,
             &quickjump_labels,
+            &bar.config.menus.ui,
         ),
-        TrayViewState::Aggregated { items, filter } => {
-            render_aggregated_view_with_main_messages(tray_state, items, filter)
-        }
+        TrayViewState::Aggregated { items, filter } => render_aggregated_view_with_main_messages(
+            tray_state,
+            items,
+            filter,
+            &bar.config.menus.ui,
+        ),
         TrayViewState::Favorites { items } => {
-            render_favorites_view_with_main_messages(tray_state, items)
+            render_favorites_view_with_main_messages(tray_state, items, &bar.config.menus.ui)
         }
-        TrayViewState::Network {
-            app_id,
-            data,
-            loading,
-            error,
-        } => render_network_view_with_main_messages(
+        TrayViewState::Network { .. }
+        | TrayViewState::Mount { .. }
+        | TrayViewState::Calendar { .. } => render_specialized_view_with_main_messages(
+            bar,
             tray_state,
-            app_id,
-            data,
-            *loading,
-            error,
             bar.tray_quickjump_active,
-            &quickjump_labels,
-        ),
-        TrayViewState::Mount {
-            app_id,
-            data,
-            loading,
-            error,
-        } => render_mount_view_with_main_messages(
-            tray_state,
-            app_id,
-            data,
-            *loading,
-            error,
-            bar.tray_quickjump_active,
-            &quickjump_labels,
-        ),
-        TrayViewState::Calendar {
-            app_id,
-            data,
-            loading,
-            error,
-        } => render_calendar_view_with_main_messages(
-            tray_state,
-            app_id,
-            data,
-            *loading,
-            error,
-            bar.tray_quickjump_active,
+            &bar.tray_quickjump_input,
             &quickjump_labels,
         ),
     };
@@ -2705,7 +3655,7 @@ fn render_enhanced_tray_menu<'a>(
     container(content)
         .width(Length::Fill)
         .height(Length::Fill)
-        .padding([4, 8])
+        .padding([10, 12])
         .style(move |_theme| {
             let mut appearance = menu_panel_style();
 
@@ -2721,6 +3671,111 @@ fn render_enhanced_tray_menu<'a>(
         .into()
 }
 
+fn menu_header_title<'a>(
+    title: String,
+    subtitle: Option<String>,
+    count: Option<usize>,
+) -> Element<'a, Message> {
+    let mut title_column = column![text(title).size(16)].spacing(1);
+    if let Some(subtitle) = subtitle.filter(|value| !value.trim().is_empty()) {
+        title_column = title_column.push(
+            text(subtitle)
+                .size(10)
+                .color(iced::Color::from_rgb(0.66, 0.69, 0.75)),
+        );
+    }
+    let mut header = row![title_column].align_y(Alignment::Center).spacing(8);
+    if let Some(count) = count {
+        header = header
+            .push(Space::new().width(Length::Fill))
+            .push(shortcut_badge(format!("{count} items")));
+    }
+    header.into()
+}
+
+fn shortcut_badge(label: String) -> Element<'static, Message> {
+    container(text(label).size(9))
+        .padding([2, 6])
+        .style(|_theme| container::Style {
+            background: Some(iced::Background::Color([0.16, 0.18, 0.22, 1.0].into())),
+            border: iced::Border {
+                width: 1.0,
+                color: [0.28, 0.31, 0.37, 1.0].into(),
+                radius: 8.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn menu_mode_toolbar(show_favorites: bool) -> Element<'static, Message> {
+    let all = button(text("All actions").size(10))
+        .padding([3, 8])
+        .style(if show_favorites {
+            button::text
+        } else {
+            button::primary
+        })
+        .on_press(Message::TrayShowAggregated);
+    let favorites = button(text("Favorites").size(10))
+        .padding([3, 8])
+        .style(if show_favorites {
+            button::primary
+        } else {
+            button::text
+        })
+        .on_press(Message::TrayShowFavorites);
+    row![all, favorites].spacing(2).into()
+}
+
+fn quickjump_banner(input: &str) -> Element<'static, Message> {
+    let detail = if input.is_empty() {
+        "Type a visible hint; Esc leaves quick-jump".to_string()
+    } else {
+        format!("Quick-jump: {input}…")
+    };
+    container(
+        row![
+            text("⌨").size(12),
+            text(detail).size(10),
+            Space::new().width(Length::Fill),
+            shortcut_badge("Esc".to_string()),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .padding([5, 8])
+    .width(Length::Fill)
+    .style(|_theme| container::Style {
+        background: Some(iced::Background::Color([0.12, 0.16, 0.22, 1.0].into())),
+        border: iced::Border {
+            width: 1.0,
+            color: [0.24, 0.38, 0.58, 1.0].into(),
+            radius: 8.0.into(),
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
+fn submenu_breadcrumb(state: &EnhancedTrayState, app_id: &str, path: &[String]) -> String {
+    let Some(app) = state.tree.apps.get(app_id) else {
+        return path.join(" / ");
+    };
+    let mut labels = vec![app.icon.title.clone()];
+    let mut items = app.menu_items.as_slice();
+    for segment in path {
+        if let Some(item) = items.iter().find(|item| item.id == *segment) {
+            labels.push(split_label(&item.label).0.to_string());
+            items = item.submenu.as_slice();
+        } else {
+            labels.push(segment.clone());
+            break;
+        }
+    }
+    labels.join("  ›  ")
+}
+
 fn render_single_app_view_with_main_messages<'a>(
     state: &'a EnhancedTrayState,
     app_id: &'a str,
@@ -2728,165 +3783,314 @@ fn render_single_app_view_with_main_messages<'a>(
     quickjump_active: bool,
     quickjump_input: &str,
     quickjump_labels: &[String],
+    ui: &'a MenuUiConfig,
 ) -> Element<'a, Message> {
     let app_menu = state.tree.apps.get(app_id);
+    let submenu_path = match &state.current_view {
+        TrayViewState::SingleApp { submenu_path, .. } => submenu_path.as_slice(),
+        _ => &[],
+    };
+    let current_items = app_menu
+        .and_then(|_| resolve_current_single_app_items(state, app_id, submenu_path))
+        .unwrap_or(&[]);
+    let actionable_count =
+        crate::menus::presentation::selectable_visible_indices(current_items).len();
+    let mut content = column!().spacing(8);
 
-    let mut content = column!().spacing(6);
-
-    let mut title_row = row!().spacing(8).align_y(iced::Alignment::Center);
-    if matches!(&state.current_view, TrayViewState::SingleApp { submenu_path, .. } if !submenu_path.is_empty())
-    {
-        title_row = title_row.push(button(text("↩").size(12)).on_press(Message::TrayExitSubmenu));
-    }
-
-    if navigation.can_go_left {
-        title_row = title_row.push(button(text("◀").size(12)).on_press(Message::TrayNavigateLeft));
-    }
-
-    if let Some(app) = app_menu {
-        title_row = title_row.push(render_enhanced_icon_badge(&app.icon, 18.0));
-        title_row = title_row.push(text(&app.icon.title).size(14));
-    } else {
-        title_row = title_row.push(text(app_id).size(14));
-    }
-
-    if navigation.can_go_right {
-        title_row = title_row.push(button(text("▶").size(12)).on_press(Message::TrayNavigateRight));
-    }
-
-    content = content.push(title_row);
-
-    if quickjump_active {
-        content = content.push(
-            text(format!(
-                "Quickjump [{}] — type label (Esc to cancel)",
-                quickjump_input
-            ))
-            .size(10),
+    let mut header = row!().spacing(6).align_y(Alignment::Center);
+    if !submenu_path.is_empty() {
+        header = header.push(
+            button(text("←").size(13))
+                .padding([3, 7])
+                .style(button::text)
+                .on_press(Message::TrayExitSubmenu),
         );
     }
-
+    if navigation.can_go_left {
+        header = header.push(
+            button(text("‹").size(16))
+                .padding([2, 6])
+                .style(button::text)
+                .on_press(Message::TrayNavigateLeft),
+        );
+    }
     if let Some(app) = app_menu {
-        let menu_items = render_menu_items_with_main_messages(
-            resolve_current_single_app_items(
-                state,
-                app_id,
-                match &state.current_view {
-                    TrayViewState::SingleApp { submenu_path, .. } => submenu_path.as_slice(),
-                    _ => &[],
-                },
-            )
-            .unwrap_or(&app.menu_items),
+        header = header
+            .push(render_enhanced_icon_badge(&app.icon, 22.0))
+            .push(menu_header_title(
+                bounded_text(&app.icon.title, ui.max_label_chars),
+                Some(if submenu_path.is_empty() {
+                    format!("{} · {} actionable", app.icon.status, actionable_count)
+                } else {
+                    format!("Submenu · {} actionable", actionable_count)
+                }),
+                None,
+            ));
+    } else {
+        header = header.push(menu_header_title(
+            bounded_text(app_id, ui.max_label_chars),
+            Some("Menu provider unavailable".to_string()),
+            None,
+        ));
+    }
+    header = header.push(Space::new().width(Length::Fill));
+    if navigation.can_go_right {
+        header = header.push(
+            button(text("›").size(16))
+                .padding([2, 6])
+                .style(button::text)
+                .on_press(Message::TrayNavigateRight),
+        );
+    }
+    content = content.push(header);
+
+    if ui.show_breadcrumbs && !submenu_path.is_empty() {
+        content = content.push(
+            text(submenu_breadcrumb(state, app_id, submenu_path))
+                .size(10)
+                .color(iced::Color::from_rgb(0.62, 0.66, 0.73)),
+        );
+    }
+    content = content.push(menu_mode_toolbar(false));
+    if quickjump_active {
+        content = content.push(quickjump_banner(quickjump_input));
+    }
+    if current_items.iter().any(|item| item.visible) {
+        content = content.push(render_menu_items_with_main_messages(
+            current_items,
             state.selected_index,
             app_id,
-            match &state.current_view {
-                TrayViewState::SingleApp { submenu_path, .. } => submenu_path.as_slice(),
-                _ => &[],
-            },
+            submenu_path,
             quickjump_active,
             quickjump_labels,
-        );
-        content = content.push(menu_items);
+            ui,
+        ));
     } else {
-        content = content.push(text("No menu available").size(12));
+        content = content.push(render_empty_state(
+            "No actions available",
+            "This application did not expose any visible menu items.",
+        ));
     }
-
-    content = content.push(render_keyboard_hints_single());
-
+    if ui.show_keyboard_hints {
+        content = content.push(render_keyboard_hints(
+            "↑/↓ select · Enter activate · ← back · g quick-jump · Esc close",
+        ));
+    }
     content.into()
 }
 
 fn render_aggregated_view_with_main_messages<'a>(
-    _state: &'a EnhancedTrayState,
+    state: &'a EnhancedTrayState,
     items: &'a [enhanced_tray::TrayMenuItem],
     filter: &'a Option<String>,
+    ui: &'a MenuUiConfig,
 ) -> Element<'a, Message> {
-    let mut content = column!().spacing(2);
-
-    content = content.push(text("All Menu Items").size(14));
-
-    content = content.push(
-        text_input("Search menu items...", filter.as_deref().unwrap_or(""))
-            .on_input(Message::TrayFilterUpdate)
-            .size(12)
-            .padding([2, 4]),
-    );
-
-    if items.is_empty() {
-        content = content.push(text("No items found").size(12));
-    } else {
-        let items_container = render_aggregated_items_with_main_messages(items);
-        content = content.push(items_container);
+    let mut content = column!().spacing(8);
+    content = content.push(menu_header_title(
+        "All tray actions".to_string(),
+        Some("Search across every application menu".to_string()),
+        ui.show_item_counts.then_some(items.len()),
+    ));
+    content = content.push(menu_mode_toolbar(false));
+    let search = text_input(
+        "Search actions, paths, and applications…",
+        filter.as_deref().unwrap_or(""),
+    )
+    .on_input(Message::TrayFilterUpdate)
+    .size(12)
+    .padding([6, 9])
+    .width(Length::Fill);
+    let mut search_row = row![search].spacing(4).align_y(Alignment::Center);
+    if filter.as_ref().is_some_and(|value| !value.is_empty()) {
+        search_row = search_row.push(
+            button(text("Clear").size(10))
+                .padding([5, 8])
+                .style(button::text)
+                .on_press(Message::TrayFilterUpdate(String::new())),
+        );
     }
-
-    content = content.push(render_keyboard_hints_aggregated());
-
+    content = content.push(search_row);
+    if items.is_empty() {
+        content = content.push(render_empty_state(
+            "No matching actions",
+            "Try fewer or broader search terms.",
+        ));
+    } else {
+        content = content.push(render_action_collection(
+            state,
+            items,
+            state.selected_index,
+            false,
+            ui,
+        ));
+    }
+    if ui.show_keyboard_hints {
+        content = content.push(render_keyboard_hints(
+            "Type to filter · ↑/↓ select · Enter activate · f favorite · Esc close",
+        ));
+    }
     content.into()
 }
 
 fn render_favorites_view_with_main_messages<'a>(
-    _state: &'a EnhancedTrayState,
+    state: &'a EnhancedTrayState,
     items: &'a [enhanced_tray::TrayMenuItem],
+    ui: &'a MenuUiConfig,
 ) -> Element<'a, Message> {
-    let mut content = column!().spacing(2);
-
-    content = content.push(text("Favorite Items ⭐").size(14));
-
+    let mut content = column!().spacing(8);
+    content = content.push(menu_header_title(
+        "Favorite actions".to_string(),
+        Some("Pinned commands from application menus".to_string()),
+        ui.show_item_counts.then_some(items.len()),
+    ));
+    content = content.push(menu_mode_toolbar(true));
     if items.is_empty() {
-        content = content
-            .push(text("No favorites yet. Press 'f' on any menu item to add it here.").size(12));
+        content = content.push(render_empty_state(
+            "No favorites yet",
+            "Open All actions and use the star button or press f on a selected row.",
+        ));
     } else {
-        let items_container = render_favorite_items_with_main_messages(items);
-        content = content.push(items_container);
+        content = content.push(render_action_collection(
+            state,
+            items,
+            state.selected_index,
+            true,
+            ui,
+        ));
     }
-
-    content = content.push(render_keyboard_hints_favorites());
-
+    if ui.show_keyboard_hints {
+        content = content.push(render_keyboard_hints(
+            "↑/↓ select · Enter activate · f remove favorite · a all actions",
+        ));
+    }
     content.into()
 }
 
-fn render_network_view_with_main_messages<'a>(
-    _state: &'a EnhancedTrayState,
-    app_id: &'a str,
-    data: &'a Option<crate::tray::NetworkSnapshot>,
-    loading: bool,
-    error: &'a Option<String>,
+fn specialized_view_metadata(tray_state: &EnhancedTrayState) -> (String, String, &'static str) {
+    match &tray_state.current_view {
+        TrayViewState::Network {
+            data,
+            loading,
+            error,
+            ..
+        } => {
+            let subtitle = if *loading {
+                "Scanning wireless networks…".to_string()
+            } else if let Some(error) = error {
+                format!("Network data unavailable · {error}")
+            } else if let Some(snapshot) = data {
+                match snapshot.connected_ssid.as_deref() {
+                    Some(ssid) => format!("Connected to {ssid} on {}", snapshot.interface),
+                    None if snapshot.enabled => format!("{} · not connected", snapshot.interface),
+                    None => "Wireless radio disabled".to_string(),
+                }
+            } else {
+                "No network snapshot".to_string()
+            };
+            ("Wi-Fi".to_string(), subtitle, "network-wireless")
+        }
+        TrayViewState::Mount {
+            data,
+            loading,
+            error,
+            ..
+        } => {
+            let subtitle = if *loading {
+                "Discovering storage and remote profiles…".to_string()
+            } else if let Some(error) = error {
+                format!("Storage refresh failed · {error}")
+            } else if let Some(snapshot) = data {
+                format!(
+                    "{} local · {} SSHFS · {} loop · {} encrypted",
+                    snapshot.local_devices.len(),
+                    snapshot.sshfs_profiles.len(),
+                    snapshot.loop_mounts.len(),
+                    snapshot.vcvolume_profiles.len()
+                )
+            } else {
+                "No storage snapshot".to_string()
+            };
+            ("Storage".to_string(), subtitle, "drive-harddisk")
+        }
+        TrayViewState::Calendar {
+            data,
+            loading,
+            error,
+            ..
+        } => {
+            let subtitle = if *loading {
+                "Synchronizing calendar accounts…".to_string()
+            } else if let Some(error) = error {
+                format!("Calendar refresh failed · {error}")
+            } else if let Some(snapshot) = data {
+                format!(
+                    "{} account(s) · {} upcoming event(s){}",
+                    snapshot.account_ids.len(),
+                    snapshot.events.len(),
+                    if snapshot.stale {
+                        " · partial data"
+                    } else {
+                        ""
+                    }
+                )
+            } else {
+                "No calendar snapshot".to_string()
+            };
+            ("Calendar".to_string(), subtitle, "x-office-calendar")
+        }
+        _ => ("Menu".to_string(), String::new(), "applications-system"),
+    }
+}
+
+fn render_specialized_view_with_main_messages<'a>(
+    bar: &'a UniliiBar,
+    tray_state: &'a EnhancedTrayState,
     quickjump_active: bool,
+    quickjump_input: &str,
     quickjump_labels: &[String],
 ) -> Element<'a, Message> {
-    let mut content = column!().spacing(2);
-
-    content = content.push(text("Network Settings").size(14));
-    if quickjump_active {
-        content = content.push(text("Quickjump active").size(10));
-    }
-
-    if loading {
-        content = content.push(text("⟳ Loading...").size(12));
-    } else if let Some(err) = error {
-        content = content.push(text(format!("⚠ Error: {}", err)).size(12));
-    }
-
-    let controls = render_network_controls_with_main_messages(
-        app_id,
-        data,
-        quickjump_active,
-        quickjump_labels,
+    let (title, subtitle, icon_name) = specialized_view_metadata(tray_state);
+    let items = specialized_menu_items(&bar.config, tray_state).unwrap_or_default();
+    let app_id = match &tray_state.current_view {
+        TrayViewState::Network { app_id, .. }
+        | TrayViewState::Mount { app_id, .. }
+        | TrayViewState::Calendar { app_id, .. } => app_id.clone(),
+        _ => String::new(),
+    };
+    let actionable = crate::menus::presentation::selectable_visible_indices(&items).len();
+    let mut content = column!().spacing(8);
+    content = content.push(
+        row![
+            render_icon_badge(Some(icon_name), None, &title, &app_id, &app_id, 22.0),
+            menu_header_title(
+                bounded_text(&title, bar.config.menus.ui.max_label_chars),
+                Some(bounded_text(
+                    &subtitle,
+                    bar.config.menus.ui.max_subtitle_chars,
+                )),
+                bar.config.menus.ui.show_item_counts.then_some(actionable),
+            ),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
     );
-    content = content.push(controls);
-
-    if let Some(snapshot) = data {
-        if snapshot.enabled && !snapshot.networks.is_empty() {
-            let networks =
-                render_network_list_with_main_messages(app_id, snapshot, quickjump_active, quickjump_labels, 3);
-            content = content.push(networks);
-        } else if !snapshot.enabled {
-            content = content.push(text("Wi-Fi is disabled").size(12));
-        }
+    if quickjump_active {
+        content = content.push(quickjump_banner(quickjump_input));
     }
-
-    content = content.push(render_keyboard_hints_network());
-
+    content = content.push(render_owned_menu_items_with_main_messages(
+        items,
+        tray_state.selected_index,
+        app_id,
+        Vec::new(),
+        quickjump_active,
+        quickjump_labels.to_vec(),
+        bar.config.menus.ui.clone(),
+    ));
+    if bar.config.menus.ui.show_keyboard_hints {
+        content = content.push(render_keyboard_hints(
+            "↑/↓ select · Enter activate · g quick-jump · r refresh · Esc close",
+        ));
+    }
     content.into()
 }
 
@@ -2897,113 +4101,335 @@ fn render_menu_items_with_main_messages<'a>(
     current_submenu_path: &[String],
     quickjump_active: bool,
     quickjump_labels: &[String],
+    ui: &'a MenuUiConfig,
 ) -> Element<'a, Message> {
-    if !items.iter().any(|item| item.visible) {
-        return text("No menu items").size(12).into();
-    }
+    let rendered = items
+        .iter()
+        .filter(|item| item.visible)
+        .cloned()
+        .enumerate()
+        .map(|(visible_index, item)| {
+            let hint = quickjump_hint_for_visible_index(items, visible_index, quickjump_labels);
+            render_menu_item_owned(
+                item,
+                selected_index == Some(visible_index),
+                app_id.to_string(),
+                current_submenu_path.to_vec(),
+                quickjump_active,
+                hint,
+                ui.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    render_menu_body(
+        rendered,
+        items.iter().filter(|item| item.visible).count(),
+        ui,
+    )
+}
 
-    let mut menu_col = column!().spacing(1);
+fn render_owned_menu_items_with_main_messages(
+    items: Vec<enhanced_tray::TrayMenuItem>,
+    selected_index: Option<usize>,
+    app_id: String,
+    current_submenu_path: Vec<String>,
+    quickjump_active: bool,
+    quickjump_labels: Vec<String>,
+    ui: MenuUiConfig,
+) -> Element<'static, Message> {
+    let visible_count = items.iter().filter(|item| item.visible).count();
+    let rendered = items
+        .iter()
+        .filter(|item| item.visible)
+        .cloned()
+        .enumerate()
+        .map(|(visible_index, item)| {
+            let hint = quickjump_hint_for_visible_index(&items, visible_index, &quickjump_labels);
+            render_menu_item_owned(
+                item,
+                selected_index == Some(visible_index),
+                app_id.clone(),
+                current_submenu_path.clone(),
+                quickjump_active,
+                hint,
+                ui.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    render_menu_body_owned(rendered, visible_count, ui)
+}
 
-    for (index, item) in items.iter().filter(|item| item.visible).enumerate() {
-        let item_widget = render_menu_item_with_main_messages(
-            item,
-            selected_index == Some(index),
-            app_id,
-            current_submenu_path,
-            quickjump_active,
-            quickjump_labels.get(index).cloned(),
-        );
-        menu_col = menu_col.push(item_widget);
-    }
-
-    if items.iter().filter(|item| item.visible).count() > 8 {
-        scrollable(menu_col).height(Length::Fixed(200.0)).into()
+fn render_menu_body<'a>(
+    rows: Vec<Element<'a, Message>>,
+    visible_count: usize,
+    ui: &'a MenuUiConfig,
+) -> Element<'a, Message> {
+    let body = rows
+        .into_iter()
+        .fold(column!().spacing(2), |column, row| column.push(row));
+    if visible_count > ui.max_visible_rows {
+        scrollable(body)
+            .height(Length::Fixed(ui.scroll_height as f32))
+            .into()
     } else {
-        menu_col.into()
+        body.into()
     }
 }
 
-fn render_menu_item_with_main_messages<'a>(
-    item: &'a enhanced_tray::TrayMenuItem,
+fn render_menu_body_owned(
+    rows: Vec<Element<'static, Message>>,
+    visible_count: usize,
+    ui: MenuUiConfig,
+) -> Element<'static, Message> {
+    let body = rows
+        .into_iter()
+        .fold(column!().spacing(2), |column, row| column.push(row));
+    if visible_count > ui.max_visible_rows {
+        scrollable(body)
+            .height(Length::Fixed(ui.scroll_height as f32))
+            .into()
+    } else {
+        body.into()
+    }
+}
+
+fn render_menu_item_owned(
+    item: enhanced_tray::TrayMenuItem,
     is_selected: bool,
-    app_id: &'a str,
-    current_submenu_path: &[String],
+    app_id: String,
+    current_submenu_path: Vec<String>,
     quickjump_active: bool,
     quickjump_label: Option<String>,
-) -> Element<'a, Message> {
+    ui: MenuUiConfig,
+) -> Element<'static, Message> {
     if item.is_separator {
-        return text("─".repeat(20)).size(10).into();
+        return container(Space::new().height(1).width(Length::Fill))
+            .padding([4, 0])
+            .style(|_theme| container::Style {
+                background: Some(iced::Background::Color([0.23, 0.25, 0.29, 1.0].into())),
+                ..Default::default()
+            })
+            .into();
     }
 
-    if matches!(
-        item.widget_type,
-        enhanced_tray::core::TrayWidgetType::TextInput
-    ) || matches!(
-        &item.action,
-        enhanced_tray::TrayMenuAction::TextInputChanged { .. }
-    ) {
-        return text_input(
-            item.placeholder.as_deref().unwrap_or("Enter value..."),
-            item.default_value.as_deref().unwrap_or(""),
+    let cleaned_label = strip_mnemonic_markers(&item.label);
+    let (raw_title, raw_subtitle) = split_label(&cleaned_label);
+    let title = bounded_text(raw_title, ui.max_label_chars);
+    let subtitle = raw_subtitle.map(|value| bounded_text(value, ui.max_subtitle_chars));
+
+    if is_section_item(&item) {
+        return container(
+            row![text(title).size(10), Space::new().width(Length::Fill),]
+                .align_y(Alignment::Center),
         )
-        .on_input(move |value| Message::TrayTextInputChanged(item.id.clone(), value))
-        .size(12)
-        .padding([2, 4])
-        .width(Length::Fixed(200.0))
+        .padding([6, 8])
+        .width(Length::Fill)
+        .style(|_theme| container::Style {
+            background: Some(iced::Background::Color([0.10, 0.11, 0.14, 1.0].into())),
+            border: iced::Border {
+                width: 0.0,
+                color: iced::Color::TRANSPARENT,
+                radius: 6.0.into(),
+            },
+            ..Default::default()
+        })
         .into();
     }
-    let mut label = sanitize_menu_label(&item.label);
+
+    if is_status_item(&item) || (!item.enabled && item.submenu.is_empty()) {
+        let mut status = column![text(title).size(11)].spacing(1);
+        if let Some(subtitle) = subtitle {
+            status = status.push(
+                text(subtitle)
+                    .size(10)
+                    .color(iced::Color::from_rgb(0.65, 0.68, 0.74)),
+            );
+        }
+        return container(status)
+            .padding([6, 9])
+            .width(Length::Fill)
+            .style(|_theme| container::Style {
+                background: Some(iced::Background::Color([0.12, 0.13, 0.16, 1.0].into())),
+                border: iced::Border {
+                    width: 1.0,
+                    color: [0.20, 0.22, 0.27, 1.0].into(),
+                    radius: 7.0.into(),
+                },
+                ..Default::default()
+            })
+            .into();
+    }
+
+    if matches!(item.widget_type, enhanced_tray::TrayWidgetType::TextInput)
+        || matches!(
+            item.action,
+            enhanced_tray::TrayMenuAction::TextInputChanged { .. }
+        )
+    {
+        let item_id = item.id.clone();
+        let mut input_column = column!().spacing(3);
+        if !title.trim().is_empty() {
+            input_column = input_column.push(text(title).size(10));
+        }
+        input_column = input_column.push(
+            text_input(
+                item.placeholder.as_deref().unwrap_or("Enter value…"),
+                item.default_value.as_deref().unwrap_or(""),
+            )
+            .on_input(move |value| Message::TrayTextInputChanged(item_id.clone(), value))
+            .size(12)
+            .padding([6, 8])
+            .width(Length::Fill),
+        );
+        return input_column.into();
+    }
+
+    let mut item_title = title;
     if quickjump_active {
         if let Some(hint) = quickjump_label {
-            label = format!("[{}] {}", hint, label);
+            item_title = format!("[{hint}] {item_title}");
         }
     }
-
     if item.checkable {
-        label = format!("{} {}", if item.checked { "☑" } else { "☐" }, label);
+        item_title = format!("{} {item_title}", if item.checked { "☑" } else { "☐" });
     }
-
-    let shortcut_hint = item.shortcut.clone();
-    let submenu_hint = if !item.submenu.is_empty() {
-        Some("›".to_string())
-    } else {
-        None
-    };
-
-    let mut row_content = row!().spacing(8).align_y(iced::Alignment::Center);
+    let mut labels = column![text(item_title).size(12)].spacing(1);
+    if let Some(subtitle) = subtitle {
+        labels = labels.push(
+            text(subtitle)
+                .size(10)
+                .color(iced::Color::from_rgb(0.64, 0.67, 0.73)),
+        );
+    }
+    let mut row_content = row!().spacing(8).align_y(Alignment::Center);
+    row_content = row_content.push(text(if is_selected { "›" } else { " " }).size(12));
     if let Some(icon) = render_menu_item_icon(item.icon.as_deref()) {
         row_content = row_content.push(icon);
     }
     row_content = row_content
-        .push(text(label).size(12))
-        .push(Space::new())
-        .push(text(submenu_hint.or(shortcut_hint).unwrap_or_default()).size(11));
+        .push(labels)
+        .push(Space::new().width(Length::Fill));
+    if let Some(shortcut) = item
+        .shortcut
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+    {
+        row_content = row_content.push(shortcut_badge(shortcut));
+    }
+    if !item.submenu.is_empty() {
+        row_content = row_content.push(text("›").size(15));
+    }
 
-    let mut btn = button(row_content).padding([6, 10]).width(Length::Fill);
-    btn = if !item.enabled {
-        btn.style(button::text)
-    } else if is_selected {
-        btn.style(button::primary)
-    } else {
-        btn.style(button::secondary)
-    };
-
+    let mut item_button = button(row_content)
+        .padding([6, 8])
+        .width(Length::Fill)
+        .style(if is_selected {
+            button::primary
+        } else {
+            button::text
+        });
     if item.enabled {
         if item.submenu.is_empty() {
-            btn.on_press(Message::TrayMenuTriggered(
-                app_id.to_string(),
-                item.action.clone(),
-            ))
-            .into()
+            item_button = item_button.on_press(Message::TrayMenuTriggered(app_id, item.action));
         } else {
-            let mut submenu_path = current_submenu_path.to_vec();
-            submenu_path.push(item.id.clone());
-            btn.on_press(Message::TrayEnterSubmenu(app_id.to_string(), submenu_path))
-                .into()
+            let mut submenu_path = current_submenu_path;
+            submenu_path.push(item.id);
+            item_button = item_button.on_press(Message::TrayEnterSubmenu(app_id, submenu_path));
         }
-    } else {
-        btn.into()
     }
+    item_button.into()
+}
+
+fn render_action_collection<'a>(
+    state: &'a EnhancedTrayState,
+    items: &'a [enhanced_tray::TrayMenuItem],
+    selected_index: Option<usize>,
+    favorites_view: bool,
+    ui: &'a MenuUiConfig,
+) -> Element<'a, Message> {
+    let rows = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item.visible)
+        .map(|(index, item)| {
+            let cleaned_label = strip_mnemonic_markers(&item.label);
+            let (title, subtitle) = split_label(&cleaned_label);
+            let display_title = bounded_text(title, ui.max_label_chars);
+            let path = if item.full_path.trim().is_empty() {
+                subtitle.unwrap_or_default().to_string()
+            } else {
+                item.full_path.clone()
+            };
+            let mut labels = column![text(display_title).size(11)].spacing(1);
+            if !path.trim().is_empty() {
+                labels = labels.push(
+                    text(bounded_text(&path, ui.max_subtitle_chars))
+                        .size(9)
+                        .color(iced::Color::from_rgb(0.62, 0.65, 0.71)),
+                );
+            }
+            let mut action = button(labels).padding([6, 8]).width(Length::Fill).style(
+                if selected_index == Some(index) {
+                    button::primary
+                } else {
+                    button::text
+                },
+            );
+            if item.enabled {
+                action = action.on_press(Message::TrayMenuTriggered(
+                    item.app_id.clone(),
+                    item.action.clone(),
+                ));
+            }
+            if favorites_view || ui.show_all_favorites_controls {
+                let favorite = state.tree.is_favorite(&item.app_id, &item.id);
+                let favorite_label = if favorites_view || favorite {
+                    "★"
+                } else {
+                    "☆"
+                };
+                let favorite_button = button(text(favorite_label).size(13))
+                    .padding([5, 7])
+                    .style(button::text)
+                    .on_press(Message::TrayToggleFavorite(
+                        item.app_id.clone(),
+                        item.id.clone(),
+                    ));
+                row![action, favorite_button]
+                    .spacing(3)
+                    .align_y(Alignment::Center)
+                    .into()
+            } else {
+                action.into()
+            }
+        })
+        .collect::<Vec<Element<'a, Message>>>();
+    let visible_count = rows.len();
+    render_menu_body(rows, visible_count, ui)
+}
+
+fn render_empty_state(title: &str, detail: &str) -> Element<'static, Message> {
+    container(
+        column![
+            text(title.to_string()).size(12),
+            text(detail.to_string())
+                .size(10)
+                .color(iced::Color::from_rgb(0.64, 0.67, 0.73)),
+        ]
+        .spacing(3),
+    )
+    .padding([12, 10])
+    .width(Length::Fill)
+    .style(|_theme| container::Style {
+        background: Some(iced::Background::Color([0.11, 0.12, 0.15, 1.0].into())),
+        border: iced::Border {
+            width: 1.0,
+            color: [0.20, 0.22, 0.27, 1.0].into(),
+            radius: 9.0.into(),
+        },
+        ..Default::default()
+    })
+    .into()
 }
 
 fn render_menu_item_icon(icon: Option<&str>) -> Option<Element<'static, Message>> {
@@ -3026,501 +4452,9 @@ fn render_menu_item_icon(icon: Option<&str>) -> Option<Element<'static, Message>
     Some(text("•").size(12).into())
 }
 
-fn render_aggregated_items_with_main_messages<'a>(
-    items: &'a [enhanced_tray::TrayMenuItem],
-) -> Element<'a, Message> {
-    let mut items_col = column!().spacing(1);
-
-    for item in items.iter().take(10) {
-        let item_row = row![
-            text("⭐").size(10),
-            text(&item.full_path).size(11),
-            Space::new(),
-            button(text("★").size(10)).on_press(Message::TrayToggleFavorite(
-                item.app_id.clone(),
-                item.id.clone()
-            )),
-        ]
-        .spacing(4)
-        .align_y(Alignment::Center);
-
-        let item_btn = button(item_row)
-            .padding([2, 4])
-            .width(Length::Fill)
-            .on_press(Message::TrayMenuTriggered(
-                item.app_id.clone(),
-                item.action.clone(),
-            ));
-
-        items_col = items_col.push(item_btn);
-    }
-
-    if items.len() > 10 {
-        items_col =
-            items_col.push(text(format!("... and {} more items", items.len() - 10)).size(10));
-    }
-
-    scrollable(items_col).height(Length::Fixed(200.0)).into()
-}
-
-fn render_favorite_items_with_main_messages<'a>(
-    items: &'a [enhanced_tray::TrayMenuItem],
-) -> Element<'a, Message> {
-    let mut items_col = column!().spacing(1);
-
-    for item in items {
-        let item_row = row![
-            text("⭐").size(10),
-            text(&item.full_path).size(11),
-            button(text("✗").size(10)).on_press(Message::TrayToggleFavorite(
-                item.app_id.clone(),
-                item.id.clone()
-            )),
-        ]
-        .spacing(4)
-        .align_y(Alignment::Center);
-
-        let item_btn = button(item_row)
-            .padding([2, 4])
-            .width(Length::Fill)
-            .on_press(Message::TrayMenuTriggered(
-                item.app_id.clone(),
-                item.action.clone(),
-            ));
-
-        items_col = items_col.push(item_btn);
-    }
-
-    scrollable(items_col).height(Length::Fixed(200.0)).into()
-}
-
-fn render_network_controls_with_main_messages<'a>(
-    app_id: &'a str,
-    data: &'a Option<crate::tray::NetworkSnapshot>,
-    quickjump_active: bool,
-    quickjump_labels: &[String],
-) -> Element<'a, Message> {
-    let is_enabled = data.as_ref().map(|d| d.enabled).unwrap_or(false);
-
-    row![
-        button(
-            text(quickjump_prefixed_label(quickjump_active, quickjump_labels, 0, if is_enabled {
-                "Disable Wi-Fi"
-            } else {
-                "Enable Wi-Fi"
-            }))
-            .size(12)
-        )
-        .padding([2, 6])
-        .on_press(Message::TrayNetworkToggle(app_id.to_string())),
-        button(text(quickjump_prefixed_label(
-            quickjump_active,
-            quickjump_labels,
-            1,
-            "Rescan",
-        ))
-        .size(12))
-        .padding([2, 6])
-        .on_press(Message::TraySpawnCommand(
-            app_id.to_string(),
-            "nmcli device wifi rescan".to_string()
-        )),
-        button(text(quickjump_prefixed_label(
-            quickjump_active,
-            quickjump_labels,
-            2,
-            "Settings",
-        ))
-        .size(12))
-            .padding([2, 6])
-            .on_press(Message::TraySpawnCommand(
-                app_id.to_string(),
-                "nm-connection-editor".to_string()
-            )),
-    ]
-    .spacing(4)
-    .into()
-}
-
-fn render_network_list_with_main_messages<'a>(
-    app_id: &'a str,
-    snapshot: &'a crate::tray::NetworkSnapshot,
-    quickjump_active: bool,
-    quickjump_labels: &[String],
-    start_index: usize,
-) -> Element<'a, Message> {
-    let mut networks_col = column!().spacing(1);
-
-    networks_col = networks_col.push(text("Available Networks:").size(12));
-
-    for (offset, network) in snapshot.networks.iter().take(6).enumerate() {
-        let mut label = format!("{} ({}%)", network.ssid, network.signal);
-
-        if snapshot.state == "connected" && snapshot.interface == network.ssid {
-            label = format!("● {}", label);
-        }
-        label = quickjump_prefixed_label(
-            quickjump_active,
-            quickjump_labels,
-            start_index + offset,
-            label,
-        );
-
-        let network_btn = button(text(label).size(11))
-            .padding([1, 4])
-            .width(Length::Fill)
-            .on_press(Message::TraySpawnCommand(
-                app_id.to_string(),
-                format!("nmcli device wifi connect \"{}\"", network.ssid),
-            ));
-
-        networks_col = networks_col.push(network_btn);
-    }
-
-    scrollable(networks_col).height(Length::Fixed(150.0)).into()
-}
-
-fn render_mount_view_with_main_messages<'a>(
-    _state: &'a EnhancedTrayState,
-    app_id: &'a str,
-    data: &'a Option<crate::menus::mount::MountMenuSnapshot>,
-    loading: bool,
-    error: &'a Option<String>,
-    quickjump_active: bool,
-    quickjump_labels: &[String],
-) -> Element<'a, Message> {
-    let mut content = column!().spacing(2);
-    content = content.push(text("Mount / SSHFS / Loop / VCVolume").size(14));
-    if quickjump_active {
-        content = content.push(text("Quickjump active").size(10));
-    }
-
-    let mut quickjump_index = 0usize;
-
-    if loading {
-        content = content.push(text("⟳ Loading storage snapshot...").size(12));
-    } else if let Some(err) = error {
-        content = content.push(text(format!("⚠ Error: {}", err)).size(12));
-    }
-
-    content = content.push(
-        row![
-            button(text(quickjump_prefixed_label(
-                quickjump_active,
-                quickjump_labels,
-                quickjump_index,
-                "Refresh",
-            ))
-            .size(12))
-            .padding([2, 6])
-            .on_press(Message::TrayMountRefresh(app_id.to_string())),
-            button(text(quickjump_prefixed_label(
-                quickjump_active,
-                quickjump_labels,
-                quickjump_index + 1,
-                "Disks",
-            ))
-            .size(12))
-            .padding([2, 6])
-            .on_press(Message::TraySpawnCommand(
-                app_id.to_string(),
-                "gnome-disks".to_string()
-            )),
-        ]
-        .spacing(4),
-    );
-    quickjump_index += 2;
-    if let Some(snapshot) = data {
-        if !snapshot.local_devices.is_empty() {
-            content = content.push(text("Local Devices:").size(12));
-            for device in snapshot.local_devices.iter().take(8) {
-                let mounted = device.mountpoint.is_some();
-                let prefix = if mounted { "●" } else { "○" };
-                let label = format!(
-                    "{} {} {}",
-                    prefix,
-                    device.name,
-                    device
-                        .mountpoint
-                        .clone()
-                        .unwrap_or_else(|| "(unmounted)".to_string())
-                );
-                let command = if mounted {
-                    crate::menus::mount::build_unmount_command(&format!("/dev/{}", device.name))
-                } else {
-                    crate::menus::mount::build_mount_command(&format!("/dev/{}", device.name), None)
-                };
-                let label = quickjump_prefixed_label(
-                    quickjump_active,
-                    quickjump_labels,
-                    quickjump_index,
-                    label,
-                );
-                content = content.push(
-                    button(text(label).size(11))
-                        .padding([1, 4])
-                        .width(Length::Fill)
-                        .on_press(Message::TraySpawnCommand(app_id.to_string(), command)),
-                );
-                quickjump_index += 1;
-            }
-        }
-
-        if !snapshot.sshfs_profiles.is_empty() {
-            content = content.push(text("SSHFS Profiles:").size(12));
-            for profile in snapshot.sshfs_profiles.iter().take(6) {
-                let mounted = profile.state == crate::menus::mount::MountState::Mounted;
-                let label = if mounted {
-                    format!("● {} ({})", profile.name, profile.mountpoint)
-                } else {
-                    format!("○ {} ({})", profile.name, profile.host)
-                };
-                let command = if mounted {
-                    crate::menus::mount::build_sshfs_unmount_command(profile)
-                } else {
-                    crate::menus::mount::build_sshfs_mount_command(profile)
-                };
-                let label = quickjump_prefixed_label(
-                    quickjump_active,
-                    quickjump_labels,
-                    quickjump_index,
-                    label,
-                );
-                content = content.push(
-                    button(text(label).size(11))
-                        .padding([1, 4])
-                        .width(Length::Fill)
-                        .on_press(Message::TraySpawnCommand(app_id.to_string(), command)),
-                );
-                quickjump_index += 1;
-            }
-        }
-
-        if !snapshot.loop_mounts.is_empty() {
-            content = content.push(text("Loop Devices:").size(12));
-            for loop_mount in snapshot.loop_mounts.iter().take(6) {
-                let attached = loop_mount.loop_device.is_some();
-                let ro_label = if loop_mount.read_only { "[RO]" } else { "[RW]" };
-                let label = format!(
-                    "{} {} {} {}",
-                    if attached { "●" } else { "○" },
-                    loop_mount.loop_device.as_deref().unwrap_or("(detached)"),
-                    ro_label,
-                    loop_mount.image_path
-                );
-                let command = if let Some(loop_device) = &loop_mount.loop_device {
-                    crate::menus::mount::build_loop_detach_command(loop_device)
-                } else {
-                    crate::menus::mount::build_loop_attach_command(
-                        &loop_mount.image_path,
-                        loop_mount.read_only,
-                    )
-                };
-                let label = quickjump_prefixed_label(
-                    quickjump_active,
-                    quickjump_labels,
-                    quickjump_index,
-                    label,
-                );
-                content = content.push(
-                    button(text(label).size(11))
-                        .padding([1, 4])
-                        .width(Length::Fill)
-                        .on_press(Message::TraySpawnCommand(app_id.to_string(), command)),
-                );
-                quickjump_index += 1;
-            }
-        }
-
-        if !snapshot.vcvolume_profiles.is_empty() {
-            content = content.push(text("VCVolume Profiles:").size(12));
-            for profile in snapshot.vcvolume_profiles.iter().take(6) {
-                let mounted = profile.state == crate::menus::mount::MountState::Mounted;
-                let label = format!(
-                    "{} {} ({})",
-                    if mounted { "●" } else { "○" },
-                    profile.name,
-                    profile.mountpoint
-                );
-                let command = if mounted {
-                    format!("umount '{}'", profile.mountpoint.replace('\'', "'\\''"))
-                } else {
-                    crate::menus::mount::build_vcvolume_mount_command(profile)
-                };
-                let label = quickjump_prefixed_label(
-                    quickjump_active,
-                    quickjump_labels,
-                    quickjump_index,
-                    label,
-                );
-                content = content.push(
-                    button(text(label).size(11))
-                        .padding([1, 4])
-                        .width(Length::Fill)
-                        .on_press(Message::TraySpawnCommand(app_id.to_string(), command)),
-                );
-                quickjump_index += 1;
-            }
-        }
-
-        if snapshot.local_devices.is_empty()
-            && snapshot.sshfs_profiles.is_empty()
-            && snapshot.loop_mounts.is_empty()
-            && snapshot.vcvolume_profiles.is_empty()
-        {
-            content = content.push(text("No mountable targets configured or discovered").size(12));
-        }
-    }
-
-    content = content.push(text("Enter triggers selected action").size(10));
-    content.into()
-}
-
-fn render_calendar_view_with_main_messages<'a>(
-    _state: &'a EnhancedTrayState,
-    app_id: &'a str,
-    data: &'a Option<crate::menus::calendar::CalendarMenuSnapshot>,
-    loading: bool,
-    error: &'a Option<String>,
-    quickjump_active: bool,
-    quickjump_labels: &[String],
-) -> Element<'a, Message> {
-    let mut content = column!().spacing(2);
-    content = content.push(text("Calendar / CalDAV").size(14));
-    if quickjump_active {
-        content = content.push(text("Quickjump active").size(10));
-    }
-
-    let mut quickjump_index = 0usize;
-
-    if loading {
-        content = content.push(text("⟳ Loading calendar snapshot...").size(12));
-    } else if let Some(err) = error {
-        content = content.push(text(format!("⚠ Error: {}", err)).size(12));
-    }
-
-    content = content.push(
-        row![
-            button(text(quickjump_prefixed_label(
-                quickjump_active,
-                quickjump_labels,
-                quickjump_index,
-                "Refresh",
-            ))
-            .size(12))
-            .padding([2, 6])
-            .on_press(Message::TrayCalendarRefresh(app_id.to_string())),
-            button(text(quickjump_prefixed_label(
-                quickjump_active,
-                quickjump_labels,
-                quickjump_index + 1,
-                "Calendar",
-            ))
-            .size(12))
-            .padding([2, 6])
-            .on_press(Message::TraySpawnCommand(
-                app_id.to_string(),
-                "gnome-calendar".to_string()
-            )),
-        ]
-        .spacing(4),
-    );
-    quickjump_index += 2;
-
-    if let Some(snapshot) = data {
-        content = content.push(text(snapshot.status.clone()).size(11));
-
-        if snapshot.account_ids.is_empty() {
-            content = content
-                .push(text("No accounts configured under [menus.calendar.accounts]").size(12));
-        } else {
-            content = content.push(text("Accounts:").size(12));
-            for account in snapshot.account_ids.iter().take(6) {
-                let label = quickjump_prefixed_label(
-                    quickjump_active,
-                    quickjump_labels,
-                    quickjump_index,
-                    format!("• {}", account),
-                );
-                content = content.push(
-                    button(text(label).size(11))
-                        .padding([1, 4])
-                        .width(Length::Fill)
-                        .on_press(Message::TraySpawnCommand(
-                            app_id.to_string(),
-                            "gnome-calendar".to_string(),
-                        )),
-                );
-                quickjump_index += 1;
-            }
-        }
-
-        if snapshot.events.is_empty() {
-            content = content.push(text("No upcoming events in the sync window").size(11));
-        } else {
-            content = content.push(text("Upcoming:").size(12));
-            for event in snapshot.events.iter().take(6) {
-                let location = event
-                    .location
-                    .as_deref()
-                    .map(|value| format!(" ({})", value))
-                    .unwrap_or_default();
-                let label = format!(
-                    "• [{}] {} @ {}{}",
-                    event.account_id, event.title, event.start_rfc3339, location
-                );
-                let label = quickjump_prefixed_label(
-                    quickjump_active,
-                    quickjump_labels,
-                    quickjump_index,
-                    label,
-                );
-                content = content.push(
-                    button(text(label).size(11))
-                        .padding([1, 4])
-                        .width(Length::Fill)
-                        .on_press(Message::TraySpawnCommand(
-                            app_id.to_string(),
-                            "gnome-calendar".to_string(),
-                        )),
-                );
-                quickjump_index += 1;
-            }
-        }
-
-        if !snapshot.account_errors.is_empty() {
-            content = content.push(text("Account Errors:").size(12));
-            for account_error in snapshot.account_errors.iter().take(6) {
-                let label = format!("⚠ [{}] {}", account_error.account_id, account_error.message);
-                content = content.push(text(label).size(10));
-            }
-        } else if snapshot.stale {
-            content = content.push(text("Some accounts failed; showing partial data").size(10));
-        }
-    }
-
-    content = content.push(text("Enter on rows opens calendar app").size(10));
-    content.into()
-}
-
-fn render_keyboard_hints_single() -> Element<'static, Message> {
-    text("◀/▶: Navigate apps • g: Quickjump • a: All items • v: Favorites")
-        .size(10)
-        .into()
-}
-
-fn render_keyboard_hints_aggregated() -> Element<'static, Message> {
-    text("Type: Filter • f: Toggle favorite • v: Favorites only")
-        .size(10)
-        .into()
-}
-
-fn render_keyboard_hints_favorites() -> Element<'static, Message> {
-    text("a: All items • f: Remove favorite").size(10).into()
-}
-
-fn render_keyboard_hints_network() -> Element<'static, Message> {
-    text("g: Quickjump • Click to connect/control • a: All items")
-        .size(10)
+fn render_keyboard_hints(value: &str) -> Element<'static, Message> {
+    text(value.to_string())
+        .size(9)
+        .color(iced::Color::from_rgb(0.56, 0.60, 0.67))
         .into()
 }

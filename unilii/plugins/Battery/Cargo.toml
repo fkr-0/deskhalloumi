@@ -1,11 +1,11 @@
 [package]
-name = "unilii-battery"
+name = "deskhalloumi-battery"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-unilii-core.workspace = true
-unilii-lib.workspace = true
+deskhalloumi-core.workspace = true
+deskhalloumi-lib.workspace = true
 iced.workspace = true
 tokio.workspace = true
 async-trait.workspace = true

@@ -1,10 +1,10 @@
 # Keybinding System
 
-The unilii keybinding system allows you to bind keyboard shortcuts to shell commands and internal unilii actions (bar, tray, widget).
+The DeskHalloumi keybinding system allows you to bind keyboard shortcuts to shell commands and internal DeskHalloumi actions (bar, tray, widget).
 
 ## Configuration
 
-Keybindings are configured in `~/.config/unilii.toml`. The configuration file uses TOML format and supports multiple keybinding types.
+Keybindings are configured in `~/.config/deskhalloumi/deskhalloumi.toml`. The configuration file uses TOML format and supports multiple keybinding types.
 
 ## Syntax
 
@@ -22,7 +22,9 @@ command = "command_to_execute" # Command or action (required)
 
 ### Key Combinations (keysym)
 
-Key combinations use X11 keysym format:
+Key combinations use a backend-neutral logical vocabulary. The evdev backend
+maps these names to Linux key codes; the i3 exporter maps the supported subset
+to i3/X11 keysyms:
 
 - **Modifiers**: `Super` (Windows key), `Ctrl` (Control), `Shift`, `Alt`
 - **Keys**: Any key name (e.g., `a`, `Enter`, `Space`, `F1`, `Escape`)
@@ -254,7 +256,7 @@ command = "close-menu"
 
 ## Configuration File Location
 
-The default configuration file location is `~/.config/unilii.toml`. If this file doesn't exist, unilii will create a default configuration file with sensible defaults.
+The default configuration file location is `~/.config/deskhalloumi/deskhalloumi.toml`. If this file doesn't exist, DeskHalloumi will create a default configuration file with sensible defaults.
 
 ## Troubleshooting
 
@@ -293,6 +295,66 @@ position = "right"
 
 ## Additional Resources
 
-- See `examples/unilii.toml` for a complete example configuration
+- See `examples/deskhalloumi.toml` for a complete example configuration
 - Use `man xev` to find correct keysym names for your keyboard
-- Check the main README.md for general unilii configuration options
+- Check the main README.md for general DeskHalloumi configuration options
+- See `docs/hotkeyd-i3-feasibility.md` for replacing sxhkd on i3 safely
+
+## i3-owned global bindings
+
+For ordinary global press/release shortcuts on i3/X11, generate an i3 include
+from the same TOML or sxhkd source instead of using unsafe raw evdev grabbing:
+
+```sh
+deskhalloumi-hotkeyd \
+  --config ~/.config/deskhalloumi/hotkeys.toml \
+  --write-i3-bindings ~/.config/deskhalloumi/i3-bindings.conf \
+  --strict
+```
+
+Then add `include ~/.config/deskhalloumi/i3-bindings.conf` to the i3 configuration.
+The exporter supports standard press/release shell and managed-menu bindings.
+It diagnoses rather than approximates hold/modrelease, repeat, cooldown,
+priority, consume, and unsupported sxhkd migration constructs.
+
+
+## Managed Menu Actions
+
+External DeskHalloumi menus should use `type = "menu"` instead of raw shell commands.
+The shared runtime enforces one process per menu and supports show, hide, and
+toggle operations from either the bar-embedded daemon or `deskhalloumi-hotkeyd`.
+
+```toml
+[[keybindings]]
+name = "i3_tree_menu"
+keysym = "Super+i"
+type = "menu"
+command = "toggle:i3-vis"
+priority = 100
+consume = true
+
+[[keybindings]]
+name = "window_filter_menu"
+keysym = "Super+u"
+type = "menu"
+command = "toggle:filter-tab"
+priority = 100
+consume = true
+
+[[keybindings]]
+name = "clipboard_menu"
+keysym = "Super+c"
+type = "menu"
+command = "toggle:copyq"
+priority = 100
+consume = true
+```
+
+When standalone hotkeyd owns shortcuts, launch the bar with
+`deskhalloumi run --no-hotkeyd`. A singleton guard prevents accidental dual listeners.
+See `docs/hotkeyd.md` for status, validation, migration, and systemd usage.
+
+
+## Standalone daemon architecture and operation
+
+See [hotkeyd architecture](docs/hotkeyd-architecture.md) and [hotkeyd operations](docs/hotkeyd-operations.md) for ownership, managed-menu lifecycle, transactional reloads, control commands, and systemd deployment.

@@ -1,0 +1,98 @@
+version: 1
+
+commands:
+  build:
+    description: Build the Rust workspace
+    category: build
+    run: ["cargo", "build", "--workspace"]
+
+  build-release:
+    description: Build the Rust workspace in release mode
+    category: build
+    run: ["cargo", "build", "--workspace", "--release"]
+
+  check:
+    description: Typecheck and validate the Rust workspace without producing binaries
+    category: build
+    run: ["cargo", "check", "--workspace"]
+
+  check-all-features:
+    description: Check the Rust workspace with all features enabled
+    category: build
+    run: ["cargo", "check", "--workspace", "--all-features"]
+
+  clippy:
+    description: Run Clippy on the Rust workspace
+    category: lint
+    run: ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
+
+  clippy-all-features:
+    description: Run Clippy on the Rust workspace with all features enabled
+    category: lint
+    run: ["cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
+
+  test:
+    description: Full Rust workspace test suite
+    category: test
+    run: ["cargo", "test", "--workspace"]
+
+  test-all-features:
+    description: Workspace tests with all features enabled
+    category: test
+    run: ["cargo", "test", "--workspace", "--all-features"]
+
+  test-core:
+    description: DeskHalloumi core tests
+    category: test
+    run: ["cargo", "test", "-p", "deskhalloumi-core"]
+
+  test-lib:
+    description: DeskHalloumi library tests
+    category: test
+    run: ["cargo", "test", "-p", "deskhalloumi-lib"]
+
+  test-bin:
+    description: DeskHalloumi binary tests
+    category: test
+    run: ["cargo", "test", "-p", "deskhalloumi-bin"]
+
+  test-plugins:
+    description: Plugin crate tests
+    category: test
+    run: ["cargo", "test", "-p", "deskhalloumi-clock", "-p", "deskhalloumi-battery", "-p", "deskhalloumi-tmux"]
+
+  test-tray:
+    description: Focused tray and enhanced tray tests in the binary crate
+    category: test
+    run: ["cargo", "test", "-p", "deskhalloumi-bin", "tray", "--", "--nocapture"]
+
+  test-dbus:
+    description: Focused DBus and tray menu tests in the binary crate
+    category: test
+    run: ["cargo", "test", "-p", "deskhalloumi-bin", "dbus", "--", "--nocapture"]
+
+  test-keybindings:
+    description: Focused keybinding daemon tests in DeskHalloumi core
+    category: test
+    run: ["cargo", "test", "-p", "deskhalloumi-core", "key", "--", "--nocapture"]
+
+  audit-live-session-commands:
+    description: Audit tests for live-session command execution hazards
+    category: lint
+    run: ["python3", "scripts/audit_live_session_commands.py"]
+
+  check-release-metadata:
+    description: Validate workspace Semantic Versioning and changelog metadata
+    category: lint
+    run: ["python3", "scripts/check_release_metadata.py"]
+
+
+  test-safe:
+    description: Run live-session command audit and full Rust workspace tests
+    category: test
+    run: ["scripts/test_safe.sh"]
+
+  test-i3-hotkeys:
+    description: Run isolated Xvfb, i3, and native X11 hotkey integration tests
+    category: test
+    run: ["scripts/test_i3_hotkeys.sh"]

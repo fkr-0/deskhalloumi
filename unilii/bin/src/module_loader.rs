@@ -2,15 +2,15 @@
 
 use std::collections::HashMap;
 
-use tracing::{info, warn};
-use unilii_core::{
+use deskhalloumi_core::{
     DefaultModuleRegistry, ModuleConfig, ModuleRegistry, ModuleUpdate, Result, register_module,
 };
+use tracing::{info, warn};
 
 /// Container for a loaded module with its update channel.
 pub struct LoadedModule {
     /// The module instance.
-    pub module: Box<dyn unilii_core::Module>,
+    pub module: Box<dyn deskhalloumi_core::Module>,
 }
 
 /// Container for module subscription receiver channels.
@@ -35,13 +35,13 @@ impl ModuleManager {
 
         // Register available modules
         #[cfg(feature = "clock")]
-        register_module!(registry, "clock", unilii_clock::Clock);
+        register_module!(registry, "clock", deskhalloumi_clock::Clock);
 
         #[cfg(feature = "battery")]
-        register_module!(registry, "battery", unilii_battery::Battery);
+        register_module!(registry, "battery", deskhalloumi_battery::Battery);
 
         #[cfg(feature = "tmux")]
-        register_module!(registry, "tmux", unilii_tmux::Tmux);
+        register_module!(registry, "tmux", deskhalloumi_tmux::Tmux);
 
         Self { registry }
     }
@@ -118,7 +118,10 @@ impl ModuleManager {
         &self,
         name: &str,
         config: &ModuleConfig,
-    ) -> Result<(Box<dyn unilii_core::Module>, Option<ModuleSubscription>)> {
+    ) -> Result<(
+        Box<dyn deskhalloumi_core::Module>,
+        Option<ModuleSubscription>,
+    )> {
         // Create module with retry mechanism
         let mut module = self.create_module_with_retry(name, config, 3).await?;
 
@@ -150,7 +153,7 @@ impl ModuleManager {
         name: &str,
         config: &ModuleConfig,
         max_retries: usize,
-    ) -> Result<Box<dyn unilii_core::Module>> {
+    ) -> Result<Box<dyn deskhalloumi_core::Module>> {
         let mut last_error = None;
 
         for attempt in 0..max_retries {
@@ -192,7 +195,7 @@ impl ModuleManager {
                 "clock".to_string(),
                 ModuleConfig {
                     enabled: true,
-                    position: unilii_core::ModulePosition::Right,
+                    position: deskhalloumi_core::ModulePosition::Right,
                     update_interval_ms: Some(1000),
                     theme_overrides: None,
                 },
@@ -204,7 +207,7 @@ impl ModuleManager {
                 "battery".to_string(),
                 ModuleConfig {
                     enabled: true,
-                    position: unilii_core::ModulePosition::Right,
+                    position: deskhalloumi_core::ModulePosition::Right,
                     update_interval_ms: Some(5000),
                     theme_overrides: None,
                 },

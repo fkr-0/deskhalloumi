@@ -10,8 +10,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const XRANDR_PRESETS_ENV: &str = "UNILII_XRANDR_PRESETS_YAML";
+const XRANDR_PRESETS_ENV: &str = "DESKHALLOUMI_XRANDR_PRESETS_YAML";
+const LEGACY_XRANDR_PRESETS_ENV: &str = "UNILII_XRANDR_PRESETS_YAML";
 const DEFAULT_PRESET_LOCATIONS: &[&str] = &[
+    ".config/deskhalloumi/xrandr-presets.yml",
+    ".config/deskhalloumi/xrandr-presets.yaml",
     ".config/unilii/xrandr-presets.yml",
     ".config/unilii/xrandr-presets.yaml",
 ];
@@ -104,6 +107,7 @@ impl Video {
     }
 
     pub fn with_preset_source(preset_source: Option<PathBuf>) -> Self {
+        let preset_source = preset_source.map(expand_home_path);
         let mut video = Self {
             show_menu: false,
             current_preset: None,
@@ -192,6 +196,32 @@ impl Video {
         }
 
         Ok(presets)
+    }
+
+    pub fn compact_label(&self) -> String {
+        format!("🖥 {}", self.display_summary())
+    }
+
+    pub fn displays(&self) -> &[DisplayInfo] {
+        &self.displays
+    }
+
+    pub fn last_status(&self) -> &str {
+        &self.last_status
+    }
+
+    pub fn preset_entries(&self) -> Vec<(String, String, Option<String>, String)> {
+        self.presets
+            .values()
+            .map(|preset| {
+                (
+                    preset.key.clone(),
+                    preset.name.clone(),
+                    preset.description.clone(),
+                    preset_command_as_shell(&preset.command),
+                )
+            })
+            .collect()
     }
 
     pub fn apply_preset(&mut self, preset_key: &str) {
@@ -381,7 +411,9 @@ impl Default for Video {
 }
 
 fn detect_default_preset_source() -> Option<PathBuf> {
-    if let Ok(explicit) = env::var(XRANDR_PRESETS_ENV) {
+    if let Ok(explicit) =
+        env::var(XRANDR_PRESETS_ENV).or_else(|_| env::var(LEGACY_XRANDR_PRESETS_ENV))
+    {
         if !explicit.trim().is_empty() {
             return Some(PathBuf::from(explicit));
         }
@@ -392,6 +424,40 @@ fn detect_default_preset_source() -> Option<PathBuf> {
         .iter()
         .map(|relative| Path::new(&home).join(relative))
         .find(|path| path.exists())
+}
+
+fn expand_home_path(path: PathBuf) -> PathBuf {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    expand_home_path_with(path, home.as_deref())
+}
+
+fn expand_home_path_with(path: PathBuf, home: Option<&Path>) -> PathBuf {
+    if path == Path::new("~") {
+        return home.map(Path::to_path_buf).unwrap_or(path);
+    }
+    if let Ok(rest) = path.strip_prefix("~")
+        && let Some(home) = home
+    {
+        return home.join(rest);
+    }
+    path
+}
+
+fn preset_command_as_shell(command: &XrandrPresetCommand) -> String {
+    match command {
+        XrandrPresetCommand::Shell(command) => command.clone(),
+        XrandrPresetCommand::Args(args) => format!(
+            "xrandr {}",
+            args.iter()
+                .map(|arg| shell_quote(arg))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn detect_displays() -> Result<Vec<DisplayInfo>, String> {
@@ -504,5 +570,20 @@ mod tests {
             args: Some(vec!["--auto".to_string()]),
         };
         assert!(XrandrPreset::try_from(invalid).is_err());
+    }
+
+    #[test]
+    fn preset_source_expands_home_prefix() {
+        assert_eq!(
+            expand_home_path_with(
+                PathBuf::from("~/.config/unilii/presets.yml"),
+                Some(Path::new("/tmp/unilii-home")),
+            ),
+            PathBuf::from("/tmp/unilii-home/.config/unilii/presets.yml")
+        );
+        assert_eq!(
+            expand_home_path_with(PathBuf::from("/absolute/presets.yml"), None),
+            PathBuf::from("/absolute/presets.yml")
+        );
     }
 }

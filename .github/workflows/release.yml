@@ -1,0 +1,120 @@
+name: Release artifacts
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate-build-package:
+    name: Validate annotated tag and package Linux binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out tagged commit
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust stable
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Select Rust stable
+        run: rustup default stable
+
+      - name: Install isolated X11/i3 test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            i3-wm \
+            libwayland-dev \
+            libxkbcommon-dev \
+            pkg-config \
+            x11-utils \
+            xdotool \
+            xvfb
+
+      - name: Validate release metadata and annotated tag
+        run: python3 scripts/check_release_metadata.py --release --require-clean
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run safe workspace tests
+        run: scripts/test_safe.sh
+
+      - name: Test i3 and selective X11 hotkeys
+        run: scripts/test_i3_hotkeys.sh
+
+      - name: Run strict Clippy gate
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build release binaries
+        run: |
+          cargo build --release -p deskhalloumi-bin \
+            --bin deskhalloumi \
+            --bin deskhalloumi-bar \
+            --bin deskhalloumi-copyq \
+            --bin deskhalloumi-filter-tab \
+            --bin deskhalloumi-i3-vis \
+            --bin deskhalloumi-hotkeyd \
+            --bin unilii \
+            --bin unilii-bar \
+            --bin unilii-copyq \
+            --bin unilii-filter-tab \
+            --bin unilii-i3-vis \
+            --bin unilii-hotkeyd
+
+      - name: Assemble deterministic release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          platform="x86_64-unknown-linux-gnu"
+          package="deskhalloumi-${version}-${platform}"
+          stage="dist/${package}"
+          mkdir -p "${stage}/bin" "${stage}/share/doc/deskhalloumi"
+
+          for binary in \
+            deskhalloumi \
+            deskhalloumi-bar \
+            deskhalloumi-copyq \
+            deskhalloumi-filter-tab \
+            deskhalloumi-i3-vis \
+            deskhalloumi-hotkeyd \
+            unilii \
+            unilii-bar \
+            unilii-copyq \
+            unilii-filter-tab \
+            unilii-i3-vis \
+            unilii-hotkeyd
+          do
+            install -m755 "target/release/${binary}" "${stage}/bin/${binary}"
+          done
+
+          install -m644 README.md CHANGELOG.md CONFIGURATION.md KEYBINDINGS.md \
+            "${stage}/share/doc/deskhalloumi/"
+          cp -R docs contrib examples "${stage}/share/doc/deskhalloumi/"
+
+          tar --sort=name \
+            --mtime="UTC 1970-01-01" \
+            --owner=0 --group=0 --numeric-owner \
+            -C dist -czf "dist/${package}.tar.gz" "${package}"
+          sha256sum "dist/${package}.tar.gz" > "dist/${package}.tar.gz.sha256"
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v6
+        with:
+          name: deskhalloumi-${{ github.ref_name }}-linux-x86_64
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 30

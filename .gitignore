@@ -25,6 +25,17 @@ htmlcov
 # Uncomment the following line if you want to ignore Cargo.lock
 # Cargo.lock
 
+# Local review/reference material that is not part of the active workspace.
+/.ws-bridge/
+/bug_report.md
+/features.md
+/full_bt
+/iced_examples/
+/MERGE_PLAN.md
+/modrelease.md
+/VERSION_STRATEGY.md
+/wiUp/
+
 # Cargo.lock
 
 # IDEs and editors

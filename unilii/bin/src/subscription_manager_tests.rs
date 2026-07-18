@@ -1,7 +1,7 @@
 use super::{initialize_global_subscriptions, get_latest_module_update, has_module_updates, store_module_update};
 use crate::module_loader::ModuleSubscription;
 use tokio::sync::mpsc;
-use unilii_core::ModuleUpdate;
+use deskhalloumi_core::ModuleUpdate;
 
 #[tokio::test]
 async fn test_subscription_manager_initialization() {

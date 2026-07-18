@@ -1,14 +1,14 @@
 [package]
-name = "unilii-tmux"
-version = "0.1.0"
-edition = "2021"
+name = "deskhalloumi-tmux"
+version.workspace = true
+edition.workspace = true
 
 [lib]
-name = "unilii_tmux"
+name = "deskhalloumi_tmux"
 path = "src/lib.rs"
 
 [dependencies]
-unilii-core = { path = "../../core" }
+deskhalloumi-core = { path = "../../core" }
 async-trait = "0.1"
 iced = "0.14"
 tokio = { version = "1", features = ["full"] }

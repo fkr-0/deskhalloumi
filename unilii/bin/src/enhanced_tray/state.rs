@@ -225,17 +225,17 @@ impl TrayStateManager {
 
     fn handle_toggle_favorite(
         state: &mut EnhancedTrayState,
-        _app_id: &str,
+        app_id: &str,
         item_id: &str,
     ) -> Task<TrayMessage> {
-        let was_favorited = state.tree.toggle_favorite(item_id);
+        let was_favorited = state.tree.toggle_favorite(app_id, item_id);
 
         // Update current view if showing favorites
         if let TrayViewState::Favorites { items } = &mut state.current_view {
             *items = state.tree.get_favorites_menu();
         }
 
-        debug!("Item {} favorite status: {}", item_id, was_favorited);
+        debug!("Item {app_id}/{item_id} favorite status: {was_favorited}");
         Task::none()
     }
 
@@ -878,7 +878,7 @@ mod tests {
 
         // Toggle favorite on
         let _ = TrayStateManager::handle_toggle_favorite(&mut state, "app1", item_id);
-        assert!(state.tree.favorites.contains(item_id));
+        assert!(state.tree.is_favorite("app1", item_id));
 
         // Test show favorites
         let _ = TrayStateManager::handle_show_favorites(&mut state);

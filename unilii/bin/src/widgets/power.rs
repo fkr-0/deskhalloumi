@@ -20,34 +20,73 @@ impl Power {
     }
 
     pub fn update_screensaver_status(&mut self) {
-        // Check if screensaver is enabled using xset
-        if let Ok(output) = Command::new("xset").args(["q"]).output() {
-            let result = String::from_utf8_lossy(&output.stdout);
-            self.screensaver_enabled = result.contains("Screen Saver: enable");
+        if let Ok(output) = Command::new("xset").args(["q"]).output()
+            && output.status.success()
+            && let Some(enabled) = parse_xset_idle_enabled(&String::from_utf8_lossy(&output.stdout))
+        {
+            self.screensaver_enabled = enabled;
         }
     }
 
+    pub fn idle_sleep_enabled(&self) -> bool {
+        self.screensaver_enabled
+    }
+
+    pub fn compact_label(&self) -> &'static str {
+        "⏻"
+    }
+
     pub fn toggle_screensaver(&mut self) {
-        let new_state = if self.screensaver_enabled {
-            "off"
-        } else {
-            "on"
-        };
-        if Command::new("xset").args(["s", new_state]).status().is_ok() {
+        if Command::new("sh")
+            .args([
+                "-lc",
+                if self.screensaver_enabled {
+                    "xset s off -dpms"
+                } else {
+                    "xset s 600 600 +dpms dpms 0 0 900"
+                },
+            ])
+            .status()
+            .is_ok_and(|status| status.success())
+        {
             self.screensaver_enabled = !self.screensaver_enabled;
         }
     }
 
     pub fn standby(&self) {
-        let _ = Command::new("sysstemctl").args(["suspend"]).status();
+        let _ = Command::new("systemctl").args(["suspend"]).status();
     }
 
     pub fn reboot(&self) {
-        let _ = Command::new("sysstemctl").args(["reboot"]).status();
+        let _ = Command::new("systemctl").args(["reboot"]).status();
     }
 
     pub fn shutdown(&self) {
-        let _ = Command::new("sysstemctl").args(["poweroff"]).status();
+        let _ = Command::new("systemctl").args(["poweroff"]).status();
+    }
+}
+
+fn parse_xset_idle_enabled(output: &str) -> Option<bool> {
+    let timeout = output.lines().find_map(|line| {
+        let trimmed = line.trim();
+        let rest = trimmed.strip_prefix("timeout:")?;
+        rest.split_whitespace().next()?.parse::<u64>().ok()
+    });
+    let dpms = output.lines().find_map(|line| {
+        let trimmed = line.trim();
+        if trimmed.eq_ignore_ascii_case("DPMS is Enabled") {
+            Some(true)
+        } else if trimmed.eq_ignore_ascii_case("DPMS is Disabled") {
+            Some(false)
+        } else {
+            None
+        }
+    });
+    match (timeout, dpms) {
+        (Some(timeout), Some(dpms)) => Some(timeout > 0 || dpms),
+        (Some(timeout), None) => Some(timeout > 0),
+        (None, Some(dpms)) => Some(dpms),
+        (None, None) => None,
     }
 }
 
@@ -195,30 +234,6 @@ mod tests {
     }
 
     #[test]
-    fn test_power_widget_update_screensaver() {
-        let mut power = Power::new();
-        power.update(WidgetMessage::Power("toggle_screensaver".to_string()));
-        // Should attempt to toggle (actual system call may fail in tests)
-    }
-
-    #[test]
-    fn test_power_widget_update_closes_menu_on_action() {
-        let mut power = Power::new();
-        power.show_menu = true;
-
-        power.update(WidgetMessage::Power("standby".to_string()));
-        assert!(!power.show_menu);
-
-        power.show_menu = true;
-        power.update(WidgetMessage::Power("reboot".to_string()));
-        assert!(!power.show_menu);
-
-        power.show_menu = true;
-        power.update(WidgetMessage::Power("shutdown".to_string()));
-        assert!(!power.show_menu);
-    }
-
-    #[test]
     fn test_power_widget_update_interval() {
         let power = Power::new();
         assert_eq!(power.update_interval(), None);
@@ -240,22 +255,6 @@ mod tests {
     }
 
     #[test]
-    fn test_power_toggle_screensaver() {
-        let mut power = Power::new();
-        power.toggle_screensaver();
-        // Should attempt to toggle (actual system call may fail in tests)
-    }
-
-    #[test]
-    fn test_power_standalone_commands_exist() {
-        let power = Power::new();
-        // These methods should exist and not panic
-        power.standby();
-        power.reboot();
-        power.shutdown();
-    }
-
-    #[test]
     fn test_power_widget_invalid_action_no_panic() {
         let mut power = Power::new();
         let original_state = power.screensaver_enabled;
@@ -263,5 +262,33 @@ mod tests {
         power.update(WidgetMessage::Power("invalid_action".to_string()));
         // Should not panic and state should remain unchanged
         assert_eq!(power.screensaver_enabled, original_state);
+    }
+
+    #[test]
+    fn parses_xset_enabled_and_disabled_states() {
+        let enabled = "Screen Saver:
+  timeout: 600    cycle: 600
+DPMS (Energy Star):
+  DPMS is Enabled
+";
+        let disabled = "Screen Saver:
+  timeout: 0    cycle: 600
+DPMS (Energy Star):
+  DPMS is Disabled
+";
+        assert_eq!(parse_xset_idle_enabled(enabled), Some(true));
+        assert_eq!(parse_xset_idle_enabled(disabled), Some(false));
+    }
+
+    #[test]
+    fn xset_parser_tolerates_partial_output() {
+        assert_eq!(
+            parse_xset_idle_enabled(
+                "  timeout: 300 cycle: 300
+"
+            ),
+            Some(true)
+        );
+        assert_eq!(parse_xset_idle_enabled("unrelated"), None);
     }
 }

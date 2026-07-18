@@ -1,23 +1,23 @@
-//! Command-line interface for unilii status bar.
+//! Command-line interface for the DeskHalloumi desktop bar.
 //!
 //! This module defines the CLI structure using clap, providing a clean and
-//! intuitive interface for running and configuring unilii.
+//! intuitive interface for running and configuring DeskHalloumi.
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Unilii: A modern, modular status bar for Linux
+/// DeskHalloumi: a modern, modular desktop bar for Linux
 ///
-/// Unilii provides a feature-rich status bar with support for modules,
+/// DeskHalloumi provides a feature-rich status bar with support for modules,
 /// global keybindings, system tray integration, and configurable themes.
 #[derive(Parser, Debug, Clone)]
-#[command(name = "unilii")]
-#[command(author = "unilii contributors")]
+#[command(name = "deskhalloumi")]
+#[command(author = "DeskHalloumi contributors")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
-#[command(about = "A modular status bar for Linux", long_about = None)]
+#[command(about = "A modular desktop bar and control surface for Linux", long_about = None)]
 #[derive(Default)]
 pub struct Cli {
-    /// Path to configuration file (default: ~/.config/com/unilii/unilii.toml)
+    /// Path to configuration file (default: ~/.config/deskhalloumi/deskhalloumi.toml)
     #[arg(long, short = 'c', value_name = "FILE")]
     pub config: Option<PathBuf>,
 
@@ -30,7 +30,7 @@ pub struct Cli {
     pub command: Option<Commands>,
 }
 
-/// Subcommands for unilii
+/// Subcommands for DeskHalloumi
 #[derive(Subcommand, Debug, Clone)]
 pub enum Commands {
     /// Run the status bar (default command)
@@ -54,6 +54,10 @@ pub enum Commands {
         /// Enable debug focus mode (show window decorations, allow resizing)
         #[arg(long)]
         debug_focus: bool,
+
+        /// Do not start the bar-embedded hotkey listener (use standalone deskhalloumi-hotkeyd).
+        #[arg(long)]
+        no_hotkeyd: bool,
     },
 
     /// List available modules
@@ -64,7 +68,7 @@ pub enum Commands {
 
     /// Generate a default configuration file
     InitConfig {
-        /// Output file path (default: ~/.config/com/unilii/unilii.toml)
+        /// Output file path (default: ~/.config/deskhalloumi/deskhalloumi.toml)
         #[arg(short, long, value_name = "FILE")]
         output: Option<PathBuf>,
 
@@ -76,6 +80,24 @@ pub enum Commands {
     /// Validate current configuration
     ValidateConfig {
         /// Configuration file to validate (default: ~/.config/com/unilii/unilii.toml)
+        #[arg(short, long, value_name = "FILE")]
+        config: Option<PathBuf>,
+    },
+
+    /// Generate a starter configuration for the headless unilii-bar scaffold
+    InitBarConfig {
+        /// Output file path. If omitted, print to stdout.
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<PathBuf>,
+
+        /// Force overwrite existing configuration
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Validate a unilii-bar configuration file
+    ValidateBarConfig {
+        /// Bar configuration file to validate
         #[arg(short, long, value_name = "FILE")]
         config: Option<PathBuf>,
     },
@@ -115,12 +137,14 @@ impl Commands {
                 nmcli_path,
                 tray_poll_ms,
                 debug_focus,
+                no_hotkeyd,
             } => Some(RunOptions {
                 no_tray: *no_tray,
                 no_network_menu: *no_network_menu,
                 nmcli_path: nmcli_path.clone(),
                 tray_poll_ms: *tray_poll_ms,
                 debug_focus: *debug_focus,
+                no_hotkeyd: *no_hotkeyd,
             }),
             _ => None,
         }
@@ -139,6 +163,7 @@ pub struct RunOptions {
     #[allow(dead_code)]
     pub tray_poll_ms: u64,
     pub debug_focus: bool,
+    pub no_hotkeyd: bool,
 }
 
 impl Default for RunOptions {
@@ -149,6 +174,7 @@ impl Default for RunOptions {
             nmcli_path: "nmcli".to_string(),
             tray_poll_ms: 1500,
             debug_focus: false,
+            no_hotkeyd: false,
         }
     }
 }
@@ -176,6 +202,13 @@ mod tests {
     }
 
     #[test]
+    fn run_parses_no_hotkeyd_handoff() {
+        let cli = Cli::try_parse_from(["unilii", "run", "--no-hotkeyd"]).expect("CLI should parse");
+        let options = cli.command.unwrap().run_options().unwrap();
+        assert!(options.no_hotkeyd);
+    }
+
+    #[test]
     fn verbose_levels() {
         assert_eq!(verbose_to_level(0), tracing::Level::INFO);
         assert_eq!(verbose_to_level(1), tracing::Level::DEBUG);
@@ -191,5 +224,6 @@ mod tests {
         assert_eq!(opts.nmcli_path, "nmcli");
         assert_eq!(opts.tray_poll_ms, 1500);
         assert!(!opts.debug_focus);
+        assert!(!opts.no_hotkeyd);
     }
 }

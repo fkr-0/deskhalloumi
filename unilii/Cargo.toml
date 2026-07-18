@@ -1,5 +1,5 @@
 [package]
-name = "unilii"
+name = "deskhalloumi"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,10 +7,10 @@ authors.workspace = true
 
 [dependencies]
 # The unilii library package provides helper utilities
-unilii-lib.workspace = true
+deskhalloumi-lib.workspace = true
 
 [lib]
-name = "unilii"
+name = "deskhalloumi"
 path = "src/lib.rs"
 
 [dev-dependencies]

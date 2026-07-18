@@ -1,11 +1,11 @@
 use futures::StreamExt;
 
+use deskhalloumi_core::{Module, ModuleConfig, ModuleUpdate, Result};
+use deskhalloumi_lib::sysfs::power::{BatteryPowerDevice, PowerDevice, PowerDeviceKind};
 use iced::{
     Alignment, Element, Length,
     widget::{container, row, text},
 };
-use unilii_core::{Module, ModuleConfig, ModuleUpdate, Result};
-use unilii_lib::sysfs::power::{BatteryPowerDevice, PowerDevice, PowerDeviceKind};
 
 pub struct Battery {
     percentage: f32,

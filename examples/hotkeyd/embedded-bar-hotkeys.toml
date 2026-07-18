@@ -1,0 +1,42 @@
+# Example keybindings for bar-embedded mode.
+# Start the bar normally (without --no-hotkeyd) and do not run standalone hotkeyd.
+
+[[keybindings]]
+name = "tray_toggle"
+keysym = "Super+Shift+t"
+command = "toggle-menu"
+type = "tray"
+priority = 100
+consume = true
+
+[[keybindings]]
+name = "tray_next"
+keysym = "Super+Shift+j"
+command = "focus-next"
+type = "tray"
+priority = 100
+consume = true
+
+[[keybindings]]
+name = "tray_previous"
+keysym = "Super+Shift+k"
+command = "focus-previous"
+type = "tray"
+priority = 100
+consume = true
+
+[[keybindings]]
+name = "tray_activate"
+keysym = "Super+Shift+Return"
+command = "activate-selected"
+type = "tray"
+priority = 100
+consume = true
+
+[[keybindings]]
+name = "tray_aggregated"
+keysym = "Super+Shift+a"
+command = "show-aggregated"
+type = "tray"
+priority = 100
+consume = true

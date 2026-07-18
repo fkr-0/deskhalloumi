@@ -146,7 +146,9 @@ impl Widget for Audio {
                     }
                 }
                 _ => match parse_audio_selection_action(&action) {
-                    Some(AudioSelectionAction::SetOutput(device)) => self.set_default_output(device),
+                    Some(AudioSelectionAction::SetOutput(device)) => {
+                        self.set_default_output(device)
+                    }
                     Some(AudioSelectionAction::SetInput(device)) => self.set_default_input(device),
                     None => {}
                 },
@@ -286,8 +288,14 @@ mod tests {
 
     #[test]
     fn test_parse_audio_selection_action_rejects_empty_and_malformed_actions() {
-        assert_eq!(parse_audio_selection_action("set_output:alsa_output"), Some(AudioSelectionAction::SetOutput("alsa_output")));
-        assert_eq!(parse_audio_selection_action("set_input:alsa_input"), Some(AudioSelectionAction::SetInput("alsa_input")));
+        assert_eq!(
+            parse_audio_selection_action("set_output:alsa_output"),
+            Some(AudioSelectionAction::SetOutput("alsa_output"))
+        );
+        assert_eq!(
+            parse_audio_selection_action("set_input:alsa_input"),
+            Some(AudioSelectionAction::SetInput("alsa_input"))
+        );
         assert_eq!(parse_audio_selection_action("set_output:"), None);
         assert_eq!(parse_audio_selection_action("set_input:"), None);
         assert_eq!(parse_audio_selection_action("unknown:device"), None);

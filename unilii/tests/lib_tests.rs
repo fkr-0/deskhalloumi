@@ -4,11 +4,11 @@
 //! container we do not assert on specific values; instead we simply
 //! verify that calls succeed.
 
+use deskhalloumi_lib::input;
+use deskhalloumi_lib::process;
+use deskhalloumi_lib::sysfs::backlight::BacklightDevice;
+use deskhalloumi_lib::sysfs::power::PowerDevice;
 use futures_util::StreamExt;
-use unilii_lib::input;
-use unilii_lib::process;
-use unilii_lib::sysfs::backlight::BacklightDevice;
-use unilii_lib::sysfs::power::PowerDevice;
 
 /// Ensure that the power device enumeration does not panic and
 /// returns a vector (possibly empty) of devices.

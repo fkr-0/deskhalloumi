@@ -1,0 +1,148 @@
+# DeskHalloumi example configuration with keybindings
+#
+# This is an example configuration file for DeskHalloumi that demonstrates
+# the keybinding system. Copy this file to ~/.config/deskhalloumi/deskhalloumi.toml
+# and customize it for your needs.
+
+[window]
+width = 800
+height = 24
+position_x = 0
+position_y = 0
+background_color = "#1e1e1e"
+text_color = "#ffffff"
+
+# Module configuration
+[[modules]]
+name = "clock"
+enabled = true
+position = "right"
+update_interval_ms = 1000
+
+[[modules]]
+name = "battery"
+enabled = true
+position = "right"
+update_interval_ms = 5000
+
+# Keybinding configuration
+#
+# Each keybinding has:
+# - name: A descriptive name for the keybinding
+# - keysym: A DeskHalloumi logical chord (e.g., "Super+c", "Ctrl+Alt+t")
+# - type: The type of action (shell, bar, tray, widget)
+# - command: The command to execute (depends on type)
+#
+# Supported types:
+# - shell: Execute a shell command (default)
+# - bar: Internal bar actions
+# - tray: Internal tray actions
+# - widget: Widget actions (future)
+
+# Example: Launch a terminal with Super+Enter
+[[keybindings]]
+name = "launch_terminal"
+keysym = "Super+Enter"
+type = "shell"
+command = "alacritty"
+
+# Example: Launch a file manager with Super+f
+[[keybindings]]
+name = "launch_file_manager"
+keysym = "Super+f"
+type = "shell"
+command = "nautilus"
+
+# Example: Toggle the clock module with Super+c
+[[keybindings]]
+name = "toggle_clock"
+keysym = "Super+c"
+type = "bar"
+command = "toggle-module:clock"
+
+# Example: Toggle the battery module with Super+b
+[[keybindings]]
+name = "toggle_battery"
+keysym = "Super+b"
+type = "bar"
+command = "toggle-module:battery"
+
+# Example: Reload the configuration with Super+r
+[[keybindings]]
+name = "reload_config"
+keysym = "Super+r"
+type = "bar"
+command = "reload-config"
+
+# Example: Focus the clock module with Super+q
+[[keybindings]]
+name = "focus_clock"
+keysym = "Super+q"
+type = "bar"
+command = "focus-module:clock"
+
+# Example: Open tray menu for first icon with Super+1
+[[keybindings]]
+name = "open_tray_menu_1"
+keysym = "Super+1"
+type = "tray"
+command = "open-index:0"
+
+# Example: Close all tray menus with Escape
+[[keybindings]]
+name = "close_tray_menus"
+keysym = "Super+Escape"
+type = "tray"
+command = "close-menu"
+
+# Example: Show aggregated tray view with Super+t
+[[keybindings]]
+name = "show_aggregated_view"
+keysym = "Super+t"
+type = "tray"
+command = "show-aggregated"
+
+# Example: Show favorites tray view with Super+y
+[[keybindings]]
+name = "show_favorites_view"
+keysym = "Super+y"
+type = "tray"
+command = "show-favorites"
+
+# Shell command examples (these type="shell" is optional, it's the default)
+
+# Example: Toggle mute with Super+m
+[[keybindings]]
+name = "toggle_mute"
+keysym = "Super+m"
+command = "amixer set Master toggle"
+
+# Example: Volume up with Super+Up
+[[keybindings]]
+name = "volume_up"
+keysym = "Super+Up"
+command = "amixer set Master 5%+"
+
+# Example: Volume down with Super+Down
+[[keybindings]]
+name = "volume_down"
+keysym = "Super+Down"
+command = "amixer set Master 5%-"
+
+# Example: Lock screen with Super+l
+[[keybindings]]
+name = "lock_screen"
+keysym = "Super+l"
+command = "xscreensaver-command -lock"
+
+# Example: Take screenshot with Print
+[[keybindings]]
+name = "screenshot"
+keysym = "KEY_SYSRQ"
+command = "scrot '%Y-%m-%d_%H-%M-%S_screenshot.png'"
+
+# Advanced example: Chain multiple commands with shell
+[[keybindings]]
+name = "chain_commands"
+keysym = "Super+Shift+e"
+command = "notify-send 'System' 'Shutting down...' && shutdown -h now"

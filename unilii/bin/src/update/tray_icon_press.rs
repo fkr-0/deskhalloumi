@@ -37,7 +37,10 @@ pub fn open_tray_icon_state_with_menu(
     custom_menu: Option<Vec<TrayMenuItem>>,
 ) -> EnhancedTrayState {
     let mut tree = enhanced_tray::TrayMenuTree::new();
-    let enhanced_icon = to_enhanced_tray_icon(icon, !matches!(kind, TrayIconOpenKind::Regular) || icon.has_menu);
+    let enhanced_icon = to_enhanced_tray_icon(
+        icon,
+        !matches!(kind, TrayIconOpenKind::Regular) || icon.has_menu,
+    );
     tree.update_app(enhanced_icon.clone());
 
     let current_view = match kind {
@@ -100,9 +103,9 @@ pub fn to_enhanced_tray_icon(icon: &tray::TrayIcon, has_menu: bool) -> enhanced_
 
 #[cfg(test)]
 mod tests {
+    use super::{TrayIconOpenKind, open_tray_icon_state, should_close_current_tray_view};
     use crate::enhanced_tray::TrayViewState;
     use crate::tray;
-    use super::{open_tray_icon_state, should_close_current_tray_view, TrayIconOpenKind};
 
     fn tray_icon(id: &str, title: &str, icon_name: Option<&str>) -> tray::TrayIcon {
         tray::TrayIcon {
@@ -126,7 +129,12 @@ mod tests {
         let state = open_tray_icon_state(&icon, TrayIconOpenKind::Network);
 
         match state.current_view {
-            TrayViewState::Network { app_id, data, loading, error } => {
+            TrayViewState::Network {
+                app_id,
+                data,
+                loading,
+                error,
+            } => {
                 assert_eq!(app_id, "nm-applet");
                 assert!(data.is_none());
                 assert!(loading);
@@ -147,7 +155,12 @@ mod tests {
         let calendar_state = open_tray_icon_state(&calendar, TrayIconOpenKind::Calendar);
 
         match mount_state.current_view {
-            TrayViewState::Mount { app_id, data, loading, error } => {
+            TrayViewState::Mount {
+                app_id,
+                data,
+                loading,
+                error,
+            } => {
                 assert_eq!(app_id, "usb-drive");
                 assert!(data.is_none());
                 assert!(loading);
@@ -156,7 +169,12 @@ mod tests {
             other => panic!("expected mount view, got {other:?}"),
         }
         match calendar_state.current_view {
-            TrayViewState::Calendar { app_id, data, loading, error } => {
+            TrayViewState::Calendar {
+                app_id,
+                data,
+                loading,
+                error,
+            } => {
                 assert_eq!(app_id, "calendar");
                 assert!(data.is_none());
                 assert!(loading);
@@ -173,7 +191,11 @@ mod tests {
         let state = open_tray_icon_state(&icon, TrayIconOpenKind::Regular);
 
         match state.current_view {
-            TrayViewState::SingleApp { app_id, submenu_path, .. } => {
+            TrayViewState::SingleApp {
+                app_id,
+                submenu_path,
+                ..
+            } => {
                 assert_eq!(app_id, "volume");
                 assert!(submenu_path.is_empty());
             }

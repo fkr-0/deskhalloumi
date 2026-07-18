@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use unilii_core::key_engine::{EngineBinding, KeyEngine, KeyTrigger};
+use deskhalloumi_core::key_engine::{EngineBinding, KeyEngine, KeyTrigger};
 
 fn binding(
     name: &str,
@@ -153,4 +153,41 @@ fn higher_priority_consuming_binding_suppresses_lower_binding() {
     );
     let output = engine.process_event("KEY_RETURN", 1, now + Duration::from_millis(1));
     assert_eq!(output.triggered, vec![0]);
+}
+
+#[test]
+fn repeat_binding_triggers_on_evdev_repeat_events() {
+    let mut engine = KeyEngine::new(vec![binding(
+        "volume",
+        vec![vec!["KEY_LEFTMETA"], vec!["KEY_UP"]],
+        KeyTrigger::Repeat,
+        10,
+        false,
+        0,
+    )]);
+    let now = Instant::now();
+    assert!(
+        engine
+            .process_event("KEY_LEFTMETA", 1, now)
+            .triggered
+            .is_empty()
+    );
+    assert_eq!(
+        engine
+            .process_event("KEY_UP", 1, now + Duration::from_millis(1))
+            .triggered,
+        vec![0]
+    );
+    assert_eq!(
+        engine
+            .process_event("KEY_UP", 2, now + Duration::from_millis(20))
+            .triggered,
+        vec![0]
+    );
+    assert_eq!(
+        engine
+            .process_event("KEY_UP", 2, now + Duration::from_millis(40))
+            .triggered,
+        vec![0]
+    );
 }

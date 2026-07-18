@@ -1,6 +1,9 @@
-# unilii
+# DeskHalloumi
 
-`unilii` is a Rust status-bar and tray workspace built around Iced, Tokio, DBus/StatusNotifier integration, configurable menus, keybindings, and small plugin crates. The current tree is no longer the early single-crate X11 rewrite described by older docs; it is a Cargo workspace with reusable core/library crates, a GUI binary, and plugins.
+DeskHalloumi is a Rust desktop-control workspace built around Iced, Tokio,
+DBus/StatusNotifier integration, configurable menus, a panel, global hotkeys,
+and small plugin crates. It was previously named `unilii`; compatibility
+commands and config fallbacks remain available during the pre-1.0 migration.
 
 ## Workspace layout
 
@@ -9,6 +12,8 @@
 ├── Cargo.toml                  # workspace manifest
 ├── CONFIGURATION.md            # menu, module, and app configuration notes
 ├── KEYBINDINGS.md              # keybinding and sxhkd import notes
+├── CHANGELOG.md                # user-visible unreleased and released changes
+├── todo.yml                    # focused remaining hotkey/rename/release work
 ├── tasks.yml                   # current review/implementation task state
 └── unilii/
     ├── Cargo.toml              # small top-level library package
@@ -31,17 +36,74 @@
 
 The root directory also contains review artifacts and external/reference material in the current dirty working tree. Treat directories such as `iced_examples/` and `wiUp/` as non-canonical unless a task explicitly says otherwise.
 
+
+## Hotkey service and managed menus
+
+The global hotkey subsystem can run inside the bar or as the standalone
+`deskhalloumi-hotkeyd` supervisor. The standalone topology provides a private Unix
+control socket, transactional reload, file watching, structured status, and
+cross-process single-instance menu lifecycle management.
+
+Documentation:
+
+- [Hotkey architecture](docs/hotkeyd-architecture.md)
+- [Hotkey operation and troubleshooting](docs/hotkeyd-operations.md)
+- [i3/sxhkd replacement feasibility and migration](docs/hotkeyd-i3-feasibility.md)
+- [Action type/topology matrix](docs/hotkey-action-matrix.md)
+- [Runnable configurations](examples/hotkeyd/)
+
+Menu documentation:
+
+- [Shared menu design system and runtime architecture](docs/menu-design-system.md)
+- [Clickable system-menubar architecture and operation](docs/system-menubar.md)
+- [Complete menu configuration example](examples/system-menubar/unilii.toml)
+
+Recommended topology:
+
+```sh
+deskhalloumi run --no-hotkeyd
+deskhalloumi-hotkeyd --config ~/.config/deskhalloumi/hotkeys.toml --watch
+```
+
+For ordinary i3/X11 press/release bindings, prefer generating an i3 include so
+i3 owns selective passive grabs without raw input-device permissions:
+
+```sh
+deskhalloumi-hotkeyd \
+  --sxhkd ~/.config/sxhkd/sxhkdrc \
+  --write-i3-bindings ~/.config/deskhalloumi/i3-bindings.conf \
+  --strict
+```
+
 ## What currently works
 
 The active implementation includes:
 
 - Iced-based bar/window wiring with X11 and Wayland features enabled through the workspace Iced dependency.
 - StatusNotifier/tray parsing, DBus menu conversion, enhanced tray state, favorites, filtering, submenu navigation, and extracted update helpers.
-- Configurable menu models for network, mount, calendar, and custom launcher/menu entries.
+- Release-oriented shared menu design system for DBus tray menus, aggregated search, favorites, Wi-Fi, storage, calendar, system controls, and custom launcher entries.
 - Widgets for audio, video/display presets, WiFi, power, and system monitoring.
-- Core keybinding support, dry-run keybinding tests, and sxhkd import helpers.
+- Core keybinding support, dry-run tests, sxhkd import with simple brace
+  expansion, recursive active-i3 conflict auditing, safe i3 include generation,
+  and a selective native X11 backend for advanced shortcut semantics.
+- A versioned user-scoped action bus connecting standalone hotkeys to bar, tray,
+  and widget actions.
 - Plugin crates for clock, battery, and tmux modules.
 - CalDAV/calendar cache helpers in `unilii/lib`.
+
+### Session support boundary
+
+| surface | i3/X11 | Sway/Wayland |
+| --- | --- | --- |
+| Iced bar and popup rendering | supported | rendering may work through Iced |
+| generated global press/release shortcuts | supported through i3 | no parity claim |
+| advanced global hold/mod-release/repeat shortcuts | supported through the selective X11 backend | unsupported |
+| active shortcut collision audit | supported for recursive i3 configuration | unsupported |
+| xrandr/xset-oriented system actions | supported | must be overridden explicitly |
+
+DeskHalloumi does not present X11 hotkey behavior as Sway parity. A separately
+tested Wayland adapter is required before global shortcut support can be called
+portable.
 
 Some architecture is still intentionally transitional. In particular, `unilii/bin/src/main.rs` still owns too much wiring and is being split into tested modules under tasks tracked in `tasks.yml`.
 
@@ -56,14 +118,14 @@ cargo build --workspace
 Build the GUI binary in release mode with:
 
 ```sh
-cargo build -p unilii-bin --release
+cargo build -p deskhalloumi-bin --release
 ```
 
 The binary is produced under Cargo’s workspace target directory. Run it with Cargo during development:
 
 ```sh
-cargo run -p unilii-bin -- --help
-cargo run -p unilii-bin -- run
+cargo run -p deskhalloumi-bin --bin deskhalloumi -- --help
+cargo run -p deskhalloumi-bin --bin deskhalloumi -- run
 ```
 
 See `CONFIGURATION.md` and `KEYBINDINGS.md` for configuration and input examples.
@@ -74,18 +136,21 @@ The current verified baseline is:
 
 ```sh
 cargo check --workspace
-cargo test --workspace
+scripts/test_safe.sh
+scripts/test_i3_hotkeys.sh
 CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+`scripts/test_safe.sh` is the default full test path for local development and CI because it runs the live-session command audit before `cargo test --workspace`. Direct `cargo test --workspace` remains useful for expert/debug runs, but do not use it as the default handoff gate when desktop/session command paths changed.
 
 `CARGO_INCREMENTAL=0` is currently recommended for clippy because one incremental Clippy/rustc internal compiler error was observed during recent verification, while the non-incremental clippy gate passed.
 
 Focused examples:
 
 ```sh
-cargo test -p unilii-bin update::enhanced_tray_events::tests::enhanced_tray_event_updates_existing_tree_and_menu -- --nocapture
-cargo test -p unilii-bin tray::tests::icon_label_uses_known_icon_keywords -- --nocapture
-cargo test -p unilii-lib calendar::caldav::tests::normalizes_ics_datetime_values_to_utc_shape -- --nocapture
+cargo test -p deskhalloumi-bin update::enhanced_tray_events::tests::enhanced_tray_event_updates_existing_tree_and_menu -- --nocapture
+cargo test -p deskhalloumi-bin tray::tests::icon_label_uses_known_icon_keywords -- --nocapture
+cargo test -p deskhalloumi-lib calendar::caldav::tests::normalizes_ics_datetime_values_to_utc_shape -- --nocapture
 ```
 
 ## Development workflow
@@ -94,10 +159,19 @@ Use `tasks.yml` as the source of truth for current priorities. The current workf
 
 1. Reproduce the bug or missing behavior with a focused failing test or lint/doc check.
 2. Make the smallest implementation change that turns the test green.
-3. Run the focused test, `cargo check --workspace`, non-incremental clippy, and `cargo test --workspace` when the slice touches production code.
+3. Run the focused test, `cargo check --workspace`, non-incremental clippy, and `scripts/test_safe.sh` when the slice touches production code.
 4. Update `tasks.yml` with completion evidence, new subtasks, and refinements to remaining work.
 
-For new behavior, prefer pure state/model tests over live DBus, live NetworkManager, or GUI-window tests. Add live smoke tests only after the pure behavior boundary is stable.
+For new behavior, prefer pure state/model tests over live DBus, live NetworkManager, or GUI-window tests. Add live smoke tests only after the pure behavior boundary is stable. See `CONTRIBUTING.md` for the safe testing policy and audit annotations.
+
+Release metadata is governed by [the versioning policy](docs/versioning.md) and
+validated with `python3 scripts/check_release_metadata.py`. A prepared release
+commit can be checked with `--candidate`; a tagged release must pass
+`--release --require-clean`. The tag-triggered workflow accepts annotated tags
+only, reruns every release gate, and uploads a deterministic Linux archive plus
+SHA-256 checksum without publishing crates automatically. DeskHalloumi's
+compatibility contract, path precedence, systemd transition, and name-screening
+limits are documented in [the rename plan](docs/project-renaming.md).
 
 ## Current limitations
 
@@ -109,3 +183,7 @@ For new behavior, prefer pure state/model tests over live DBus, live NetworkMana
 ## License
 
 The workspace manifests currently declare `MIT` for the active workspace packages. Check the package manifests and any imported/reference material before redistributing artifacts from the dirty working tree.
+
+## System menubar
+
+See [docs/system-menubar.md](docs/system-menubar.md).

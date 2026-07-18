@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
-use unilii_core::ModuleUpdate;
+use deskhalloumi_core::ModuleUpdate;
 
 use crate::module_loader::ModuleSubscription;
 

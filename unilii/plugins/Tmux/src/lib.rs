@@ -1,14 +1,14 @@
 //! Tmux pane switching widget with release-to-confirm support.
 
+use deskhalloumi_core::{Module, ModuleConfig, ModuleUpdate, Result};
 use iced::{
-    widget::{button, column, container, text},
     Element, Length,
+    widget::{button, column, container, text},
 };
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tracing::{error, info};
-use unilii_core::{Module, ModuleConfig, ModuleUpdate, Result};
 
 /// Represents a tmux pane
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -18,6 +18,21 @@ pub struct TmuxPane {
     pub window_index: usize,
     pub pane_index: usize,
     pub current: bool,
+}
+
+fn parse_tmux_pane_line(line: &str) -> Option<TmuxPane> {
+    let parts = line.split_whitespace().collect::<Vec<_>>();
+    if parts.len() != 5 {
+        return None;
+    }
+
+    Some(TmuxPane {
+        id: parts[0].strip_prefix('%')?.parse().ok()?,
+        session_name: parts[1].to_string(),
+        window_index: parts[2].parse().ok()?,
+        pane_index: parts[3].parse().ok()?,
+        current: parts[4] == "1",
+    })
 }
 
 pub struct Tmux {
@@ -31,50 +46,39 @@ impl Tmux {
         let output = Command::new("tmux")
             .args([
                 "list-panes",
+                "-a",
                 "-F",
                 "#{pane_id} #{session_name} #{window_index} #{pane_index} #{pane_current}",
             ])
             .output()
             .map_err(|e| format!("Failed to execute tmux list-panes: {}", e))?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut panes = Vec::new();
-
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 5 {
-                if let (Ok(id), Ok(window_index), Ok(pane_index), Ok(current)) = (
-                    parts[0].parse::<usize>(),
-                    parts[2].parse::<usize>(),
-                    parts[3].parse::<usize>(),
-                    parts[4].parse::<usize>(),
-                ) {
-                    panes.push(TmuxPane {
-                        id,
-                        session_name: parts[1].to_string(),
-                        window_index,
-                        pane_index,
-                        current: current == 1,
-                    });
-                }
-            }
+        if !output.status.success() {
+            return Err(format!(
+                "tmux list-panes failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )
+            .into());
         }
 
-        Ok(panes)
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(stdout.lines().filter_map(parse_tmux_pane_line).collect())
     }
 
     async fn switch_to_pane(pane: &TmuxPane) -> Result<()> {
-        Command::new("tmux")
-            .args([
-                "select-pane",
-                "-t",
-                &format!(
-                    "{}:{}.{}",
-                    pane.session_name, pane.window_index, pane.pane_index
-                ),
-            ])
-            .spawn()
-            .map_err(|e| format!("Failed to switch to tmux pane: {}", e))?;
+        let target = format!("%{}", pane.id);
+        let output = Command::new("tmux")
+            .args(["select-pane", "-t", &target])
+            .output()
+            .map_err(|e| format!("Failed to switch to tmux pane {target}: {e}"))?;
+
+        if !output.status.success() {
+            return Err(format!(
+                "tmux select-pane {target} failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )
+            .into());
+        }
 
         info!(
             "Switched to tmux pane {}:{}:{}",
@@ -161,95 +165,89 @@ impl Module for Tmux {
     }
 
     fn update(&mut self, message: ModuleUpdate) -> Result<()> {
-        if let ModuleUpdate::Custom(json) = message {
-            if let Ok(data) = serde_json::from_str::<serde_json::Value>(&json) {
-                if let Some(action) = data.get("action").and_then(|v| v.as_str()) {
-                    match action {
-                        "select" => {
-                            if let Some(index) = data.get("index").and_then(|v| v.as_u64()) {
-                                if let Some(pane) = self.panes.get(index as usize) {
-                                    // Trigger the pane switch via background task
-                                    let pane = pane.clone();
-                                    let tx = self.tx.lock().unwrap().clone();
-                                    tokio::spawn(async move {
-                                        if let Err(e) = Self::switch_to_pane(&pane).await {
-                                            error!("Failed to switch tmux pane: {}", e);
-                                        }
-                                        // Refresh pane list after switch
-                                        if let Some(tx) = tx {
-                                            let _ =
-                                                tx.send(ModuleUpdate::Text("refresh".to_string()));
-                                        }
-                                    });
-                                }
-                                self.selected_index = None;
+        let ModuleUpdate::Custom(json) = message else {
+            return Ok(());
+        };
+        let Ok(data) = serde_json::from_str::<serde_json::Value>(&json) else {
+            return Ok(());
+        };
+        let Some(action) = data.get("action").and_then(|v| v.as_str()) else {
+            return Ok(());
+        };
+
+        match action {
+            "select" => {
+                if let Some(index) = data.get("index").and_then(|v| v.as_u64()) {
+                    if let Some(pane) = self.panes.get(index as usize) {
+                        let pane = pane.clone();
+                        let tx = self
+                            .tx
+                            .lock()
+                            .map_err(|_| "tmux sender lock poisoned")?
+                            .clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = Self::switch_to_pane(&pane).await {
+                                error!("Failed to switch tmux pane: {}", e);
                             }
-                        }
-                        "cancel" => {
-                            self.selected_index = None;
-                        }
-                        "open_menu" => {
-                            // Open selection menu
-                            self.selected_index = Some(0);
-                        }
-                        "next" => {
-                            // Navigate to next pane
-                            if let Some(current) = self.selected_index {
-                                if current < self.panes.len().saturating_sub(1) {
-                                    self.selected_index = Some(current + 1);
-                                }
+                            if let Some(tx) = tx {
+                                let _ = tx.send(ModuleUpdate::Text("refresh".to_string()));
                             }
-                        }
-                        "prev" => {
-                            // Navigate to previous pane
-                            if let Some(current) = self.selected_index {
-                                if current > 0 {
-                                    self.selected_index = Some(current - 1);
-                                }
-                            }
-                        }
-                        "refresh" => {
-                            // Refresh pane list via background task
-                            let tx = self.tx.lock().unwrap().clone();
-                            tokio::spawn(async move {
-                                if let Ok(panes) = Self::list_panes().await {
-                                    if let Some(tx) = tx {
-                                        let json = serde_json::json!({ "action": "update_panes", "panes": panes });
-                                        let _ = tx.send(ModuleUpdate::Custom(json.to_string()));
-                                    }
-                                }
-                            });
-                        }
-                        "update_panes" => {
-                            if let Some(panes) = data.get("panes").and_then(|v| v.as_array()) {
-                                self.panes = panes
-                                    .iter()
-                                    .filter_map(|p| {
-                                        Some(TmuxPane {
-                                            id: p.get("id")?.as_u64()? as usize,
-                                            session_name: p
-                                                .get("session_name")?
-                                                .as_str()?
-                                                .to_string(),
-                                            window_index: p.get("window_index")?.as_u64()? as usize,
-                                            pane_index: p.get("pane_index")?.as_u64()? as usize,
-                                            current: p.get("current")?.as_bool().unwrap_or(false),
-                                        })
-                                    })
-                                    .collect();
-                            }
-                        }
-                        _ => {}
+                        });
                     }
+                    self.selected_index = None;
                 }
             }
+            "cancel" => self.selected_index = None,
+            "open_menu" => {
+                self.selected_index = (!self.panes.is_empty()).then_some(0);
+            }
+            "next" => {
+                if let Some(current) = self.selected_index
+                    && current < self.panes.len().saturating_sub(1)
+                {
+                    self.selected_index = Some(current + 1);
+                }
+            }
+            "prev" => {
+                if let Some(current) = self.selected_index
+                    && current > 0
+                {
+                    self.selected_index = Some(current - 1);
+                }
+            }
+            "refresh" => {
+                let tx = self
+                    .tx
+                    .lock()
+                    .map_err(|_| "tmux sender lock poisoned")?
+                    .clone();
+                tokio::spawn(async move {
+                    if let Ok(panes) = Self::list_panes().await
+                        && let Some(tx) = tx
+                    {
+                        let json = serde_json::json!({ "action": "update_panes", "panes": panes });
+                        let _ = tx.send(ModuleUpdate::Custom(json.to_string()));
+                    }
+                });
+            }
+            "update_panes" => {
+                if let Some(panes) = data.get("panes").cloned()
+                    && let Ok(panes) = serde_json::from_value::<Vec<TmuxPane>>(panes)
+                {
+                    self.panes = panes;
+                    self.selected_index = self
+                        .selected_index
+                        .filter(|index| *index < self.panes.len());
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
 
     async fn subscribe(&mut self) -> Result<Option<mpsc::UnboundedReceiver<ModuleUpdate>>> {
         let (tx, rx) = mpsc::unbounded_channel();
-        *self.tx.lock().unwrap() = Some(tx.clone());
+        *self.tx.lock().map_err(|_| "tmux sender lock poisoned")? = Some(tx.clone());
 
         // Refresh pane list periodically
         let tx_clone = tx.clone();
@@ -266,5 +264,23 @@ impl Module for Tmux {
 
     fn update_interval(&self) -> Option<u64> {
         Some(2000)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_real_tmux_pane_ids_and_rejects_malformed_rows() {
+        let pane = parse_tmux_pane_line("%17 work 2 1 1").expect("valid pane row");
+        assert_eq!(pane.id, 17);
+        assert_eq!(pane.session_name, "work");
+        assert_eq!(pane.window_index, 2);
+        assert_eq!(pane.pane_index, 1);
+        assert!(pane.current);
+
+        assert!(parse_tmux_pane_line("17 work 2 1 1").is_none());
+        assert!(parse_tmux_pane_line("%17 missing fields").is_none());
     }
 }

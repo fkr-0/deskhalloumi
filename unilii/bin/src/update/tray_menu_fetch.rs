@@ -1,4 +1,6 @@
-use crate::enhanced_tray::{EnhancedTrayState, TrayIcon, TrayMenuAction, TrayMenuItem, TrayWidgetType};
+use crate::enhanced_tray::{
+    EnhancedTrayState, TrayIcon, TrayMenuAction, TrayMenuItem, TrayWidgetType,
+};
 
 pub fn apply_menu_fetch_result(
     enhanced_tray_state: &mut Option<EnhancedTrayState>,
@@ -121,8 +123,10 @@ pub fn build_simple_visible_menu(icon: &TrayIcon) -> Vec<TrayMenuItem> {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_menu_fetch_result, build_simple_visible_menu, TrayMenuFetchOutcome};
-    use crate::enhanced_tray::{self, EnhancedTrayState, TrayMenuAction, TrayMenuItem, TrayWidgetType};
+    use super::{TrayMenuFetchOutcome, apply_menu_fetch_result, build_simple_visible_menu};
+    use crate::enhanced_tray::{
+        self, EnhancedTrayState, TrayMenuAction, TrayMenuItem, TrayWidgetType,
+    };
 
     fn tray_icon(app_id: &str) -> enhanced_tray::TrayIcon {
         enhanced_tray::TrayIcon {
@@ -163,7 +167,9 @@ mod tests {
     fn state_with_app() -> Option<EnhancedTrayState> {
         let mut state = EnhancedTrayState::new();
         state.tree.update_app(tray_icon("app"));
-        state.tree.update_app_menu("app", vec![menu_item("app", "old", "Old")]);
+        state
+            .tree
+            .update_app_menu("app", vec![menu_item("app", "old", "Old")]);
         Some(state)
     }
 
@@ -171,11 +177,8 @@ mod tests {
     fn populated_fetch_replaces_existing_menu() {
         let mut state = state_with_app();
 
-        let outcome = apply_menu_fetch_result(
-            &mut state,
-            "app",
-            Ok(vec![menu_item("app", "new", "New")]),
-        );
+        let outcome =
+            apply_menu_fetch_result(&mut state, "app", Ok(vec![menu_item("app", "new", "New")]));
 
         assert_eq!(outcome, TrayMenuFetchOutcome::Populated { item_count: 1 });
         let app = state.as_ref().unwrap().tree.apps.get("app").unwrap();

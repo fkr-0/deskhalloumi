@@ -324,7 +324,7 @@ impl TrayMenuTree {
 
         for app in self.apps.values() {
             for item in &app.menu_items {
-                self.collect_favorites(item, &mut favorites);
+                self.collect_favorites(&app.icon.id, item, &mut favorites);
             }
         }
 
@@ -332,15 +332,33 @@ impl TrayMenuTree {
         favorites
     }
 
-    /// Toggle favorite status of a menu item
-    pub fn toggle_favorite(&mut self, item_id: &str) -> bool {
-        if self.favorites.contains(item_id) {
-            self.favorites.remove(item_id);
-            false
-        } else {
-            self.favorites.insert(item_id.to_string());
-            true
+    /// Return the stable, application-scoped storage key for a favorite.
+    pub fn favorite_key(app_id: &str, item_id: &str) -> String {
+        format!("{app_id}\u{1f}{item_id}")
+    }
+
+    /// Check whether one menu item is favorited.
+    ///
+    /// Raw item IDs are accepted for backwards compatibility with favorite
+    /// events produced before favorites became application-scoped.
+    pub fn is_favorite(&self, app_id: &str, item_id: &str) -> bool {
+        self.favorites
+            .contains(&Self::favorite_key(app_id, item_id))
+            || self.favorites.contains(item_id)
+    }
+
+    /// Toggle favorite status of an application-scoped menu item.
+    pub fn toggle_favorite(&mut self, app_id: &str, item_id: &str) -> bool {
+        let key = Self::favorite_key(app_id, item_id);
+        if self.favorites.remove(&key) {
+            return false;
         }
+        // Migrate a legacy unscoped entry by removing it on the first toggle.
+        if self.favorites.remove(item_id) {
+            return false;
+        }
+        self.favorites.insert(key);
+        true
     }
 
     /// Helper to flatten menu hierarchy for aggregated view
@@ -364,12 +382,12 @@ impl TrayMenuTree {
     }
 
     /// Helper to collect favorite items
-    fn collect_favorites(&self, item: &TrayMenuItem, result: &mut Vec<TrayMenuItem>) {
-        if self.favorites.contains(&item.id) {
+    fn collect_favorites(&self, app_id: &str, item: &TrayMenuItem, result: &mut Vec<TrayMenuItem>) {
+        if self.is_favorite(app_id, &item.id) {
             result.push(item.clone());
         }
         for subitem in &item.submenu {
-            self.collect_favorites(subitem, result);
+            self.collect_favorites(app_id, subitem, result);
         }
     }
 }
@@ -521,18 +539,29 @@ mod tests {
     fn test_menu_item_favorites() {
         let mut tree = TrayMenuTree::new();
 
+        let app_id = "app1";
         let item_id = "test_item_1";
-        assert!(!tree.favorites.contains(item_id));
+        assert!(!tree.is_favorite(app_id, item_id));
 
         // Toggle on
-        let result = tree.toggle_favorite(item_id);
+        let result = tree.toggle_favorite(app_id, item_id);
         assert!(result);
-        assert!(tree.favorites.contains(item_id));
+        assert!(tree.is_favorite(app_id, item_id));
 
         // Toggle off
-        let result = tree.toggle_favorite(item_id);
+        let result = tree.toggle_favorite(app_id, item_id);
         assert!(!result);
-        assert!(!tree.favorites.contains(item_id));
+        assert!(!tree.is_favorite(app_id, item_id));
+    }
+
+    #[test]
+    fn favorites_with_equal_item_ids_are_scoped_to_their_application() {
+        let mut tree = TrayMenuTree::new();
+        tree.toggle_favorite("app-a", "open");
+
+        assert!(tree.is_favorite("app-a", "open"));
+        assert!(!tree.is_favorite("app-b", "open"));
+        assert_eq!(tree.favorites.len(), 1);
     }
 
     #[test]

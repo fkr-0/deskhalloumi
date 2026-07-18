@@ -1,0 +1,98 @@
+{
+  "type": "root",
+  "nodes": [
+    {
+      "id": 1,
+      "type": "workspace",
+      "name": "1",
+      "layout": "splith",
+      "nodes": [
+        {
+          "id": 11,
+          "type": "con",
+          "name": "Other workspace window",
+          "layout": "splith",
+          "window": 900,
+          "focused": false,
+          "window_properties": { "class": "Other" },
+          "nodes": [],
+          "floating_nodes": []
+        }
+      ],
+      "floating_nodes": []
+    },
+    {
+      "id": 2,
+      "type": "workspace",
+      "name": "2",
+      "layout": "splitv",
+      "nodes": [
+        {
+          "id": 20,
+          "type": "con",
+          "layout": "splitv",
+          "name": "split container",
+          "nodes": [
+            {
+              "id": 21,
+              "type": "con",
+              "name": "main.rs - Emacs",
+              "layout": "splith",
+              "window": 101,
+              "focused": false,
+              "window_properties": { "class": "Emacs" },
+              "nodes": [],
+              "floating_nodes": []
+            },
+            {
+              "id": 22,
+              "type": "con",
+              "layout": "splith",
+              "name": "nested horizontal",
+              "nodes": [
+                {
+                  "id": 23,
+                  "type": "con",
+                  "name": "ChatGPT",
+                  "layout": "splith",
+                  "window": 102,
+                  "focused": true,
+                  "window_properties": { "class": "Firefox" },
+                  "nodes": [],
+                  "floating_nodes": []
+                },
+                {
+                  "id": 24,
+                  "type": "con",
+                  "name": "logs",
+                  "layout": "splith",
+                  "window": 103,
+                  "focused": false,
+                  "window_properties": { "class": "XTerm" },
+                  "nodes": [],
+                  "floating_nodes": []
+                }
+              ],
+              "floating_nodes": []
+            }
+          ],
+          "floating_nodes": [
+            {
+              "id": 88,
+              "type": "floating_con",
+              "name": "i3-vis",
+              "window": 999,
+              "focused": false,
+              "app_id": "unilii-i3-vis",
+              "window_properties": { "class": "unilii-i3-vis" },
+              "nodes": [],
+              "floating_nodes": []
+            }
+          ]
+        }
+      ],
+      "floating_nodes": []
+    }
+  ],
+  "floating_nodes": []
+}

@@ -1,5 +1,5 @@
 use super::{AppConfig, load_app_config, save_app_config};
-use unilii_core::ModulePosition;
+use deskhalloumi_core::ModulePosition;
 use tempfile::NamedTempFile;
 
 #[test]

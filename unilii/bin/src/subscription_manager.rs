@@ -1,8 +1,8 @@
 //! Subscription management for coordinating module updates with Iced subscriptions.
 
+use deskhalloumi_core::ModuleUpdate;
 use std::sync::{Arc, Mutex};
 use tracing::{error, info, warn};
-use unilii_core::ModuleUpdate;
 
 use crate::module_loader::ModuleSubscription;
 

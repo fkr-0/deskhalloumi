@@ -1,10 +1,10 @@
 [package]
-name = "unilii-clock"
+name = "deskhalloumi-clock"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-unilii-core.workspace = true
+deskhalloumi-core.workspace = true
 iced.workspace = true
 tokio.workspace = true
 async-trait.workspace = true

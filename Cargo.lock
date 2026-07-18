@@ -1039,6 +1039,118 @@ dependencies = [
 ]
 
 [[package]]
+name = "deskhalloumi"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "deskhalloumi-lib",
+ "futures-util",
+ "tokio",
+]
+
+[[package]]
+name = "deskhalloumi-battery"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "deskhalloumi-core",
+ "deskhalloumi-lib",
+ "futures",
+ "iced",
+ "tokio",
+]
+
+[[package]]
+name = "deskhalloumi-bin"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "deskhalloumi-battery",
+ "deskhalloumi-clock",
+ "deskhalloumi-core",
+ "deskhalloumi-lib",
+ "deskhalloumi-tmux",
+ "iced",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "zbus 4.4.0",
+]
+
+[[package]]
+name = "deskhalloumi-clock"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "deskhalloumi-core",
+ "iced",
+ "tokio",
+]
+
+[[package]]
+name = "deskhalloumi-core"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "deskhalloumi-lib",
+ "directories",
+ "futures",
+ "glob",
+ "iced",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "wait-timeout",
+ "x11rb",
+ "xkeysym",
+]
+
+[[package]]
+name = "deskhalloumi-lib"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "evdev",
+ "futures",
+ "futures-core",
+ "futures-util",
+ "log",
+ "nix 0.30.1",
+ "pin-project-lite",
+ "tokio",
+ "tokio-stream",
+ "tokio-udev",
+ "udev",
+]
+
+[[package]]
+name = "deskhalloumi-tmux"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "deskhalloumi-core",
+ "iced",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4993,111 +5105,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
-name = "unilii"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "futures-util",
- "tokio",
- "unilii-lib",
-]
-
-[[package]]
-name = "unilii-battery"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "futures",
- "iced",
- "tokio",
- "unilii-core",
- "unilii-lib",
-]
-
-[[package]]
-name = "unilii-bin"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "clap",
- "iced",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "unilii-battery",
- "unilii-clock",
- "unilii-core",
- "unilii-lib",
- "unilii-tmux",
- "zbus 4.4.0",
-]
-
-[[package]]
-name = "unilii-clock"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "iced",
- "tokio",
- "unilii-core",
-]
-
-[[package]]
-name = "unilii-core"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "directories",
- "futures",
- "glob",
- "iced",
- "serde",
- "tokio",
- "toml",
- "tracing",
- "unilii-lib",
-]
-
-[[package]]
-name = "unilii-lib"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "evdev",
- "futures",
- "futures-core",
- "futures-util",
- "log",
- "nix 0.30.1",
- "pin-project-lite",
- "tokio",
- "tokio-stream",
- "tokio-udev",
- "udev",
-]
-
-[[package]]
-name = "unilii-tmux"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "iced",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "unilii-core",
-]
-
-[[package]]
 name = "unsafe-libyaml"
 version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5181,6 +5188,15 @@ name = "virtue"
 version = "0.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
+
+[[package]]
+name = "wait-timeout"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09ac3b126d3914f9849036f826e054cbabdc8519970b8998ddaf3b5bd3c65f11"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "walkdir"

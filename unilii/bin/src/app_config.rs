@@ -1,8 +1,8 @@
 //! Configuration structure for modules and application settings.
 
+use deskhalloumi_core::{ModuleConfig, ModulePosition, ThemeOverrides};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use unilii_core::{ModuleConfig, ModulePosition, ThemeOverrides};
 
 /// Main application configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]

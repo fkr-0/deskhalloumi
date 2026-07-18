@@ -42,8 +42,7 @@ pub fn import_sxhkd_config(content: &str) -> ImportResult {
                     continue;
                 }
 
-                index += 1;
-                let (keysym, release) = normalize_sxhkd_chord(&chord_raw);
+                let (keysym, release, replay) = normalize_sxhkd_chord(&chord_raw);
                 if keysym.is_empty() {
                     result.warnings.push(ImportWarning {
                         line: chord_line,
@@ -52,31 +51,78 @@ pub fn import_sxhkd_config(content: &str) -> ImportResult {
                     continue;
                 }
 
-                if chord_raw.contains('{') || chord_raw.contains('}') {
+                if replay {
                     result.warnings.push(ImportWarning {
                         line: chord_line,
-                        message:
-                            "brace expansions are not fully supported; imported as literal chord"
-                                .to_string(),
+                        message: "sxhkd replay prefix '~' has no native unilii equivalent; the binding is imported without replay semantics"
+                            .to_string(),
                     });
                 }
 
-                result.bindings.push(KeyBinding {
-                    name: format!("sxhkd_import_{}", index),
-                    keysym,
-                    command,
-                    command_type: CommandType::Shell,
-                    release,
-                    trigger: if release {
-                        KeyTrigger::Release
-                    } else {
-                        KeyTrigger::Press
-                    },
-                    hold_ms: None,
-                    cooldown_ms: None,
-                    priority: 0,
-                    consume: false,
-                });
+                if keysym.contains(';') {
+                    result.warnings.push(ImportWarning {
+                        line: chord_line,
+                        message:
+                            "sxhkd chord chains/modes using ';' are unsupported and were skipped"
+                                .to_string(),
+                    });
+                    continue;
+                }
+
+                let chords = match expand_simple_braces(&keysym) {
+                    Ok(values) => values,
+                    Err(error) => {
+                        result.warnings.push(ImportWarning {
+                            line: chord_line,
+                            message: format!(
+                                "unsupported chord expansion: {error}; binding skipped"
+                            ),
+                        });
+                        continue;
+                    }
+                };
+                let commands = match expand_simple_braces(&command) {
+                    Ok(values) => values,
+                    Err(error) => {
+                        result.warnings.push(ImportWarning {
+                            line: line_idx,
+                            message: format!(
+                                "unsupported command expansion: {error}; binding skipped"
+                            ),
+                        });
+                        continue;
+                    }
+                };
+                let expanded = match pair_expansions(chords, commands) {
+                    Ok(values) => values,
+                    Err(error) => {
+                        result.warnings.push(ImportWarning {
+                            line: chord_line,
+                            message: format!("brace expansion mismatch: {error}; binding skipped"),
+                        });
+                        continue;
+                    }
+                };
+
+                for (keysym, command) in expanded {
+                    index += 1;
+                    result.bindings.push(KeyBinding {
+                        name: format!("sxhkd_import_{}", index),
+                        keysym,
+                        command,
+                        command_type: CommandType::Shell,
+                        release,
+                        trigger: if release {
+                            KeyTrigger::Release
+                        } else {
+                            KeyTrigger::Press
+                        },
+                        hold_ms: None,
+                        cooldown_ms: None,
+                        priority: 0,
+                        consume: false,
+                    });
+                }
             } else {
                 result.warnings.push(ImportWarning {
                     line: line_idx,
@@ -109,13 +155,21 @@ pub fn import_sxhkd_config(content: &str) -> ImportResult {
     result
 }
 
-fn normalize_sxhkd_chord(input: &str) -> (String, bool) {
+fn normalize_sxhkd_chord(input: &str) -> (String, bool, bool) {
     let mut chord = input.trim().to_string();
     let mut release = false;
+    let mut replay = false;
 
-    if let Some(rest) = chord.strip_prefix('@') {
-        release = true;
-        chord = rest.trim().to_string();
+    loop {
+        if let Some(rest) = chord.strip_prefix('@') {
+            release = true;
+            chord = rest.trim().to_string();
+        } else if let Some(rest) = chord.strip_prefix('~') {
+            replay = true;
+            chord = rest.trim().to_string();
+        } else {
+            break;
+        }
     }
 
     let keysym = chord
@@ -125,5 +179,54 @@ fn normalize_sxhkd_chord(input: &str) -> (String, bool) {
         .collect::<Vec<_>>()
         .join("+");
 
-    (keysym, release)
+    (keysym, release, replay)
+}
+
+fn expand_simple_braces(input: &str) -> Result<Vec<String>, String> {
+    let Some(open) = input.find('{') else {
+        if input.contains('}') {
+            return Err("closing brace without opening brace".to_string());
+        }
+        return Ok(vec![input.to_string()]);
+    };
+    let Some(relative_close) = input[open + 1..].find('}') else {
+        return Err("opening brace without closing brace".to_string());
+    };
+    let close = open + 1 + relative_close;
+    let body = &input[open + 1..close];
+    if body.contains(['{', '}']) || input[close + 1..].starts_with('}') {
+        return Err("nested braces are unsupported".to_string());
+    }
+    let alternatives = body.split(',').map(str::trim).collect::<Vec<_>>();
+    if alternatives.len() < 2 || alternatives.iter().any(|value| value.is_empty()) {
+        return Err(format!(
+            "'{{{body}}}' is not a simple comma-separated expansion"
+        ));
+    }
+
+    let suffixes = expand_simple_braces(&input[close + 1..])?;
+    let prefix = &input[..open];
+    let mut output = Vec::with_capacity(alternatives.len() * suffixes.len());
+    for alternative in alternatives {
+        for suffix in &suffixes {
+            output.push(format!("{prefix}{alternative}{suffix}"));
+        }
+    }
+    Ok(output)
+}
+
+fn pair_expansions(
+    chords: Vec<String>,
+    commands: Vec<String>,
+) -> Result<Vec<(String, String)>, String> {
+    match (chords.len(), commands.len()) {
+        (_, 1) => Ok(chords
+            .into_iter()
+            .map(|chord| (chord, commands[0].clone()))
+            .collect()),
+        (left, right) if left == right => Ok(chords.into_iter().zip(commands).collect()),
+        (left, right) => Err(format!(
+            "{left} chord alternatives but {right} command alternatives"
+        )),
+    }
 }

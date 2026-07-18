@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  safe-test:
+    name: Safe workspace tests
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust stable
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Select Rust stable
+        run: rustup default stable
+
+      - name: Install isolated X11/i3 test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb i3-wm xdotool x11-utils
+
+      - name: Validate release metadata
+        run: python3 scripts/check_release_metadata.py
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run safe test suite
+        run: scripts/test_safe.sh
+
+      - name: Test i3 and selective X11 hotkeys
+        run: scripts/test_i3_hotkeys.sh
+
+      - name: Run strict Clippy gate
+        run: cargo clippy --workspace --all-targets -- -D warnings

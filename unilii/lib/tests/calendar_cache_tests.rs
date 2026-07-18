@@ -1,4 +1,4 @@
-use unilii_lib::calendar::{CalendarCache, CalendarEvent, ReminderState};
+use deskhalloumi_lib::calendar::{CalendarCache, CalendarEvent, ReminderState};
 
 fn event(id: &str, account_id: &str, start: &str) -> CalendarEvent {
     CalendarEvent {

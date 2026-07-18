@@ -1,0 +1,170 @@
+[[panels]]
+name = "top"
+width = 1920
+height = 28
+position_x = 0
+position_y = 0
+background_color = "#1e1e2e"
+text_color = "#cdd6f4"
+
+[[modules]]
+name = "clock"
+enabled = true
+position = "right"
+update_interval_ms = 1000
+
+[[modules]]
+name = "battery"
+enabled = true
+position = "right"
+update_interval_ms = 5000
+
+[menus.ui]
+max_visible_rows = 12
+max_label_chars = 72
+max_subtitle_chars = 140
+scroll_height = 360
+show_breadcrumbs = true
+show_item_counts = true
+show_keyboard_hints = true
+show_all_favorites_controls = true
+
+[menus.wifi]
+refresh_ms = 4000
+max_network_rows = 12
+show_known_networks = true
+allow_forget = true
+settings_command = "nm-connection-editor"
+scan_on_open = true
+connect_timeout_ms = 20000
+
+[menus.mount]
+refresh_ms = 5000
+show_loop_devices = true
+max_local_rows = 24
+max_sshfs_rows = 12
+max_loop_rows = 12
+max_vcvolume_rows = 12
+disks_command = "gnome-disks"
+show_device_details = true
+
+[[menus.mount.sshfs_profiles]]
+name = "fileserver"
+user = "user"
+host = "fileserver.local"
+remote_path = "/srv/media"
+mountpoint = "/home/user/mnt/fileserver"
+options = ["reconnect", "ServerAliveInterval=15"]
+
+[menus.calendar]
+refresh_ms = 300000
+agenda_days = 7
+max_account_rows = 8
+max_event_rows = 24
+application_command = "gnome-calendar"
+show_locations = true
+
+[menus.custom]
+enabled = true
+max_rows = 40
+show_subtitles = true
+app_ids = ["custom-launcher"]
+quickjump_alphabet = "asdfjkl;ghqwertyuiopzxcvbnm"
+
+[[menus.custom.items]]
+id = "logs"
+title = "Follow system journal"
+subtitle = "Open live logs in a terminal"
+action = "launcher"
+command = "x-terminal-emulator"
+args = ["-e", "journalctl", "-f"]
+filter_fields = ["title", "subtitle", "tags"]
+tags = ["system", "logs"]
+confirm = false
+visible_if = "command:journalctl"
+
+[menus.system]
+enabled = true
+replace_legacy_widgets = true
+sections = ["wifi", "displays", "stats", "shortcuts", "power", "extra"]
+xrandr_presets_yaml = "~/.config/unilii/xrandr-presets.yml"
+stats_command = "x-terminal-emulator -e htop"
+lock_command = "loginctl lock-session"
+logout_command = "i3-msg exit"
+suspend_command = "systemctl suspend"
+reboot_command = "systemctl reboot"
+poweroff_command = "systemctl poweroff"
+idle_status_command = "xset q"
+idle_enable_command = "xset s 600 600 +dpms dpms 0 0 900"
+idle_disable_command = "xset s off -dpms"
+confirm_destructive = true
+command_timeout_ms = 30000
+shortcut_limit = 40
+
+# Buttons are rendered in this order. Omit or disable any button you do not want.
+[[menus.system.buttons]]
+id = "wifi"
+section = "wifi"
+enabled = true
+
+[[menus.system.buttons]]
+id = "displays"
+section = "displays"
+label = "🖥"
+enabled = true
+
+[[menus.system.buttons]]
+id = "stats"
+section = "stats"
+enabled = true
+
+[[menus.system.buttons]]
+id = "shortcuts"
+section = "shortcuts"
+label = "⌨"
+enabled = true
+
+[[menus.system.buttons]]
+id = "power"
+section = "power"
+label = "⏻"
+enabled = true
+
+# A combined menu button may be used instead of, or alongside, direct section buttons.
+[[menus.system.buttons]]
+id = "all"
+section = "root"
+label = "☰"
+enabled = false
+
+[[menus.system.extra_items]]
+id = "logs"
+title = "Follow system journal"
+command = "x-terminal-emulator -e journalctl -f"
+shortcut = "Super+Shift+L"
+confirm = false
+section = "extra"
+
+[[keybindings]]
+name = "Window switcher"
+keysym = "Super+u"
+command = "toggle:filter-tab"
+type = "menu"
+priority = 100
+consume = true
+
+[[keybindings]]
+name = "i3 tree"
+keysym = "Super+i"
+command = "toggle:i3-vis"
+type = "menu"
+priority = 100
+consume = true
+
+[[keybindings]]
+name = "Terminal"
+keysym = "Super+Return"
+command = "x-terminal-emulator"
+type = "shell"
+priority = 50
+consume = true

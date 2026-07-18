@@ -1,10 +1,16 @@
 //! Global keybinding daemon and parsing utilities.
 
 use crate::Result;
+use crate::action_bus::{
+    ActionBusRequest, DesktopAction, default_action_bus_socket_path, send_action_request,
+};
 use crate::key_engine::{EngineBinding, KeyEngine, KeyEngineTraceReason, KeyTrigger};
+use crate::menu_process::{MenuProcessManager, acquire_process_instance, parse_menu_action};
+use crate::x11_hotkeys::X11HotkeyListener;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 use tracing::{debug, error, info, warn};
@@ -22,6 +28,16 @@ pub enum CommandType {
     Tray,
     /// Widget/action (future)
     Widget,
+    /// Managed external unilii menu action (show/hide/toggle).
+    Menu,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyBackend {
+    #[default]
+    Evdev,
+    X11,
 }
 
 /// Global keybinding configuration.
@@ -99,6 +115,10 @@ pub enum KeybindingResult {
     TrayAction(String),
     /// Widget action (future)
     WidgetAction(String),
+    /// Managed external menu action.
+    MenuAction(String),
+    /// Raw evdev event forwarded to an embedding application.
+    RawKeyEvent { code: String, value: i32 },
     /// Unknown or invalid action
     Unknown,
 }
@@ -117,15 +137,72 @@ pub struct KeyDryRunStep {
     pub trace_lines: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeybindingDaemonOptions {
+    /// Input ownership backend. X11 uses selective passive grabs; evdev observes
+    /// raw devices unless the explicitly unsafe whole-device grab is requested.
+    pub backend: KeyBackend,
+    /// Execute matching shell/internal bindings. Set to false for shadow mode.
+    pub execute: bool,
+    /// Request an exclusive evdev grab before listening.
+    pub grab: bool,
+    /// Raw evdev grabs suppress the whole keyboard because unilii does not yet
+    /// re-inject unmatched events. This must be explicitly acknowledged.
+    pub allow_unsafe_grab: bool,
+    /// Ensure only one global unilii key listener owns the runtime at a time.
+    pub singleton: bool,
+}
+
+impl Default for KeybindingDaemonOptions {
+    fn default() -> Self {
+        Self {
+            backend: KeyBackend::Evdev,
+            execute: true,
+            grab: false,
+            allow_unsafe_grab: false,
+            singleton: true,
+        }
+    }
+}
+
+impl KeybindingDaemonOptions {
+    pub fn shadow() -> Self {
+        Self {
+            backend: KeyBackend::Evdev,
+            execute: false,
+            grab: false,
+            allow_unsafe_grab: false,
+            singleton: true,
+        }
+    }
+
+    pub fn active_grab() -> Self {
+        Self {
+            backend: KeyBackend::Evdev,
+            execute: true,
+            grab: true,
+            allow_unsafe_grab: true,
+            singleton: true,
+        }
+    }
+}
+
 /// Keybinding manager using unilii-lib evdev keyboard streams.
 pub struct KeybindingDaemon {
     bindings: Vec<ParsedBinding>,
     engine: Mutex<KeyEngine>,
     action_sender: Option<tokio::sync::mpsc::UnboundedSender<KeybindingResult>>,
+    options: KeybindingDaemonOptions,
+    menu_manager: MenuProcessManager,
+    action_bus_socket: PathBuf,
 }
 
 impl KeybindingDaemon {
     pub fn new(bindings: Vec<KeyBinding>) -> Self {
+        Self::with_options(bindings, KeybindingDaemonOptions::default())
+    }
+
+    pub fn with_options(bindings: Vec<KeyBinding>, options: KeybindingDaemonOptions) -> Self {
         let parsed_bindings = Self::parse_bindings(bindings);
         let engine_bindings = parsed_bindings
             .iter()
@@ -135,6 +212,9 @@ impl KeybindingDaemon {
             bindings: parsed_bindings,
             engine: Mutex::new(KeyEngine::new(engine_bindings)),
             action_sender: None,
+            options,
+            menu_manager: MenuProcessManager::default(),
+            action_bus_socket: default_action_bus_socket_path(),
         }
     }
 
@@ -145,6 +225,15 @@ impl KeybindingDaemon {
         sender: tokio::sync::mpsc::UnboundedSender<KeybindingResult>,
     ) {
         self.action_sender = Some(sender);
+    }
+
+    /// Override the managed-menu runtime, primarily for integration tests.
+    pub fn set_menu_manager(&mut self, menu_manager: MenuProcessManager) {
+        self.menu_manager = menu_manager;
+    }
+
+    pub fn set_action_bus_socket(&mut self, path: PathBuf) {
+        self.action_bus_socket = path;
     }
 
     fn parse_bindings(bindings: Vec<KeyBinding>) -> Vec<ParsedBinding> {
@@ -164,54 +253,173 @@ impl KeybindingDaemon {
     }
 
     pub async fn run(&self) -> Result<()> {
-        let listener = match unilii_lib::input::listen_keyboard_events_experimental() {
-            Ok(stream) => {
-                info!("hotkeys: listener initialized using experimental tokio-udev path");
-                Ok(stream)
+        self.run_with_ready(None).await
+    }
+
+    /// Run the input worker and optionally report when the keyboard listener is ready.
+    ///
+    /// The standalone supervisor uses this handshake to make configuration reloads
+    /// transactional: it only commits a new generation after device access succeeds.
+    pub async fn run_with_ready(
+        &self,
+        mut ready: Option<tokio::sync::oneshot::Sender<std::result::Result<(), String>>>,
+    ) -> Result<()> {
+        let grab = self.options.grab;
+        if self.options.backend == KeyBackend::X11 {
+            return self.run_x11_with_ready(ready).await;
+        }
+        if grab && !self.options.allow_unsafe_grab {
+            let message = "refusing unsafe raw evdev grab: grabbing a keyboard suppresses all keys, and unilii does not yet re-inject unmatched events. Use observe mode, or pass the explicit unsafe acknowledgement in the standalone daemon only.".to_string();
+            if let Some(sender) = ready.take() {
+                let _ = sender.send(Err(message.clone()));
+            }
+            return Err(message.into());
+        }
+        let _instance_guard = if self.options.singleton {
+            match acquire_process_instance("hotkeyd") {
+                Ok(guard) => Some(guard),
+                Err(error) => {
+                    let message = format!("global hotkey listener unavailable: {error}");
+                    if let Some(sender) = ready.take() {
+                        let _ = sender.send(Err(message.clone()));
+                    }
+                    return Err(message.into());
+                }
+            }
+        } else {
+            None
+        };
+        let listener_result =
+            match deskhalloumi_lib::input::listen_keyboard_events_experimental_with_grab(grab) {
+                Ok(stream) => {
+                    info!(
+                        "hotkeys: listener initialized using experimental tokio-udev path (grab={}, execute={})",
+                        grab, self.options.execute
+                    );
+                    Ok(stream)
+                }
+                Err(error) => {
+                    warn!(
+                        "hotkeys: experimental listener unavailable, falling back to base evdev (grab={}): {}",
+                        grab, error
+                    );
+                    deskhalloumi_lib::input::listen_keyboard_events_with_grab(grab)
+                }
+            };
+        let listener = match listener_result {
+            Ok(listener) => {
+                if let Some(sender) = ready.take() {
+                    let _ = sender.send(Ok(()));
+                }
+                listener
             }
             Err(error) => {
-                warn!(
-                    "hotkeys: experimental listener unavailable, falling back to base evdev: {}",
-                    error
-                );
-                unilii_lib::input::listen_keyboard_events()
+                let message = error.to_string();
+                if let Some(sender) = ready.take() {
+                    let _ = sender.send(Err(message.clone()));
+                }
+                return Err(error.into());
             }
-        }?;
+        };
 
         let mut stream = listener;
         while let Some(event) = stream.next().await {
             let key_name = format!("{:?}", event.code);
-
-            let output = {
-                let mut engine = self
-                    .engine
-                    .lock()
-                    .map_err(|error| format!("failed to lock key engine: {}", error))?;
-                engine.process_event(&key_name, event.value, Instant::now())
-            };
-
-            for trace in output.traces {
-                let level = match trace.reason {
-                    KeyEngineTraceReason::Matched => "matched",
-                    KeyEngineTraceReason::Suppressed => "suppressed",
-                    KeyEngineTraceReason::Invalidated => "invalidated",
-                };
-                debug!(
-                    "hotkeys: engine trace binding='{}' index={} state={} detail={}",
-                    trace.binding_name, trace.index, level, trace.detail
-                );
-            }
-
-            for index in output.triggered {
-                if let Err(error) = self.execute_binding(index) {
-                    error!(
-                        "hotkeys: binding execution failed index={} error={}",
-                        index, error
-                    );
-                }
-            }
+            self.process_key_event(&key_name, event.value, Instant::now())?;
         }
 
+        Ok(())
+    }
+
+    async fn run_x11_with_ready(
+        &self,
+        mut ready: Option<tokio::sync::oneshot::Sender<std::result::Result<(), String>>>,
+    ) -> Result<()> {
+        let _instance_guard = if self.options.singleton {
+            match acquire_process_instance("hotkeyd") {
+                Ok(guard) => Some(guard),
+                Err(error) => {
+                    let message = format!("global hotkey listener unavailable: {error}");
+                    if let Some(sender) = ready.take() {
+                        let _ = sender.send(Err(message.clone()));
+                    }
+                    return Err(message.into());
+                }
+            }
+        } else {
+            None
+        };
+        let bindings = self
+            .bindings
+            .iter()
+            .map(|parsed| parsed.binding.clone())
+            .collect::<Vec<_>>();
+        let listener = match X11HotkeyListener::connect(&bindings) {
+            Ok(listener) => listener,
+            Err(error) => {
+                if let Some(sender) = ready.take() {
+                    let _ = sender.send(Err(error.clone()));
+                }
+                return Err(error.into());
+            }
+        };
+        info!(
+            "hotkeys: selective X11 backend initialized grabs={} execute={}",
+            listener.diagnostics().len(),
+            self.options.execute
+        );
+        if let Some(sender) = ready.take() {
+            let _ = sender.send(Ok(()));
+        }
+        let mut events = listener.into_event_stream();
+        while let Some(event) = events.recv().await {
+            let event = event
+                .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { error.into() })?;
+            self.process_key_event(&event.code, event.value, Instant::now())?;
+        }
+        Err("X11 hotkey event stream ended unexpectedly".into())
+    }
+
+    fn process_key_event(&self, key_name: &str, value: i32, now: Instant) -> Result<()> {
+        if let Some(sender) = &self.action_sender
+            && sender
+                .send(KeybindingResult::RawKeyEvent {
+                    code: key_name.to_string(),
+                    value,
+                })
+                .is_err()
+        {
+            debug!("hotkeys: embedding action receiver closed; raw key event not forwarded");
+        }
+
+        let output = {
+            let mut engine = self
+                .engine
+                .lock()
+                .map_err(|error| format!("failed to lock key engine: {}", error))?;
+            engine.process_event(key_name, value, now)
+        };
+
+        for trace in output.traces {
+            let level = match trace.reason {
+                KeyEngineTraceReason::Matched => "matched",
+                KeyEngineTraceReason::Suppressed => "suppressed",
+                KeyEngineTraceReason::Invalidated => "invalidated",
+            };
+            debug!(
+                "hotkeys: engine trace binding='{}' index={} state={} detail={}",
+                trace.binding_name, trace.index, level, trace.detail
+            );
+        }
+
+        for index in output.triggered {
+            if let Err(error) = self.execute_binding(index) {
+                error!(
+                    "hotkeys: binding execution failed index={} error={}",
+                    index, error
+                );
+            }
+        }
         Ok(())
     }
 
@@ -222,9 +430,17 @@ impl KeybindingDaemon {
             return Ok(());
         }
 
+        if !self.options.execute {
+            info!(
+                "hotkeys: shadow match binding='{}' keysym='{}' type={:?} command='{}'",
+                binding.name, binding.keysym, binding.command_type, command
+            );
+            return Ok(());
+        }
+
         match &binding.command_type {
             CommandType::Shell => {
-                std::process::Command::new("sh")
+                let mut child = std::process::Command::new("sh")
                     .arg("-c")
                     .arg(command)
                     .spawn()
@@ -235,10 +451,25 @@ impl KeybindingDaemon {
                         );
                         Box::new(error) as Box<dyn std::error::Error + Send + Sync>
                     })?;
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
 
                 info!(
                     "hotkeys: executed shell binding '{}' keysym='{}'",
                     binding.name, binding.keysym
+                );
+            }
+            CommandType::Menu => {
+                let action = parse_menu_action(command).map_err(|error| {
+                    format!("invalid managed-menu binding '{}': {error}", binding.name)
+                })?;
+                let outcome = self.menu_manager.execute(&action).map_err(|error| {
+                    format!("managed-menu binding '{}' failed: {error}", binding.name)
+                })?;
+                info!(
+                    "hotkeys: executed managed-menu binding '{}' action='{}' outcome={:?}",
+                    binding.name, command, outcome
                 );
             }
             CommandType::Bar | CommandType::Tray | CommandType::Widget => {
@@ -249,10 +480,29 @@ impl KeybindingDaemon {
                     _ => KeybindingResult::Unknown,
                 };
 
-                if let Some(sender) = &self.action_sender
-                    && sender.send(result).is_err()
-                {
-                    error!("hotkeys: failed to send internal action '{}'", command);
+                if let Some(sender) = &self.action_sender {
+                    sender.send(result).map_err(|_| {
+                        format!("hotkeys: failed to send internal action '{}'", command)
+                    })?;
+                } else {
+                    let action = match binding.command_type {
+                        CommandType::Bar => DesktopAction::Bar(command.to_string()),
+                        CommandType::Tray => DesktopAction::Tray(command.to_string()),
+                        CommandType::Widget => DesktopAction::Widget(command.to_string()),
+                        _ => unreachable!(),
+                    };
+                    let request = ActionBusRequest::new(
+                        format!("{}-{}", std::process::id(), binding.name),
+                        action,
+                    );
+                    let response = send_action_request(&self.action_bus_socket, &request)?;
+                    if !response.ok {
+                        return Err(format!(
+                            "desktop action receiver rejected '{}': {}",
+                            binding.name, response.message
+                        )
+                        .into());
+                    }
                 }
 
                 info!(
@@ -367,6 +617,11 @@ pub fn parse_bar_action(command: &str) -> BarDaemonAction {
     }
 
     BarDaemonAction::Raw(trimmed.to_string())
+}
+
+/// Validate one binding using the same parser as the live daemon.
+pub fn validate_binding(binding: &KeyBinding) -> std::result::Result<(), String> {
+    parse_binding(binding.clone()).map(|_| ())
 }
 
 fn parse_binding(binding: KeyBinding) -> std::result::Result<ParsedBinding, String> {
@@ -554,5 +809,49 @@ mod tests {
             parse_bar_action("bar:focus:wifi"),
             BarDaemonAction::FocusModule("wifi".to_string())
         );
+    }
+    #[test]
+    fn unsafe_grab_reports_readiness_failure_before_device_access() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let options = super::KeybindingDaemonOptions {
+                backend: super::KeyBackend::Evdev,
+                execute: true,
+                grab: true,
+                allow_unsafe_grab: false,
+                singleton: false,
+            };
+            let daemon = super::KeybindingDaemon::with_options(Vec::new(), options);
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let result = daemon.run_with_ready(Some(sender)).await;
+            assert!(result.is_err());
+            let readiness = receiver.await.unwrap();
+            assert!(readiness.unwrap_err().contains("unsafe raw evdev grab"));
+        });
+    }
+    #[test]
+    fn embedded_action_channel_receives_raw_key_events() {
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut daemon = super::KeybindingDaemon::with_options(
+            Vec::new(),
+            super::KeybindingDaemonOptions {
+                backend: super::KeyBackend::Evdev,
+                execute: true,
+                grab: false,
+                allow_unsafe_grab: false,
+                singleton: false,
+            },
+        );
+        daemon.set_action_sender(sender);
+        daemon
+            .process_key_event("KEY_LEFTSHIFT", 1, std::time::Instant::now())
+            .unwrap();
+        match receiver.try_recv().unwrap() {
+            super::KeybindingResult::RawKeyEvent { code, value } => {
+                assert_eq!(code, "KEY_LEFTSHIFT");
+                assert_eq!(value, 1);
+            }
+            other => panic!("expected raw key event, got {other:?}"),
+        }
     }
 }

@@ -1,11 +1,15 @@
 use crate::enhanced_tray::{EnhancedTrayState, TrayViewState};
 
-pub fn toggle_favorite(enhanced_tray_state: &mut Option<EnhancedTrayState>, item_id: &str) {
+pub fn toggle_favorite(
+    enhanced_tray_state: &mut Option<EnhancedTrayState>,
+    app_id: &str,
+    item_id: &str,
+) {
     let Some(tray_state) = enhanced_tray_state.as_mut() else {
         return;
     };
 
-    tray_state.tree.toggle_favorite(item_id);
+    tray_state.tree.toggle_favorite(app_id, item_id);
     if let TrayViewState::Favorites { items } = &mut tray_state.current_view {
         *items = tray_state.tree.get_favorites_menu();
     }
@@ -13,8 +17,8 @@ pub fn toggle_favorite(enhanced_tray_state: &mut Option<EnhancedTrayState>, item
 
 #[cfg(test)]
 mod tests {
-    use crate::enhanced_tray::{self, EnhancedTrayState, TrayViewState};
     use super::toggle_favorite;
+    use crate::enhanced_tray::{self, EnhancedTrayState, TrayViewState};
 
     fn tray_icon(app_id: &str) -> enhanced_tray::TrayIcon {
         enhanced_tray::TrayIcon {
@@ -55,7 +59,9 @@ mod tests {
     fn state_with_favorites_view() -> Option<EnhancedTrayState> {
         let mut state = EnhancedTrayState::new();
         state.tree.update_app(tray_icon("app"));
-        state.tree.update_app_menu("app", vec![menu_item("app", "open", "Open")]);
+        state
+            .tree
+            .update_app_menu("app", vec![menu_item("app", "open", "Open")]);
         state.current_view = TrayViewState::Favorites { items: vec![] };
         Some(state)
     }
@@ -64,10 +70,10 @@ mod tests {
     fn toggle_favorite_updates_tree_and_refreshes_favorites_view() {
         let mut state = state_with_favorites_view();
 
-        toggle_favorite(&mut state, "open");
+        toggle_favorite(&mut state, "app", "open");
 
         let state = state.expect("state remains present");
-        assert!(state.tree.favorites.contains("open"));
+        assert!(state.tree.is_favorite("app", "open"));
         match state.current_view {
             TrayViewState::Favorites { items } => {
                 assert_eq!(items.len(), 1);

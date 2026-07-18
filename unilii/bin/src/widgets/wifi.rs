@@ -26,44 +26,38 @@ impl Wifi {
     }
 
     pub fn update_status(&mut self) {
-        if !self.wifi_enabled {
-            self.connected = false;
-            self.ssid = "WiFi Disabled".to_string();
-            self.signal = 0;
-            return;
-        }
-
-        // Check if WiFi is enabled
         if let Ok(output) = Command::new("nmcli")
             .args(["-t", "-f", "wifi", "radio"])
             .output()
+            && output.status.success()
         {
             let result = String::from_utf8_lossy(&output.stdout);
-            self.wifi_enabled = result.trim() == "enabled";
+            self.wifi_enabled = result.trim().eq_ignore_ascii_case("enabled");
         }
 
-        // Get current WiFi connection using nmcli
-        if self.wifi_enabled {
-            if let Ok(output) = Command::new("nmcli")
-                .args(["-t", "-f", "active,ssid,signal", "device", "wifi", "list"])
-                .output()
-            {
-                let result = String::from_utf8_lossy(&output.stdout);
-                if !result.trim().is_empty() {
-                    let parts: Vec<&str> = result.split_whitespace().collect();
-                    self.connected = parts.first().map(|&s| s == "yes").unwrap_or(false);
-                    self.ssid = parts.get(1).unwrap_or(&"Unknown").to_string();
-                    self.signal = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
-                } else {
+        if !self.wifi_enabled {
+            self.set_disabled_state();
+            return;
+        }
+
+        if let Ok(output) = Command::new("nmcli")
+            .args(["-t", "-f", "active,ssid,signal", "device", "wifi", "list"])
+            .output()
+            && output.status.success()
+        {
+            let result = String::from_utf8_lossy(&output.stdout);
+            match parse_active_nmcli_network(&result) {
+                Some((ssid, signal)) => {
+                    self.connected = true;
+                    self.ssid = ssid;
+                    self.signal = signal;
+                }
+                None => {
                     self.connected = false;
                     self.ssid = "Disconnected".to_string();
                     self.signal = 0;
                 }
             }
-        } else {
-            self.connected = false;
-            self.ssid = "WiFi Disabled".to_string();
-            self.signal = 0;
         }
     }
 
@@ -85,18 +79,42 @@ impl Wifi {
         networks
     }
 
+    fn set_disabled_state(&mut self) {
+        self.wifi_enabled = false;
+        self.connected = false;
+        self.ssid = "WiFi Disabled".to_string();
+        self.signal = 0;
+    }
+
+    pub fn compact_label(&self) -> String {
+        if !self.wifi_enabled {
+            return "📡 off".to_string();
+        }
+        if self.connected {
+            format!("📶 {}", compact_text(&self.ssid, 18))
+        } else {
+            "📡 --".to_string()
+        }
+    }
+
+    pub fn wifi_enabled(&self) -> bool {
+        self.wifi_enabled
+    }
+
+    pub fn connected_ssid(&self) -> Option<&str> {
+        self.connected.then_some(self.ssid.as_str())
+    }
+
     pub fn toggle_wifi(&mut self) {
         let new_state = if self.wifi_enabled { "off" } else { "on" };
         if Command::new("nmcli")
             .args(["radio", "wifi", new_state])
             .status()
-            .is_ok()
+            .is_ok_and(|status| status.success())
         {
             self.wifi_enabled = !self.wifi_enabled;
             if !self.wifi_enabled {
-                self.connected = false;
-                self.ssid = "WiFi Disabled".to_string();
-                self.signal = 0;
+                self.set_disabled_state();
             }
         }
     }
@@ -109,19 +127,70 @@ pub struct NetworkInfo {
     pub security: String,
 }
 
+fn compact_text(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let prefix = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{prefix}…")
+    } else {
+        prefix
+    }
+}
+
+fn split_nmcli_terse_line(line: &str) -> Vec<String> {
+    let mut fields = vec![String::new()];
+    let mut escaped = false;
+    for ch in line.chars() {
+        if escaped {
+            fields.last_mut().expect("one field").push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == ':' {
+            fields.push(String::new());
+        } else {
+            fields.last_mut().expect("one field").push(ch);
+        }
+    }
+    if escaped {
+        fields.last_mut().expect("one field").push('\\');
+    }
+    fields
+}
+
+fn parse_active_nmcli_network(output: &str) -> Option<(String, u8)> {
+    output.lines().find_map(|line| {
+        let fields = split_nmcli_terse_line(line);
+        if fields
+            .first()
+            .is_some_and(|active| active.eq_ignore_ascii_case("yes"))
+        {
+            let ssid = fields.get(1)?.trim();
+            if ssid.is_empty() {
+                return None;
+            }
+            let signal = fields
+                .get(2)
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            Some((ssid.to_string(), signal))
+        } else {
+            None
+        }
+    })
+}
+
 fn parse_nmcli_networks(output: &str) -> Vec<NetworkInfo> {
     output
         .lines()
         .filter_map(|line| {
-            let mut parts = line.splitn(3, ':');
-            let ssid = parts.next().unwrap_or_default().trim();
-            let signal = parts.next().unwrap_or_default().trim();
-            let security = parts.next().unwrap_or_default().trim();
-
+            let fields = split_nmcli_terse_line(line);
+            let ssid = fields.first()?.trim();
+            let signal = fields.get(1)?.trim();
+            let security = fields.get(2).map(String::as_str).unwrap_or_default().trim();
             if ssid.is_empty() || signal.is_empty() {
                 return None;
             }
-
             Some(NetworkInfo {
                 ssid: ssid.to_string(),
                 signal: signal.parse().unwrap_or(0),
@@ -372,11 +441,14 @@ mod tests {
     }
 
     #[test]
-    fn test_wifi_widget_update_status_when_disabled() {
+    fn disabled_state_clears_connection_details() {
         let mut wifi = Wifi::new();
-        wifi.wifi_enabled = false;
-        wifi.update_status();
+        wifi.connected = true;
+        wifi.ssid = "Previously connected".to_string();
+        wifi.signal = 95;
+        wifi.set_disabled_state();
 
+        assert!(!wifi.wifi_enabled);
         assert!(!wifi.connected);
         assert_eq!(wifi.ssid, "WiFi Disabled");
         assert_eq!(wifi.signal, 0);
@@ -423,5 +495,30 @@ mod tests {
 
         // After toggle, the state should flip
         assert_ne!(wifi.wifi_enabled, original_enabled);
+    }
+
+    #[test]
+    fn terse_parser_preserves_spaces_colons_and_backslashes() {
+        let fields = split_nmcli_terse_line(r"Cafe WiFi\:Guest:72:WPA2\\Enterprise");
+        assert_eq!(fields, vec!["Cafe WiFi:Guest", "72", "WPA2\\Enterprise"]);
+    }
+
+    #[test]
+    fn active_network_parser_finds_active_row_not_first_row() {
+        let active = parse_active_nmcli_network("no:Cafe:88\nyes:Home\\:Office:67\nno:Other:50\n");
+        assert_eq!(active, Some(("Home:Office".to_string(), 67)));
+    }
+
+    #[test]
+    fn network_parser_handles_escaped_ssids() {
+        let networks = parse_nmcli_networks("Home\\:Office:80:WPA2\nOpen Network:45:\n");
+        assert_eq!(networks[0].ssid, "Home:Office");
+        assert_eq!(networks[1].security, "Open");
+    }
+
+    #[test]
+    fn compact_wifi_label_bounds_long_unicode_ssids() {
+        assert_eq!(compact_text("short", 8), "short");
+        assert_eq!(compact_text("café-network-very-long", 8), "café-net…");
     }
 }

@@ -13,9 +13,24 @@ pub fn mark_special_view_loading(
     };
 
     match &mut tray_state.current_view {
-        TrayViewState::Network { app_id, loading, error, .. }
-        | TrayViewState::Mount { app_id, loading, error, .. }
-        | TrayViewState::Calendar { app_id, loading, error, .. } => {
+        TrayViewState::Network {
+            app_id,
+            loading,
+            error,
+            ..
+        }
+        | TrayViewState::Mount {
+            app_id,
+            loading,
+            error,
+            ..
+        }
+        | TrayViewState::Calendar {
+            app_id,
+            loading,
+            error,
+            ..
+        } => {
             if icon_key_for_app_id(app_id).as_deref() == Some(icon_key) {
                 *loading = true;
                 *error = None;
@@ -38,7 +53,14 @@ pub fn apply_network_snapshot(
         return false;
     };
 
-    if let TrayViewState::Network { app_id, data, loading, error, .. } = &mut tray_state.current_view {
+    if let TrayViewState::Network {
+        app_id,
+        data,
+        loading,
+        error,
+        ..
+    } = &mut tray_state.current_view
+    {
         if icon_key_for_app_id(app_id).as_deref() == Some(icon_key) {
             *loading = false;
             match result {
@@ -67,7 +89,14 @@ pub fn apply_mount_snapshot(
         return false;
     };
 
-    if let TrayViewState::Mount { app_id, data, loading, error, .. } = &mut tray_state.current_view {
+    if let TrayViewState::Mount {
+        app_id,
+        data,
+        loading,
+        error,
+        ..
+    } = &mut tray_state.current_view
+    {
         if icon_key_for_app_id(app_id).as_deref() == Some(icon_key) {
             *loading = false;
             match result {
@@ -96,7 +125,14 @@ pub fn apply_calendar_snapshot(
         return false;
     };
 
-    if let TrayViewState::Calendar { app_id, data, loading, error, .. } = &mut tray_state.current_view {
+    if let TrayViewState::Calendar {
+        app_id,
+        data,
+        loading,
+        error,
+        ..
+    } = &mut tray_state.current_view
+    {
         if icon_key_for_app_id(app_id).as_deref() == Some(icon_key) {
             *loading = false;
             match result {
@@ -124,7 +160,14 @@ pub fn network_toggle_desired_state_and_mark_loading(
         return true;
     };
 
-    if let TrayViewState::Network { app_id, data, loading, error, .. } = &mut tray_state.current_view {
+    if let TrayViewState::Network {
+        app_id,
+        data,
+        loading,
+        error,
+        ..
+    } = &mut tray_state.current_view
+    {
         if icon_key_for_app_id(app_id).as_deref() == Some(icon_key) {
             let desired_state = data.as_ref().is_none_or(|snapshot| !snapshot.enabled);
             *loading = true;
@@ -261,10 +304,20 @@ mod tests {
     fn network_snapshot_success_updates_data_and_clears_error() {
         let mut state = state_with_network();
 
-        assert!(apply_network_snapshot(&mut state, "net-key", Ok(network_snapshot(true)), |_| Some("net-key".into())));
+        assert!(apply_network_snapshot(
+            &mut state,
+            "net-key",
+            Ok(network_snapshot(true)),
+            |_| Some("net-key".into())
+        ));
 
         match state.unwrap().current_view {
-            TrayViewState::Network { data, loading, error, .. } => {
+            TrayViewState::Network {
+                data,
+                loading,
+                error,
+                ..
+            } => {
                 assert!(!loading);
                 assert!(error.is_none());
                 assert_eq!(data.unwrap().connected_ssid.as_deref(), Some("Cafe"));
@@ -277,10 +330,20 @@ mod tests {
     fn snapshot_error_keeps_data_empty_and_records_error() {
         let mut state = state_with_mount();
 
-        assert!(apply_mount_snapshot(&mut state, "mount-key", Err("boom".into()), |_| Some("mount-key".into())));
+        assert!(apply_mount_snapshot(
+            &mut state,
+            "mount-key",
+            Err("boom".into()),
+            |_| Some("mount-key".into())
+        ));
 
         match state.unwrap().current_view {
-            TrayViewState::Mount { data, loading, error, .. } => {
+            TrayViewState::Mount {
+                data,
+                loading,
+                error,
+                ..
+            } => {
                 assert!(!loading);
                 assert!(data.is_none());
                 assert_eq!(error.as_deref(), Some("boom"));
@@ -294,10 +357,20 @@ mod tests {
         let mut state = state_with_calendar();
         let snapshot = CalendarMenuSnapshot::from_accounts(vec!["work".into()]);
 
-        assert!(apply_calendar_snapshot(&mut state, "calendar-key", Ok(snapshot), |_| Some("calendar-key".into())));
+        assert!(apply_calendar_snapshot(
+            &mut state,
+            "calendar-key",
+            Ok(snapshot),
+            |_| Some("calendar-key".into())
+        ));
 
         match state.unwrap().current_view {
-            TrayViewState::Calendar { data, loading, error, .. } => {
+            TrayViewState::Calendar {
+                data,
+                loading,
+                error,
+                ..
+            } => {
                 assert!(!loading);
                 assert!(error.is_none());
                 assert_eq!(data.unwrap().account_ids, vec!["work".to_string()]);
@@ -310,7 +383,11 @@ mod tests {
     fn refresh_marks_any_special_view_loading_and_clears_error() {
         let mut state = state_with_mount();
 
-        assert!(mark_special_view_loading(&mut state, "mount-key", |_| Some("mount-key".into())));
+        assert!(mark_special_view_loading(
+            &mut state,
+            "mount-key",
+            |_| Some("mount-key".into())
+        ));
 
         match state.unwrap().current_view {
             TrayViewState::Mount { loading, error, .. } => {
@@ -324,9 +401,13 @@ mod tests {
     #[test]
     fn network_toggle_computes_desired_state_from_snapshot_and_marks_loading() {
         let mut state = state_with_network();
-        apply_network_snapshot(&mut state, "net-key", Ok(network_snapshot(true)), |_| Some("net-key".into()));
+        apply_network_snapshot(&mut state, "net-key", Ok(network_snapshot(true)), |_| {
+            Some("net-key".into())
+        });
 
-        let desired = network_toggle_desired_state_and_mark_loading(&mut state, "net-key", |_| Some("net-key".into()));
+        let desired = network_toggle_desired_state_and_mark_loading(&mut state, "net-key", |_| {
+            Some("net-key".into())
+        });
 
         assert!(!desired);
         match state.unwrap().current_view {
@@ -342,7 +423,11 @@ mod tests {
     fn spawn_command_started_marks_network_loading_and_clears_error() {
         let mut state = state_with_network();
 
-        assert!(apply_spawn_command_started(&mut state, "net-key", |_| Some("net-key".into())));
+        assert!(apply_spawn_command_started(
+            &mut state,
+            "net-key",
+            |_| Some("net-key".into())
+        ));
 
         match state.unwrap().current_view {
             TrayViewState::Network { loading, error, .. } => {
@@ -377,10 +462,20 @@ mod tests {
     fn mount_snapshot_success_updates_data_and_clears_error() {
         let mut state = state_with_mount();
 
-        assert!(apply_mount_snapshot(&mut state, "mount-key", Ok(MountMenuSnapshot::default()), |_| Some("mount-key".into())));
+        assert!(apply_mount_snapshot(
+            &mut state,
+            "mount-key",
+            Ok(MountMenuSnapshot::default()),
+            |_| Some("mount-key".into())
+        ));
 
         match state.unwrap().current_view {
-            TrayViewState::Mount { data, loading, error, .. } => {
+            TrayViewState::Mount {
+                data,
+                loading,
+                error,
+                ..
+            } => {
                 assert!(!loading);
                 assert!(error.is_none());
                 assert!(data.is_some());

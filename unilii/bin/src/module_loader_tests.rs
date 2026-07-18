@@ -1,5 +1,5 @@
 use super::ModuleManager;
-use unilii_core::{ModuleConfig, ModulePosition, ModuleRegistry, DefaultModuleRegistry};
+use deskhalloumi_core::{ModuleConfig, ModulePosition, ModuleRegistry, DefaultModuleRegistry};
 use std::collections::HashMap;
 
 #[tokio::test]

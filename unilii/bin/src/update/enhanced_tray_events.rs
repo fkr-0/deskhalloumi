@@ -2,7 +2,8 @@ pub fn apply_enhanced_tray_event(
     enhanced_tray_state: &mut Option<crate::enhanced_tray::EnhancedTrayState>,
     event: crate::enhanced_tray::TrayEvent,
 ) {
-    let tray_state = enhanced_tray_state.get_or_insert_with(crate::enhanced_tray::EnhancedTrayState::new);
+    let tray_state =
+        enhanced_tray_state.get_or_insert_with(crate::enhanced_tray::EnhancedTrayState::new);
 
     match event {
         crate::enhanced_tray::TrayEvent::IconsUpdated(icons) => {
@@ -19,17 +20,22 @@ pub fn apply_enhanced_tray_event(
         }
         crate::enhanced_tray::TrayEvent::FavoritesChanged(favorites) => {
             tray_state.tree.favorites = favorites;
-            if let crate::enhanced_tray::TrayViewState::Favorites { items } = &mut tray_state.current_view {
+            if let crate::enhanced_tray::TrayViewState::Favorites { items } =
+                &mut tray_state.current_view
+            {
                 *items = tray_state.tree.get_favorites_menu();
             }
         }
         crate::enhanced_tray::TrayEvent::NavigationChanged(navigation) => {
             let target_app_id = navigation.app_order.get(navigation.current_app_index);
-            if let (Some(target_app_id), crate::enhanced_tray::TrayViewState::SingleApp {
-                app_id,
-                navigation: current_navigation,
-                ..
-            }) = (target_app_id, &mut tray_state.current_view)
+            if let (
+                Some(target_app_id),
+                crate::enhanced_tray::TrayViewState::SingleApp {
+                    app_id,
+                    navigation: current_navigation,
+                    ..
+                },
+            ) = (target_app_id, &mut tray_state.current_view)
                 && app_id == target_app_id
             {
                 *current_navigation = navigation;
@@ -40,8 +46,8 @@ pub fn apply_enhanced_tray_event(
 
 #[cfg(test)]
 mod tests {
-    use crate::enhanced_tray::{self, EnhancedTrayState};
     use super::apply_enhanced_tray_event;
+    use crate::enhanced_tray::{self, EnhancedTrayState};
 
     fn tray_icon(app_id: &str) -> enhanced_tray::TrayIcon {
         enhanced_tray::TrayIcon {

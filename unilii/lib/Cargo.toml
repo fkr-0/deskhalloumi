@@ -1,9 +1,9 @@
 [package]
-name = "unilii-lib"
+name = "deskhalloumi-lib"
 version.workspace = true
 edition.workspace = true
 
-# The unilii-lib crate provides data sources and utilities loosely based on the
+# The deskhalloumi-lib crate provides data sources and utilities loosely based on the
 # original `liischte-lib` library.  It exposes asynchronous streams for
 # monitoring system information such as battery state, backlight brightness,
 # running processes and keyboard input.  The implementation avoids any

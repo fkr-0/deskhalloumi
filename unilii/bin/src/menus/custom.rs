@@ -1,9 +1,10 @@
 #![allow(dead_code)]
 // FIXME(T6): Custom menu model is planned toolbar/menu integration surface pending canonical MenuModel wiring.
 
-use unilii_core::config::{CustomMenuActionConfig, CustomMenuConfig, CustomMenuItemConfig};
+use deskhalloumi_core::config::{CustomMenuActionConfig, CustomMenuConfig, CustomMenuItemConfig};
 
 use super::common::{FilterableMenu, QuickjumpMenu};
+use super::presentation::{contextual_shell_command, shell_escape, visible_if_matches};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomMenuItem {
@@ -29,7 +30,9 @@ impl CustomMenuSnapshot {
         let items = config
             .items
             .iter()
-            .map(build_custom_menu_item)
+            .filter(|item| visible_if_matches(item.visible_if.as_deref()))
+            .take(config.max_rows)
+            .map(|item| build_custom_menu_item(item, config.show_subtitles))
             .collect::<Vec<_>>();
         Self {
             items,
@@ -63,7 +66,7 @@ impl QuickjumpMenu for CustomMenuSnapshot {
 }
 
 pub fn build_action_command(item: &CustomMenuItemConfig) -> String {
-    match &item.action {
+    let command = match &item.action {
         CustomMenuActionConfig::Shell { command } => command.clone(),
         CustomMenuActionConfig::Launcher { command, args, .. } => {
             let args = args
@@ -77,10 +80,11 @@ pub fn build_action_command(item: &CustomMenuItemConfig) -> String {
                 format!("{command} {args}")
             }
         }
-    }
+    };
+    contextual_shell_command(&command, item.working_dir.as_deref(), &item.env)
 }
 
-fn build_custom_menu_item(item: &CustomMenuItemConfig) -> CustomMenuItem {
+fn build_custom_menu_item(item: &CustomMenuItemConfig, show_subtitles: bool) -> CustomMenuItem {
     let mut filter_tokens = Vec::new();
     for field in &item.filter_fields {
         match field.as_str() {
@@ -102,7 +106,7 @@ fn build_custom_menu_item(item: &CustomMenuItemConfig) -> CustomMenuItem {
     CustomMenuItem {
         id: item.id.clone(),
         title: item.title.clone(),
-        subtitle: item.subtitle.clone(),
+        subtitle: show_subtitles.then(|| item.subtitle.clone()).flatten(),
         action_command: build_action_command(item),
         icon_theme: item.icon.theme_icon.clone(),
         icon_svg_path: item.icon.svg_path.clone(),
@@ -112,15 +116,11 @@ fn build_custom_menu_item(item: &CustomMenuItemConfig) -> CustomMenuItem {
     }
 }
 
-fn shell_escape(input: &str) -> String {
-    format!("'{}'", input.replace('\'', "'\\''"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::{CustomMenuSnapshot, build_action_command};
     use crate::menus::common::{FilterableMenu, QuickjumpMenu};
-    use unilii_core::config::{
+    use deskhalloumi_core::config::{
         CustomMenuActionConfig, CustomMenuConfig, CustomMenuIconConfig, CustomMenuItemConfig,
     };
 
@@ -150,6 +150,8 @@ mod tests {
     fn snapshot_supports_filter_and_quickjump() {
         let config = CustomMenuConfig {
             enabled: true,
+            max_rows: 40,
+            show_subtitles: true,
             app_ids: Vec::new(),
             icon_name_patterns: Vec::new(),
             include: Vec::new(),
@@ -181,5 +183,63 @@ mod tests {
             vec![("a".to_string(), "display.docked".to_string())]
         );
         assert!(snapshot.matches_filter_query(&"display.docked".to_string(), "docked xrandr"));
+    }
+    #[test]
+    fn snapshot_applies_visibility_and_row_limit() {
+        let config = CustomMenuConfig {
+            enabled: true,
+            max_rows: 1,
+            items: vec![
+                CustomMenuItemConfig {
+                    id: "hidden".into(),
+                    title: "Hidden".into(),
+                    subtitle: None,
+                    action: CustomMenuActionConfig::Shell {
+                        command: "true".into(),
+                    },
+                    icon: CustomMenuIconConfig::default(),
+                    filter_fields: vec!["title".into()],
+                    tags: vec![],
+                    working_dir: None,
+                    env: vec![],
+                    confirm: false,
+                    visible_if: Some("env:UNILII_TEST_VARIABLE_THAT_SHOULD_NOT_EXIST".into()),
+                },
+                CustomMenuItemConfig {
+                    id: "visible".into(),
+                    title: "Visible".into(),
+                    subtitle: None,
+                    action: CustomMenuActionConfig::Shell {
+                        command: "true".into(),
+                    },
+                    icon: CustomMenuIconConfig::default(),
+                    filter_fields: vec!["title".into()],
+                    tags: vec![],
+                    working_dir: None,
+                    env: vec![],
+                    confirm: false,
+                    visible_if: None,
+                },
+                CustomMenuItemConfig {
+                    id: "clipped".into(),
+                    title: "Clipped".into(),
+                    subtitle: None,
+                    action: CustomMenuActionConfig::Shell {
+                        command: "true".into(),
+                    },
+                    icon: CustomMenuIconConfig::default(),
+                    filter_fields: vec!["title".into()],
+                    tags: vec![],
+                    working_dir: None,
+                    env: vec![],
+                    confirm: false,
+                    visible_if: None,
+                },
+            ],
+            ..Default::default()
+        };
+        let snapshot = CustomMenuSnapshot::from_config(&config);
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(snapshot.items[0].id, "visible");
     }
 }

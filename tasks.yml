@@ -1592,3 +1592,1049 @@ done:
   - unilii/bin/src/main.rs
   - tasks.yml
   copypasted: false
+
+# BEGIN generated feature implementation plan: polybar_makepad
+feature_implementation_plan:
+  id: "polybar_makepad"
+  title: "Polybar replacement using Makepad"
+  source_reviewed:
+    - "features.md"
+    - "Cargo.toml"
+    - "crates/unilii-core/src/module.rs"
+    - "crates/unilii-cli/src/main.rs"
+    - "crates/unilii-ui/README.md"
+  reviewed_at: "2026-05-25"
+  status: "in_progress"
+  owner: "implementation pass"
+  objective: >
+    Implement a native Makepad-powered top bar binary named unilii-bar that can
+    replace the current Polybar workflow while reusing unilii scanning,
+    metadata, config generation, and module-discovery concepts.
+  scope:
+    in:
+      - "Native top-of-screen bar application with left, center, and right zones."
+      - "Declarative TOML configuration for bar geometry, theme, layout, modules, and actions."
+      - "Independent module update runtime supporting intervals, event streams, hot reload, and click actions."
+      - "Core modules: workspaces, window_title, clock, system, network, vpn, audio, battery, script, notifications."
+      - "Bar-specific module provider metadata integrated with existing scan/config-generation flow."
+      - "Docs and examples for i3, sway, generic X11 fallback, and WM rule setup."
+    out:
+      - "Perfect Polybar config compatibility."
+      - "A full desktop shell or compositor."
+      - "Dynamic plugin loading as the first implementation path."
+      - "A full notification daemon unless explicitly promoted from future work."
+  codebase_fit:
+    existing_strengths:
+      - "The workspace already uses crates/*, so crates/unilii-bar can be added as a normal workspace member."
+      - "unilii-core already has config, schema, manifest, module, and registry concepts that can be extended with bar metadata."
+      - "unilii-cli already has config-oriented commands that can gain bar config generation without creating a second CLI."
+      - "Scanner-related crates already provide a natural home for discovering bar module provider metadata."
+    guardrails:
+      - "Keep Makepad dependencies isolated in crates/unilii-bar so existing CLI/core crates do not pay UI dependency cost."
+      - "Do not force the existing command-oriented Module trait to represent long-running live widgets. Add a bar-specific trait and metadata bridge instead."
+      - "Keep crates/unilii-ui as the terminal UI crate; do not mix ratatui/crossterm concerns with the Makepad bar."
+      - "Treat screen-space reservation as best effort until the target compositor/window-manager stack is proven."
+  release_slices:
+    mvp:
+      goal: "A useful bar that can replace a simple Polybar config for daily use."
+      includes:
+        - "unilii-bar starts and renders a top bar with theme and zones."
+        - "Config parsing, validation, defaults, sample template, and hot reload are working."
+        - "Clock, script, basic CPU, memory, network, audio, battery, workspaces, and window title are functional with graceful fallbacks."
+        - "i3 and sway command backends are documented and usable."
+    full:
+      goal: "The complete feature spec is implemented with registry integration, tests, docs, and hardening."
+      includes:
+        - "All core modules listed in features.md are implemented."
+        - "Bar module provider metadata is discoverable through the existing unilii scan/config-generation path."
+        - "Module actions, scheduler cancellation, script timeouts, and threshold states are covered by tests."
+        - "Install/startup docs cover common WM setups and known platform limitations."
+  dependency_order:
+    - "BAR-M0"
+    - "BAR-M1"
+    - "BAR-M2"
+    - "BAR-M3"
+    - "BAR-M4"
+    - "BAR-M5"
+    - "BAR-M6"
+    - "BAR-M7"
+    - "BAR-M8"
+    - "BAR-M9"
+    - "BAR-M10"
+    - "BAR-M11"
+  milestones:
+    - id: "BAR-M0"
+      title: "Set architecture decisions and MVP boundaries"
+      priority: "P0"
+      status: "done"
+      depends_on: []
+      objective: "Resolve the open questions from features.md before committing to APIs that will be hard to change."
+      tasks:
+        - id: "BAR-M0-T01"
+          title: "Choose first WM backend targets"
+          details: "Use i3 and sway command backends first unless project constraints require a different primary target. Keep x11-generic as fallback work."
+        - id: "BAR-M0-T02"
+          title: "Decide initial plugin model"
+          details: "Start with built-in linked modules plus script modules. Defer dynamic libraries until the metadata and runtime contracts stabilize."
+        - id: "BAR-M0-T03"
+          title: "Define module rendering boundary"
+          details: "Use text/view-model rendering for the first module set; allow Makepad-specific view binding metadata for richer modules later."
+        - id: "BAR-M0-T04"
+          title: "Document screen-reservation strategy"
+          details: "Identify what Makepad can do directly and what must be delegated to WM rules, layer-shell, struts, or fallback always-on-top behavior."
+      deliverables:
+        - "docs/bar-architecture.md with accepted decisions and explicit deferrals."
+        - "An MVP checklist matching the release_slices.mvp section."
+      acceptance:
+        - "Every open question in features.md is answered, deferred with rationale, or converted into a tracked risk."
+        - "The first supported platform path can be implemented without guessing about backend priority."
+    - id: "BAR-M1"
+      title: "Create crates/unilii-bar and a blank Makepad top bar"
+      priority: "P0"
+      status: "partial"
+      depends_on: ["BAR-M0"]
+      objective: "Add the runnable binary crate and prove the window lifecycle before implementing modules."
+      tasks:
+        - id: "BAR-M1-T01"
+          title: "Add workspace crate"
+          details: "Create crates/unilii-bar/Cargo.toml and src/main.rs. Use workspace package metadata where possible."
+        - id: "BAR-M1-T02"
+          title: "Add Makepad dependency behind the bar crate"
+          details: "Keep Makepad out of unilii-core, unilii-cli, and unilii-ui dependency graphs unless a shared type is intentionally needed."
+        - id: "BAR-M1-T03"
+          title: "Implement BarApp lifecycle skeleton"
+          details: "Create src/app.rs with startup, shutdown, redraw request, and error reporting boundaries."
+        - id: "BAR-M1-T04"
+          title: "Render a frameless top-width placeholder"
+          details: "Implement best-effort top placement, configured height, and always-on-top fallback."
+        - id: "BAR-M1-T05"
+          title: "Add basic logging and panic diagnostics"
+          details: "Ensure early users can distinguish config errors, Makepad/window errors, and runtime module errors."
+      deliverables:
+        - "crates/unilii-bar/Cargo.toml"
+        - "crates/unilii-bar/src/main.rs"
+        - "crates/unilii-bar/src/app.rs"
+      acceptance:
+        - "cargo run -p unilii-bar opens a visible bar window or reports a clear platform limitation."
+        - "cargo check --workspace succeeds after the crate is added."
+    - id: "BAR-M2"
+      title: "Implement bar configuration, defaults, and generation"
+      priority: "P0"
+      status: "partial"
+      depends_on: ["BAR-M1"]
+      objective: "Turn the example config in features.md into typed, validated configuration used by the app and CLI."
+      tasks:
+        - id: "BAR-M2-T01"
+          title: "Define typed config structs"
+          details: "Create BarConfig, Theme, Layout, ModuleSpec, action, state-style, and validation types in crates/unilii-bar/src/config.rs or a shared core module if needed."
+        - id: "BAR-M2-T02"
+          title: "Parse TOML and apply defaults"
+          details: "Support the proposed [bar], [theme], [layout], and [[module]] schema. Validate duplicate ids, unknown modules, invalid intervals, and missing commands."
+        - id: "BAR-M2-T03"
+          title: "Add templates/bar.toml"
+          details: "Provide starter config equivalent to the spec, with comments and safe defaults."
+        - id: "BAR-M2-T04"
+          title: "Wire CLI generation"
+          details: "Extend existing CLI/config generation so unilii can emit the starter unilii-bar config without requiring the bar binary to run."
+        - id: "BAR-M2-T05"
+          title: "Add config file discovery"
+          details: "Support explicit --config and default lookup under XDG-style config paths."
+      deliverables: ["crates/unilii-bar/src/config.rs", "templates/bar.toml", "CLI command or option that generates bar config"]
+      acceptance:
+        - "The config example from features.md parses successfully."
+        - "Invalid configs return actionable diagnostics naming the bad field and module id."
+        - "Tests cover defaults, duplicate ids, unknown module types, and interval validation."
+    - id: "BAR-M3"
+      title: "Map theme and layout to Makepad views"
+      priority: "P0"
+      status: "partial"
+      depends_on: ["BAR-M2"]
+      objective: "Render configured zones and modules consistently before adding live data."
+      tasks:
+        - id: "BAR-M3-T01"
+          title: "Implement layout zones"
+          details: "Create left, center, and right containers; preserve declarative module ordering from config."
+        - id: "BAR-M3-T02"
+          title: "Implement theme mapping"
+          details: "Map font, size, foreground, background, accent, warning, critical, padding, margin, and border settings to Makepad style values."
+        - id: "BAR-M3-T03"
+          title: "Define common module view model"
+          details: "Represent label, tooltip, state, visibility, css-like style overrides, and pending error state."
+        - id: "BAR-M3-T04"
+          title: "Implement state styling"
+          details: "Support ok, warning, critical, active, visible, urgent, empty, muted, charging, and disconnected states where applicable."
+      deliverables: ["crates/unilii-bar/src/layout.rs", "crates/unilii-bar/src/theme.rs", "A static rendered bar matching configured zones and sample theme"]
+      acceptance:
+        - "Changing theme and layout in config changes the rendered bar without code edits."
+        - "Disabled modules are not rendered and unknown module references produce diagnostics."
+    - id: "BAR-M4"
+      title: "Build module runtime, scheduler, actions, and hot reload"
+      priority: "P0"
+      status: "partial"
+      depends_on: ["BAR-M3"]
+      objective: "Provide the runtime foundation all modules use for independent updates and user actions."
+      tasks:
+        - id: "BAR-M4-T01"
+          title: "Define BarModule and ModuleContext traits"
+          details: "Support init, update, optional event stream, render model output, and shutdown/cancel hooks."
+        - id: "BAR-M4-T02"
+          title: "Implement scheduler"
+          details: "Run interval-based modules independently, coalesce redraws, and isolate module failures."
+        - id: "BAR-M4-T03"
+          title: "Implement config hot reload"
+          details: "Watch the config file, validate new config, rebuild the module graph safely, and keep the previous graph alive if reload fails."
+        - id: "BAR-M4-T04"
+          title: "Implement action dispatcher"
+          details: "Support on_click_left, on_click_middle, on_click_right for shell commands and internal module actions."
+        - id: "BAR-M4-T05"
+          title: "Add capability/error reporting"
+          details: "Expose unavailable dependencies, command failures, and stale module values in diagnostics and optional tooltips."
+      deliverables: ["crates/unilii-bar/src/modules/mod.rs", "scheduler and action dispatcher modules", "hot reload integration in BarApp"]
+      acceptance:
+        - "Each module can update without blocking other modules."
+        - "Reload failure keeps the last working bar config active."
+        - "Click actions are debounced or otherwise protected from accidental duplicate execution."
+    - id: "BAR-M5"
+      title: "Implement first core modules: clock, script, and system"
+      priority: "P0"
+      status: "partial"
+      depends_on: ["BAR-M4"]
+      objective: "Deliver the simplest useful data modules and validate the runtime contract."
+      tasks:
+        - id: "BAR-M5-T01"
+          title: "Implement clock module"
+          details: "Support format string, timezone option, interval updates, and locale-safe fallback formatting."
+        - id: "BAR-M5-T02"
+          title: "Implement script module"
+          details: "Support command, env, interval, timeout, output trimming/parsing, stale output handling, and click action."
+        - id: "BAR-M5-T03"
+          title: "Implement system module"
+          details: "Support CPU, memory, load, and temperature providers with warning/critical thresholds."
+        - id: "BAR-M5-T04"
+          title: "Add module tests"
+          details: "Cover config parsing, scheduler intervals, script timeout, command failure, and threshold formatting."
+      deliverables: ["crates/unilii-bar/src/modules/clock.rs", "crates/unilii-bar/src/modules/script.rs", "crates/unilii-bar/src/modules/system.rs"]
+      acceptance:
+        - "A sample config can render clock, script output, CPU, and memory in the bar."
+        - "A hanging script is killed at timeout and does not block redraws."
+        - "System thresholds set warning and critical states deterministically."
+    - id: "BAR-M6"
+      title: "Implement Linux desktop status modules"
+      priority: "P1"
+      status: "partial"
+      depends_on: ["BAR-M5"]
+      objective: "Add the non-WM desktop modules needed for a practical Polybar replacement."
+      tasks:
+        - id: "BAR-M6-T01"
+          title: "Implement network module"
+          details: "Show interface status, IP address, up/down state, and Wi-Fi SSID when available."
+        - id: "BAR-M6-T02"
+          title: "Implement vpn module"
+          details: "Detect common tunnel interfaces and support optional command probe overrides."
+        - id: "BAR-M6-T03"
+          title: "Implement audio module"
+          details: "Support PipeWire/PulseAudio volume and mute using available command/API backends; expose toggle and mixer actions."
+        - id: "BAR-M6-T04"
+          title: "Implement battery module"
+          details: "Show percentage, charging/discharging state, estimated state when available, and low/critical thresholds."
+      deliverables: ["crates/unilii-bar/src/modules/network.rs", "crates/unilii-bar/src/modules/vpn.rs", "crates/unilii-bar/src/modules/audio.rs", "crates/unilii-bar/src/modules/battery.rs"]
+      acceptance:
+        - "Missing system dependencies degrade to disabled/unavailable state instead of crashing."
+        - "Each module documents its Linux commands/files/API dependencies."
+        - "State transitions are covered by unit tests or fixture-based tests where practical."
+    - id: "BAR-M7"
+      title: "Implement workspace and focused-window integration"
+      priority: "P1"
+      status: "partial"
+      depends_on: ["BAR-M4"]
+      objective: "Support the interactive WM behavior that makes the bar a real Polybar replacement."
+      tasks:
+        - id: "BAR-M7-T01"
+          title: "Define WmBackend trait"
+          details: "Represent workspace list, active workspace, urgent state, visible state, focused window title, and switch-workspace actions."
+        - id: "BAR-M7-T02"
+          title: "Implement i3 backend"
+          details: "Use i3-msg for initial implementation and later replace with an event socket if needed."
+        - id: "BAR-M7-T03"
+          title: "Implement sway backend"
+          details: "Use swaymsg for initial implementation with config-selectable backend."
+        - id: "BAR-M7-T04"
+          title: "Implement generic fallback backend"
+          details: "Use wmctrl, xprop, or configured shell commands where i3/sway are unavailable."
+        - id: "BAR-M7-T05"
+          title: "Implement workspaces and window_title modules"
+          details: "Render active, visible, urgent, and empty workspace states; expose click-to-switch behavior."
+      deliverables: ["crates/unilii-bar/src/modules/workspaces.rs", "crates/unilii-bar/src/modules/window_title.rs", "WM backend module and docs"]
+      acceptance:
+        - "Active workspace state updates correctly on i3 or sway."
+        - "Clicking a workspace switches to that workspace."
+        - "Focused window title updates and falls back to empty or host label when unavailable."
+    - id: "BAR-M8"
+      title: "Integrate bar module providers with unilii discovery"
+      priority: "P1"
+      status: "partial"
+      depends_on: ["BAR-M2", "BAR-M4"]
+      objective: "Reuse existing project scan/config-generation concepts for bar module metadata without conflating runtime widget modules with existing command modules."
+      tasks:
+        - id: "BAR-M8-T01"
+          title: "Add bar registry types"
+          details: "Create crates/unilii-core/src/bar_registry.rs with ModuleProvider metadata, config schema/defaults, capability requirements, polling/event info, and optional Makepad binding info."
+        - id: "BAR-M8-T02"
+          title: "Expose bar registry from unilii-core"
+          details: "Re-export bar registry APIs without changing existing ModuleRegistry behavior."
+        - id: "BAR-M8-T03"
+          title: "Extend scanner metadata extraction"
+          details: "Recognize bar module provider declarations in Makepad-enabled or bar-enabled crates."
+        - id: "BAR-M8-T04"
+          title: "Generate starter config from discovered providers"
+          details: "Allow config generation to include provider defaults and schema-derived comments."
+        - id: "BAR-M8-T05"
+          title: "Add registry contract tests"
+          details: "Ensure discovered providers produce stable ids, valid defaults, and capability diagnostics."
+      deliverables: ["crates/unilii-core/src/bar_registry.rs", "scanner support for bar metadata", "config generation using discovered bar providers"]
+      acceptance:
+        - "Built-in bar modules are discoverable through the registry."
+        - "A generated config can be produced from provider defaults."
+        - "Existing core ModuleRegistry tests continue to pass unchanged."
+    - id: "BAR-M9"
+      title: "Implement notification indicator"
+      priority: "P2"
+      status: "partial"
+      depends_on: ["BAR-M4"]
+      objective: "Provide a lightweight notification/counter hook while keeping a full daemon optional."
+      tasks:
+        - id: "BAR-M9-T01"
+          title: "Define notifications module scope"
+          details: "Start with a count/indicator sourced from a configured command, file, or event hook."
+        - id: "BAR-M9-T02"
+          title: "Implement notifications module"
+          details: "Support indicator text, count, stale state, and click action to open the configured notification UI."
+        - id: "BAR-M9-T03"
+          title: "Document future daemon path"
+          details: "Record what would be needed for a full notification daemon or tray implementation."
+      deliverables: ["crates/unilii-bar/src/modules/notifications.rs", "docs entry describing limitations and integration options"]
+      acceptance:
+        - "Users can configure a notification count/indicator without running a new daemon."
+        - "Full daemon work remains clearly marked as future scope."
+    - id: "BAR-M10"
+      title: "Add docs, examples, and startup integration"
+      priority: "P1"
+      status: "partial"
+      depends_on: ["BAR-M6", "BAR-M7", "BAR-M8"]
+      objective: "Make the bar installable and understandable for the target tiling-WM workflow."
+      tasks:
+        - id: "BAR-M10-T01"
+          title: "Document installation"
+          details: "Cover cargo install/run, config path, logging, and common dependency requirements."
+        - id: "BAR-M10-T02"
+          title: "Document i3 startup"
+          details: "Include exec line, bar replacement guidance, gap/reserved-space notes, and workspace click behavior."
+        - id: "BAR-M10-T03"
+          title: "Document sway startup"
+          details: "Include sway config example, layer/surface limitations, and fallback WM rules."
+        - id: "BAR-M10-T04"
+          title: "Add example configs"
+          details: "Provide minimal, full, and script-heavy example configs."
+        - id: "BAR-M10-T05"
+          title: "Document troubleshooting"
+          details: "Cover missing commands, audio backends, battery paths, WM backend selection, and screen reservation limitations."
+      deliverables: ["docs/unilii-bar.md", "examples/bar/minimal.toml", "examples/bar/full.toml", "examples/bar/scripts.toml"]
+      acceptance:
+        - "A new user can install and start unilii-bar from docs alone."
+        - "Known platform limitations are explicit and not hidden as bugs."
+    - id: "BAR-M11"
+      title: "Harden tests, CI, packaging, and release readiness"
+      priority: "P1"
+      status: "todo"
+      depends_on: ["BAR-M10"]
+      objective: "Promote the implementation from feature-complete to maintainable."
+      tasks:
+        - id: "BAR-M11-T01"
+          title: "Add unit and fixture tests"
+          details: "Cover config parsing, defaults, module formatting, script timeout, threshold states, WM parsing fixtures, and registry metadata."
+        - id: "BAR-M11-T02"
+          title: "Add integration smoke tests"
+          details: "Exercise headless or mock runtime paths where Makepad/windowing permits; otherwise test non-window app state and module graph construction."
+        - id: "BAR-M11-T03"
+          title: "Add CI gates"
+          details: "Ensure cargo fmt, cargo clippy, cargo test, and cargo check --workspace include the new crate or an explicitly documented target gate."
+        - id: "BAR-M11-T04"
+          title: "Review dependency and license impact"
+          details: "Record Makepad and Linux backend dependency implications before release."
+        - id: "BAR-M11-T05"
+          title: "Add release checklist"
+          details: "Include config migration, known issues, startup docs, and rollback guidance."
+      deliverables:
+        - "Test coverage for all non-visual contracts."
+        - "CI-compatible checks for the new crate."
+        - "Release checklist in docs or tasks.yml."
+      acceptance:
+        - "Full workspace checks pass or unsupported graphical checks are documented and gated."
+        - "The bar can be configured, run, reloaded, and exited cleanly in the supported environment."
+        - "All features.md goals are implemented, tested, documented, or explicitly deferred with rationale."
+
+  implementation_notes:
+    - date: "2026-05-25"
+      status: "completed_first_compiling_slice"
+      summary:
+        - "Adapted the plan to the actual repository layout: unilii/core and unilii/bin rather than crates/*."
+        - "Added docs/bar-architecture.md with accepted MVP architecture decisions and explicit deferrals."
+        - "Added templates/bar.toml as a valid starter bar config."
+        - "Added unilii_core::bar for typed config parsing, semantic validation, starter config generation, and built-in provider metadata."
+        - "Added unilii_core::bar_runtime for renderer-neutral module view models, module graph construction, and safe placeholder runtime updates."
+        - "Added the unilii-bar binary entry in unilii/bin with --print-default-config, --check-config, --config, and headless scaffold output."
+      tests:
+        - "cargo fmt --all"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --check-config --config templates/bar.toml"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "Makepad native rendering is not implemented yet."
+        - "Platform-dependent modules currently return renderer-neutral Unavailable/Stale states except clock and basic load probing."
+        - "Hot reload, real scheduler concurrency, command execution with timeout, WM backends, and native status modules remain pending."
+
+    - date: "2026-05-25"
+      status: "implemented_runtime_and_core_module_slice"
+      summary:
+        - "Implemented real script module execution with shell command spawning, stdout/stderr capture, output limiting, format placeholders, non-zero exit warnings, and timeout handling."
+        - "Implemented default bar config discovery using UNILII_BAR_CONFIG, XDG_CONFIG_HOME, HOME, and ProjectDirs fallback."
+        - "Added existing unilii CLI subcommands: init-bar-config and validate-bar-config."
+        - "Implemented system module load/memory fixture support with warning/critical threshold states and stale diagnostics."
+        - "Updated templates/bar.toml to include the system module in the default right zone."
+      tests:
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii -- init-bar-config --output /tmp/unilii-bar-test.toml --force"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config /tmp/unilii-bar-test.toml"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config templates/bar.toml"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "The script runner is synchronous inside the current headless update call; the async scheduler and redraw coalescing are still pending."
+        - "The system module currently covers load and memory; CPU and temperature providers remain pending."
+        - "Makepad rendering, WM modules, and Linux desktop modules remain pending or placeholder-only."
+
+    - date: "2026-05-25"
+      status: "implemented_desktop_wm_notification_runtime_slice"
+      summary:
+        - "Replaced placeholder network, VPN, audio, battery, workspaces, window_title, and notifications modules with renderer-neutral runtime modules."
+        - "Network now reads sysfs-style interface fixtures or /sys/class/net and reports Ok or Disconnected states."
+        - "VPN now detects common tunnel interface names such as tun*, tap*, wg*, ppp*, tailscale*, and zt*."
+        - "Battery now reads sysfs power_supply fixtures or /sys/class/power_supply and applies charging, warning, and critical states."
+        - "Audio now has a safe fixture/status parser through UNILII_BAR_AUDIO_STATUS and reports Muted or Ok where status is available."
+        - "Notifications now support count sources through UNILII_BAR_NOTIFICATION_COUNT or a configured source_file."
+        - "Workspaces and window_title now have tested renderer-neutral snapshot inputs through UNILII_BAR_WORKSPACES and UNILII_BAR_WINDOW_TITLE."
+        - "Fixed a battery-state bug where Discharging was misclassified as Charging because of substring matching."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config templates/bar.toml"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "Audio still depends on fixture/status text and does not yet call PipeWire/PulseAudio backends directly."
+        - "Workspaces/window_title currently use environment snapshot inputs; direct i3-msg/swaymsg command backends and click-to-switch are pending."
+        - "Network does not yet expose IP address or Wi-Fi SSID without additional backend support."
+        - "Makepad rendering, async scheduling, hot reload, and action dispatch are still pending."
+
+    - date: "2026-05-25"
+      status: "implemented_render_model_action_reload_runtime_slice"
+      summary:
+        - "Added renderer-neutral BarRenderModel grouped into left, center, and right zones from validated layout config."
+        - "Added BarClickButton, BarActionStatus, and BarActionResult for tested click/action dispatch."
+        - "Implemented command action dispatch for configured on_click_left, on_click_middle, and on_click_right actions, including success and non-zero exit reporting."
+        - "Added BarRuntimeState with reload_from_str behavior that preserves the previous valid config/graph when reload validation fails."
+        - "Updated unilii-bar scaffold output to use the grouped render model that the future Makepad renderer can consume."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config templates/bar.toml"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "The runtime is still synchronous; async interval scheduling and redraw coalescing remain pending."
+        - "Hot reload is implemented as validated reload semantics, but no filesystem watcher is wired yet."
+        - "Internal actions and click-to-switch workspace commands are still pending."
+        - "Makepad rendering remains pending, but the renderer-neutral zone model is now available."
+
+    - date: "2026-05-25"
+      status: "implemented_interval_scheduler_cache_slice"
+      summary:
+        - "Extended BarModuleGraph with per-module intervals sourced from module interval_ms config."
+        - "Added last-update timestamps and cached module view models."
+        - "Added update_due_modules and update_due_render_model so ticks update only modules whose interval has elapsed."
+        - "Added cached_render_model for renderer redraws without forcing all modules to recompute."
+        - "Added next_due_in to support future async timer scheduling and redraw coalescing."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config templates/bar.toml"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "The scheduler is still a synchronous runtime primitive; no async task executor or UI timer loop is wired yet."
+        - "Event-stream modules are still pending."
+        - "Filesystem watcher hot reload is still pending."
+        - "Redraw coalescing is enabled by cached render models conceptually, but not yet connected to a renderer event loop."
+
+    - date: "2026-05-25"
+      status: "implemented_file_hot_reload_polling_slice"
+      summary:
+        - "Added BarReloadStatus for file hot-reload checks."
+        - "Added BarRuntimeState::from_config_file to bind runtime state to a config path and initial modified timestamp."
+        - "Added reload_from_file_if_changed to reload only when file metadata changes."
+        - "Implemented unchanged, successful reload, read-failure, and invalid-config preservation behavior at the renderer-neutral runtime level."
+        - "Invalid changed configs now leave the previous valid config and graph active while recording the reload error."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config templates/bar.toml"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "This is polling-based hot reload; no notify/inotify filesystem watcher is wired yet."
+        - "The unilii-bar scaffold does not yet run a persistent event loop that calls reload_from_file_if_changed periodically."
+        - "Makepad renderer integration remains pending."
+
+    - date: "2026-05-25"
+      status: "implemented_bounded_bar_watch_loop_slice"
+      summary:
+        - "Added unilii-bar --watch to run the renderer-neutral scheduler/reload loop."
+        - "Added --ticks for bounded loop execution in tests and CI."
+        - "Added --tick-interval-ms to control maximum sleep between scheduler ticks."
+        - "The watch loop now calls reload_from_file_if_changed and update_due_render_model, then prints grouped zone output."
+        - "Default one-shot scaffold behavior is preserved when --watch is not provided."
+      tests:
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 2 --tick-interval-ms 0"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --check-config --config templates/bar.toml"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "This remains a headless scaffold loop; native Makepad rendering is still pending."
+        - "The loop uses polling hot reload, not notify/inotify."
+        - "No OS signal handling or graceful long-running shutdown path has been added beyond bounded --ticks testing."
+
+    - date: "2026-05-25"
+      status: "implemented_wm_json_backend_parser_slice"
+      summary:
+        - "Added serde_json as a unilii-core workspace dependency for i3/sway-compatible JSON parsing."
+        - "Workspaces module now supports UNILII_BAR_I3_WORKSPACES_JSON and UNILII_BAR_I3_WORKSPACES_FILE in addition to the simple UNILII_BAR_WORKSPACES snapshot format."
+        - "Window-title module now supports UNILII_BAR_I3_TREE_JSON and UNILII_BAR_I3_TREE_FILE and recursively extracts the focused node title/name from i3/sway tree JSON."
+        - "Added fixture tests for workspace JSON, workspace JSON file loading, focused tree title extraction, and focused tree file loading."
+        - "A full workspace test initially failed because the build partition had no free space; after cargo clean freed build artifacts, focused and full workspace tests passed."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 1 --tick-interval-ms 0"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "This implements parser/file/env backends only; direct i3-msg/swaymsg command invocation is still pending."
+        - "Workspace click-to-switch actions are still pending."
+        - "No event-socket subscription backend is implemented yet."
+
+    - date: "2026-05-25"
+      status: "implemented_wm_command_and_workspace_switch_slice"
+      summary:
+        - "Workspaces module now supports command/workspaces_command to execute a shell command that returns i3/sway-compatible workspace JSON."
+        - "Window-title module now supports command/tree_command to execute a shell command that returns i3/sway-compatible tree JSON."
+        - "Added BarModuleGraph::dispatch_workspace_switch for renderer-neutral workspace click-to-switch support."
+        - "Added switch_command_template with {workspace} and shell-quoted {workspace_shell} placeholders."
+        - "Added shell quoting tests for workspace names containing spaces and single quotes."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 1 --tick-interval-ms 0"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "i3-msg and swaymsg are supported through configurable command templates, not auto-detected defaults yet."
+        - "Renderer click handlers are still pending because there is no native Makepad renderer yet."
+        - "Event-socket subscription backends remain pending."
+    - date: "2026-05-25"
+      status: "implemented_network_ip_fixture_slice"
+      summary:
+        - "NetworkSnapshot now carries ip_address in addition to interface, state, and MAC address."
+        - "Network module format strings now support {ip}."
+        - "Sysfs-style fixtures can provide ipv4 or ip_address files per interface."
+        - "Tooltips now include IP address information when available."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 1 --tick-interval-ms 0"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "Real IP discovery still needs a backend that reads rtnetlink, ip command output, or NetworkManager; current direct path is fixture/file based."
+        - "Wi-Fi SSID display remains pending."
+
+    - date: "2026-05-25"
+      status: "implemented_backend_presets_docs_examples_slice"
+      summary:
+        - "Added backend = i3 and backend = sway presets for workspaces/window_title modules."
+        - "i3 preset maps workspaces to i3-msg -t get_workspaces, tree to i3-msg -t get_tree, and switching to i3-msg workspace -- {workspace_shell}."
+        - "sway preset maps workspaces to swaymsg -t get_workspaces, tree to swaymsg -t get_tree, and switching to swaymsg workspace -- {workspace_shell}."
+        - "Explicit command/workspaces_command/tree_command/switch_command_template still override backend presets."
+        - "Added docs/unilii-bar.md covering commands, config discovery, modules, backend presets, environment fixtures, i3/sway startup, and troubleshooting."
+        - "Added examples/bar/minimal.toml, examples/bar/full.toml, and examples/bar/scripts.toml."
+        - "Updated templates/bar.toml comments and network format to expose backend and {ip} usage."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config templates/bar.toml"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config examples/bar/minimal.toml"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config examples/bar/full.toml"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config examples/bar/scripts.toml"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 1 --tick-interval-ms 0"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "Docs still describe the current headless scaffold; native Makepad rendering/window reservation docs remain pending."
+        - "Backend presets still use command execution rather than event-socket subscriptions."
+        - "Examples default to i3 for concreteness; sway users must change backend = sway."
+
+    - date: "2026-05-25"
+      status: "implemented_network_enrichment_sources_slice"
+      summary:
+        - "Network module now supports {ssid} in addition to {interface}, {state}, {address}, and {ip}."
+        - "NetworkSnapshot now carries ssid."
+        - "Network module accepts status_file, ip_command, and ssid_command settings."
+        - "Network module also supports UNILII_BAR_NETWORK_STATUS, UNILII_BAR_NETWORK_STATUS_FILE, UNILII_BAR_NETWORK_IP, UNILII_BAR_NETWORK_SSID, UNILII_BAR_NETWORK_IP_COMMAND, and UNILII_BAR_NETWORK_SSID_COMMAND."
+        - "Added deterministic tests for sysfs-style SSID fixture files, status env parsing, status file parsing, and command fallbacks."
+        - "Updated docs/unilii-bar.md, templates/bar.toml, and examples/bar/full.toml for {ssid} and network enrichment sources."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config templates/bar.toml"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config examples/bar/full.toml"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 1 --tick-interval-ms 0"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "Native rtnetlink/NetworkManager implementations remain pending; this slice adds file/env/command enrichment paths."
+        - "Network command execution is still synchronous inside the current headless runtime."
+        - "SSID values containing spaces are not supported by the key/value status parser and should use direct env, file fixture, or command source."
+
+
+    - date: "2026-05-25"
+      status: "fixed_live_wm_mutation_in_tests"
+      summary:
+        - "Identified that backend_preset_provides_workspace_switch_template dispatched the i3 backend switch command during tests."
+        - "This could execute i3-msg workspace -- <name> on a real running i3 session and change the developer's active workspace."
+        - "Added BarModuleGraph::workspace_switch_command to render workspace switch commands without executing them."
+        - "Replaced the i3 backend preset dispatch test with a non-executing rendered-command assertion."
+        - "Kept dispatch_workspace_switch tests only for explicit harmless printf templates."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 1 --tick-interval-ms 0"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "This now includes a runtime test-build guard; broader static linting and opt-in live-session integration tests remain pending."
+
+
+    - date: "2026-05-25"
+      status: "implemented_test_side_effect_command_guard"
+      summary:
+        - "Added a test-build guard in action dispatch before command execution."
+        - "During unit tests, dispatching side-effectful commands is blocked unless UNILII_BAR_ALLOW_SIDE_EFFECT_COMMANDS_IN_TESTS is explicitly set to an affirmative value."
+        - "The guard blocks common live-session mutators including i3-msg, swaymsg, nmcli, pactl, wpctl, systemctl, loginctl, and notify-send."
+        - "Harmless mock commands such as printf and echo remain allowed for dispatch tests."
+        - "Added tests proving i3-msg workspace dispatch is blocked and harmless mock dispatch still executes."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 1 --tick-interval-ms 0"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "The guard is active in test builds; explicit live-session integration tests need a separate opt-in harness."
+        - "The command classifier is conservative and should be expanded if more mutating tools are introduced."
+
+
+    - date: "2026-05-25"
+      status: "implemented_low_level_test_command_guard"
+      summary:
+        - "Moved side-effect command protection down into run_script_command so script modules and command-backed data modules are protected in test builds too."
+        - "Retained the action-dispatch guard for clear action-level Unsupported results."
+        - "Added a synthetic unilii-test-side-effect classifier token for deterministic low-level guard regression tests without embedding or running real live-session mutators."
+        - "Added regression tests proving script modules and network command sources are blocked before shell execution in normal unit tests."
+        - "Normal harmless mock command tests continue to pass."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 1 --tick-interval-ms 0"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "The guard is test-build only and classifier based; future mutating command families must be added to the classifier."
+        - "Opt-in live-session integration tests remain pending under BAR-E10."
+
+
+    - date: "2026-05-25"
+      status: "fixed_cross_crate_test_harness_side_effect_guard"
+      summary:
+        - "Audited remaining WM command references after the live-workspace mutation report."
+        - "Found that the previous guard relied on cfg!(test), which only protects code compiled as the current test crate."
+        - "Extended the guard with is_test_command_guard_active so it also activates when unilii_core runs as a dependency inside Cargo test harness binaries."
+        - "The guard now checks cfg!(test), common Cargo test harness arguments, and current executable parent path ending in deps."
+        - "This closes the path where another crate's tests could route through unilii_core command execution without the side-effect guard active."
+      tests:
+        - "cargo test -p unilii-core bar"
+        - "cargo test -p unilii-bin --bin unilii-bar"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 1 --tick-interval-ms 0"
+        - "cargo test --workspace"
+      limitations:
+        - "The guard remains classifier based and must be maintained as new mutating command families are introduced."
+        - "Explicit live-session tests still require an opt-in harness under BAR-E10."
+
+
+    - date: "2026-05-25"
+      status: "implemented_static_live_session_command_audit"
+      summary:
+        - "Added scripts/audit_live_session_commands.py to scan Rust tests for live-session command execution hazards."
+        - "The audit detects real WM backend tests that dispatch workspace switches instead of only rendering commands."
+        - "The audit detects potentially executed references to session-mutating command families in tests while allowing parser fixtures, comments, rendered-command assertions, and explicit guard tests."
+        - "Added bridge.yml commands audit-live-session-commands and test-safe."
+        - "Refined the audit after its first run flagged parser/comment false positives and one non-executing menu-order assertion."
+      tests:
+        - "python3 scripts/audit_live_session_commands.py"
+        - "cargo test -p unilii-core bar"
+        - "cargo test -p unilii-bin --bin unilii-bar"
+        - "cargo test --workspace"
+      limitations:
+        - "The audit is intentionally heuristic and should be maintained as command-backed modules evolve."
+        - "It currently scans Rust test functions; shell scripts and external CI workflows may need separate checks."
+
+
+    - date: "2026-05-25"
+      status: "implemented_explicit_live_session_audit_annotations"
+      summary:
+        - "Reduced broad live-session audit allowlist coverage by replacing parser/menu name allowances with an explicit annotation marker."
+        - "Added ALLOW_REFERENCE_MARKER to scripts/audit_live_session_commands.py for tests that only parse, render, or assert command data without executing it."
+        - "Annotated network_view_actions_follow_control_then_network_order because it asserts menu action data and does not execute commands."
+        - "Documented the audit marker and safe test policy in docs/unilii-bar.md."
+        - "Kept dispatch tests limited to harmless mock commands and rendered-command assertions."
+      tests:
+        - "python3 scripts/audit_live_session_commands.py"
+        - "cargo test -p unilii-core bar"
+        - "cargo test -p unilii-bin --bin unilii-bar"
+        - "cargo test --workspace"
+      limitations:
+        - "The audit still focuses on Rust test functions; shell scripts and external CI definitions remain a separate follow-up."
+        - "Some parser-specific safe names remain allowed for now and should be migrated to explicit annotations opportunistically."
+
+
+    - date: "2026-05-25"
+      status: "implemented_executable_surface_live_session_audit"
+      summary:
+        - "Extended scripts/audit_live_session_commands.py beyond Rust test functions."
+        - "The audit now scans bridge.yml/bridge.yaml, Makefile, justfile, .envrc, shell scripts, and GitHub workflow YAML files as executable command surfaces."
+        - "Added ALLOW_EXECUTION_MARKER for rare explicitly opted-in executable files."
+        - "Docs and examples remain treated as non-executed references to avoid noisy false positives."
+        - "The existing bridge command audit-live-session-commands now covers the expanded audit surface."
+      tests:
+        - "python3 scripts/audit_live_session_commands.py"
+        - "cargo test -p unilii-core bar"
+        - "cargo test -p unilii-bin --bin unilii-bar"
+        - "cargo test --workspace"
+      limitations:
+        - "The audit is still heuristic and classifier based."
+        - "The current shell environment prints an unrelated line before audit output; the audit itself exits successfully and reports pass/fail correctly."
+
+
+    - date: "2026-05-25"
+      status: "implemented_audit_output_modes"
+      summary:
+        - "Added --quiet and --verbose output modes to scripts/audit_live_session_commands.py."
+        - "Normal mode still prints a single pass/fail summary."
+        - "Verbose mode prints scanned Rust file, Rust test, and executable command file counts."
+        - "Quiet mode suppresses success output and prints only failures."
+        - "Updated bridge.yml test-safe command and docs/unilii-bar.md to use the quiet audit mode before cargo test --workspace."
+      tests:
+        - "python3 scripts/audit_live_session_commands.py --help"
+        - "python3 scripts/audit_live_session_commands.py --verbose"
+        - "python3 scripts/audit_live_session_commands.py --quiet"
+        - "cargo test -p unilii-core bar"
+        - "cargo test -p unilii-bin --bin unilii-bar"
+        - "python3 scripts/audit_live_session_commands.py --quiet && cargo test --workspace"
+      limitations:
+        - "The unrelated '2925 i3' line still appears before shell-command output in this workspace bridge environment; quiet mode confirms it is not emitted by the audit script."
+
+
+    - date: "2026-05-25"
+      status: "closed_workspace_bridge_shell_prefix_noise"
+      summary:
+        - "Investigated the unrelated prefix line that appears before shell-backed command output in this project environment."
+        - "Confirmed the prefix appears before the first command stdout, including before a plain printf."
+        - "Confirmed nested /bin/sh -lc can emit the prefix, while bash --noprofile --norc does not."
+        - "Confirmed audit --quiet suppresses audit success output, so the prefix is external to scripts/audit_live_session_commands.py."
+        - "Kept project changes limited to audit output modes, documentation, and task tracking because the prefix is external to repository code."
+      tests:
+        - "python3 scripts/audit_live_session_commands.py --quiet"
+        - "python3 scripts/audit_live_session_commands.py --verbose"
+        - "cargo test -p unilii-core bar"
+        - "cargo test --workspace"
+      limitations:
+        - "The exact external shell/session hook was not modified because it appears outside the repository."
+        - "Future bridge-tool or shell-profile cleanup may remove the prefix outside this project."
+
+
+    - date: "2026-05-25"
+      status: "implemented_safe_test_wrapper_script"
+      summary:
+        - "Added scripts/test_safe.sh as the canonical safe local/CI test entrypoint."
+        - "The wrapper runs the live-session command audit in quiet mode before cargo test --workspace."
+        - "The wrapper fails fast via set -eu and prints concise progress/success messages."
+        - "Updated bridge.yml test-safe to call scripts/test_safe.sh instead of duplicating inline shell logic."
+        - "Updated docs/unilii-bar.md to document scripts/test_safe.sh as the canonical safe test command."
+      tests:
+        - "scripts/test_safe.sh"
+      limitations:
+        - "The external shell prefix line still appears in this workspace tool output before repository script output."
+        - "CI workflow integration for scripts/test_safe.sh remains pending if/when CI files are added or updated."
+
+
+    - date: "2026-05-25"
+      status: "implemented_safe_test_ci_and_contributor_docs"
+      summary:
+        - "Added CONTRIBUTING.md with the canonical safe test policy, audit annotations, and live-session integration-test rules."
+        - "Added .github/workflows/ci.yml with a safe-test job that runs scripts/test_safe.sh."
+        - "Updated README.md to use scripts/test_safe.sh in the verified baseline and development workflow."
+        - "Confirmed scripts/audit_live_session_commands.py scans the new workflow as an executable command surface."
+        - "Kept direct cargo test --workspace documented as expert/debug usage rather than the default handoff gate."
+      tests:
+        - "python3 scripts/audit_live_session_commands.py --verbose"
+        - "scripts/test_safe.sh"
+        - "YAML parse check for bridge.yml, .github/workflows/ci.yml, and tasks.yml"
+      limitations:
+        - "The CI workflow is added but not executed by GitHub in this local environment."
+        - "CI cache optimization and optional clippy/doc jobs remain future enhancements."
+
+  emerging_follow_up_tasks:
+    - id: "BAR-E1"
+      title: "Add renderer event bridge for workspace clicks"
+      status: "todo"
+      derived_from: "implemented_wm_command_and_workspace_switch_slice"
+      details:
+        - "Connect future Makepad workspace item clicks to BarModuleGraph::dispatch_workspace_switch."
+        - "Surface command failures in tooltip/log output without blocking the UI thread."
+        - "Add an integration fixture that simulates clicking workspace names with spaces, colons, and quotes."
+    - id: "BAR-E3"
+      title: "Implement non-blocking command execution for WM and action commands"
+      status: "todo"
+      derived_from: "runtime shell command usage"
+      details:
+        - "Move command-backed modules and action dispatch onto a non-blocking executor or worker pool."
+        - "Retain timeout, output-size limit, stale-cache behavior, and deterministic tests."
+        - "Prevent repeated clicks from spawning unbounded concurrent commands."
+    - id: "BAR-E4A"
+      title: "Implement native network identity backends"
+      status: "todo"
+      derived_from: "implemented_network_enrichment_sources_slice"
+      details:
+        - "Support IP discovery via rtnetlink or ip -j addr with fixture tests."
+        - "Support SSID discovery via NetworkManager D-Bus, nmcli, iw, or iwgetid fixture parsers."
+        - "Keep existing file/env/command sources as explicit overrides and test fallback order."
+    - id: "BAR-E4B"
+      title: "Improve network status parsing semantics"
+      status: "todo"
+      derived_from: "implemented_network_enrichment_sources_slice"
+      details:
+        - "Support quoted key/value status values so SSIDs with spaces can be represented safely."
+        - "Add structured parser errors for malformed status files."
+        - "Expose stale or partial network data when IP/SSID sources fail but interface state is still available."
+
+    - id: "BAR-E5"
+      title: "Split oversized bar_runtime.rs into focused modules"
+      status: "todo"
+      derived_from: "implementation maintainability"
+      details:
+        - "Move config/runtime model types into runtime/model.rs."
+        - "Move scheduler/reload/action code into runtime/scheduler.rs, runtime/reload.rs, and runtime/actions.rs."
+        - "Move module implementations into runtime/modules/*.rs."
+        - "Keep public re-exports stable for unilii-bar and future renderer crates."
+    - id: "BAR-E6"
+      title: "Add CI disk-space guard for workspace builds"
+      status: "todo"
+      derived_from: "previous cargo test disk-space failure"
+      details:
+        - "Document cargo clean or target-dir pruning in release/test docs."
+        - "Consider smaller targeted check workflows for graphical and non-graphical crates."
+        - "Record expected target directory size after full workspace test."
+
+    - id: "BAR-E7"
+      title: "Add event-socket i3/sway backends"
+      status: "todo"
+      derived_from: "implemented_backend_presets_docs_examples_slice"
+      details:
+        - "Subscribe to i3/sway workspace and window events instead of polling command output."
+        - "Keep command backend presets as fallback when event sockets are unavailable."
+        - "Add parser fixtures for workspace focus, urgent flag, and title-change events."
+    - id: "BAR-E8"
+      title: "Add docs for native renderer once Makepad lands"
+      status: "todo"
+      derived_from: "implemented_backend_presets_docs_examples_slice"
+      details:
+        - "Replace headless scaffold warnings with Makepad run/install instructions."
+        - "Document window reservation, layer-shell/strut behavior, and WM-specific startup rules."
+        - "Add screenshots or render-model examples once a visual renderer exists."
+
+
+    - id: "BAR-E9"
+      title: "Add side-effect guardrails for command-executing tests"
+      status: "done"
+      derived_from: "fixed_live_wm_mutation_in_tests"
+      details:
+        - "Add a test helper or lint convention that forbids dispatching backend preset commands such as i3-msg, swaymsg, nmcli, pactl, or systemctl in unit tests."
+        - "Prefer command rendering assertions for real backend presets and reserve dispatch tests for explicit harmless mock commands such as printf."
+        - "Consider a cargo test feature or environment variable that must be set before integration tests can touch a live WM/session."
+        - "Document the policy in docs/unilii-bar.md or a contributor testing guide."
+
+    - id: "BAR-E10"
+      title: "Add opt-in live-session integration tests"
+      status: "todo"
+      derived_from: "implemented_test_side_effect_command_guard"
+      details:
+        - "Create ignored or feature-gated tests that may touch a real i3/sway session only when an explicit environment variable is set."
+        - "Require tests to restore the original workspace/session state after running."
+        - "Document the exact opt-in contract and risks for developers running live-session tests."
+        - "Keep normal cargo test runs free of live WM, audio, network, notification, or power-management mutations."
+
+    - id: "BAR-E11"
+      title: "Maintain side-effect command classifier"
+      status: "todo"
+      derived_from: "implemented_low_level_test_command_guard"
+      details:
+        - "Review every newly introduced command-backed module or action for possible live-session side effects."
+        - "Add mutating tools to is_side_effectful_test_command before adding tests that mention or route through them."
+        - "Keep deterministic regression tests based on synthetic blocked command tokens where real command names would be risky to embed in patch tooling."
+        - "Consider moving the classifier and is_test_command_guard_active into a dedicated test-safety module when bar_runtime.rs is split."
+
+    - id: "BAR-E12"
+      title: "Add static audit for live-session command references in tests"
+      status: "done"
+      derived_from: "fixed_cross_crate_test_harness_side_effect_guard"
+      details:
+        - "Add a small script or cargo xtask that scans Rust tests for direct mutating session commands such as i3-msg, swaymsg, network, audio, power, login, and notification tools."
+        - "Allow documentation and non-executing rendered-command assertions, but flag command execution helpers and dispatch calls."
+        - "Run the audit in CI before workspace tests so accidental live-session mutations are caught early."
+        - "Include example configs in the audit as non-executed references with explicit comments."
+
+    - id: "BAR-E13"
+      title: "Reduce live-session audit allowlist surface"
+      status: "done"
+      derived_from: "implemented_static_live_session_command_audit"
+      details:
+        - "Replace broad name-based allowlist entries with explicit non-executing annotations or helper names."
+        - "Split parser fixtures from execution tests where command names appear in assertions."
+        - "Extend the audit to shell scripts, bridge commands, and CI workflows if they begin executing session commands."
+        - "Document how to add a safe exception when a test only parses or renders command text."
+
+    - id: "BAR-E14"
+      title: "Extend live-session audit beyond Rust unit tests"
+      status: "done"
+      derived_from: "implemented_explicit_live_session_audit_annotations"
+      details:
+        - "Scan shell scripts, bridge.yml commands, CI workflows, and example runner scripts for live-session mutating commands."
+        - "Classify docs/examples separately from executable scripts to avoid noisy false positives."
+        - "Add an explicit opt-in marker for scripts that intentionally run live-session commands."
+        - "Consider adding the audit to the standard bridge test-safe command once shell/CI scanning is reliable."
+
+    - id: "BAR-E15"
+      title: "Normalize audit command output"
+      status: "done"
+      derived_from: "implemented_executable_surface_live_session_audit"
+      details:
+        - "Investigate the unrelated shell/session line that appears before audit output in this environment."
+        - "Ensure bridge test-safe output is stable and easy to read in CI logs."
+        - "Optionally add --quiet and --verbose flags to scripts/audit_live_session_commands.py."
+        - "Keep failure output detailed enough to identify file, line, and hazardous pattern."
+
+    - id: "BAR-E16"
+      title: "Investigate workspace bridge shell prefix noise"
+      status: "done"
+      derived_from: "implemented_audit_output_modes"
+      details:
+        - "Identify why shell-backed command executions in this environment print an unrelated prefix line before command stdout."
+        - "Confirm whether the prefix comes from shell startup files, tmux/session hooks, or the workspace bridge wrapper."
+        - "Keep audit output modes stable regardless of the external prefix."
+        - "Avoid changing project code if the prefix is external to the repository."
+
+    - id: "BAR-E17"
+      title: "Add dedicated safe test wrapper script"
+      status: "done"
+      derived_from: "implemented_audit_output_modes"
+      details:
+        - "Add a repository script such as scripts/test_safe.sh that runs the live-session audit in quiet mode followed by cargo test --workspace."
+        - "Keep bridge.yml test-safe as a thin call to the script."
+        - "Document the wrapper as the canonical local and CI test command."
+        - "Make the wrapper fail fast and print a concise summary on success."
+
+    - id: "BAR-E18"
+      title: "Adopt safe test wrapper in CI and contributor docs"
+      status: "done"
+      derived_from: "implemented_safe_test_wrapper_script"
+      details:
+        - "Use scripts/test_safe.sh in any future CI workflow test jobs."
+        - "Add a contributor-focused testing section if the project gets a CONTRIBUTING.md."
+        - "Keep direct cargo test --workspace available for expert use, but document scripts/test_safe.sh as the default safe path."
+        - "Consider adding a bridge command that prints the exact safe-test policy before running."
+
+    - id: "BAR-E19"
+      title: "Harden CI workflow with cache and optional lint jobs"
+      status: "todo"
+      derived_from: "implemented_safe_test_ci_and_contributor_docs"
+      details:
+        - "Add Rust/Cargo cache configuration to reduce CI runtime once the workflow is active."
+        - "Add an optional non-incremental clippy job matching the README baseline."
+        - "Consider adding docs/example validation jobs for bar configs and documentation links."
+        - "Keep scripts/test_safe.sh as the required test gate before any optional jobs."
+  cross_cutting_requirements:
+    observability:
+      - "Every module exposes unavailable, stale, warning, critical, and last-error state where applicable."
+      - "Runtime logs identify module id, module type, backend, and action command for failures."
+    safety:
+      - "Script/action modules must enforce timeout, avoid unbounded output, and make shell usage explicit."
+      - "Config reload must never leave the user with an invisible or crashed bar if the previous config was valid."
+    compatibility:
+      - "Prefer Linux-first implementations, but isolate OS-specific code behind provider/backend traits."
+      - "Support text-only module rendering first so external providers do not need to depend on Makepad immediately."
+    performance:
+      - "Avoid global tick loops when modules can schedule at their own intervals."
+      - "Coalesce redraw events and avoid blocking the UI thread with command execution or system probing."
+  risk_register:
+    - id: "BAR-R1"
+      risk: "Makepad may not reserve top screen space on the target WM/compositor."
+      mitigation: "Implement best-effort window hints and document WM-specific rules; defer compositor-specific APIs until required."
+      owner_milestone: "BAR-M0"
+    - id: "BAR-R2"
+      risk: "i3, sway, generic X11, and Wayland status APIs diverge enough to destabilize the first release."
+      mitigation: "Start with command backends and a WmBackend trait; add native event backends after the module contract stabilizes."
+      owner_milestone: "BAR-M7"
+    - id: "BAR-R3"
+      risk: "Dynamic plugins add ABI, safety, and packaging complexity too early."
+      mitigation: "Ship built-in modules plus script modules first; use metadata registry as the extension seam."
+      owner_milestone: "BAR-M8"
+    - id: "BAR-R4"
+      risk: "System modules depend on optional host commands or Linux files that may not exist."
+      mitigation: "Treat missing dependencies as unavailable capabilities and expose clear diagnostics."
+      owner_milestone: "BAR-M6"
+    - id: "BAR-R5"
+      risk: "Hot reload can leak module tasks or leave duplicate action handlers."
+      mitigation: "Require cancellation/shutdown hooks and add scheduler tests for reload/rebuild cycles."
+      owner_milestone: "BAR-M4"
+  definition_of_done:
+    - "unilii-bar is a workspace binary crate that can be built and run on the supported Linux target."
+    - "The sample bar config is generated by the existing CLI/config-generation flow and is accepted by unilii-bar."
+    - "All core modules named in features.md exist, are configurable, and fail gracefully when their host capability is missing."
+    - "Workspace and window-title behavior works for the chosen first WM backend and has a documented fallback path."
+    - "The provider registry exposes module type, schema/defaults, capability requirements, polling/event info, and optional Makepad binding metadata."
+    - "Docs explain installation, i3/sway startup, config format, module behavior, troubleshooting, and known limitations."
+    - "Tests cover config, scheduling, script timeouts, threshold formatting, registry contracts, and backend parsers."
+# END generated feature implementation plan: polybar_makepad

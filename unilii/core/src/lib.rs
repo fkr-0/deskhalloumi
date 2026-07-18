@@ -1,9 +1,20 @@
 //! Core plugin API for unilii status bar modules.
 
+pub mod action_bus;
+pub mod bar;
+pub mod bar_runtime;
+pub mod branding;
 pub mod config;
+pub mod filter_tab;
+pub mod hotkey_control;
+pub mod i3_config;
+pub mod i3_keybindings;
+pub mod i3_vis;
 pub mod key_engine;
 pub mod key_import_sxhkd;
 pub mod keys;
+pub mod menu_process;
+pub mod x11_hotkeys;
 
 use async_trait::async_trait;
 use iced::Element;

@@ -1,0 +1,30 @@
+presets:
+  - key: laptop
+    name: Laptop only
+    description: Disable external outputs and enable the internal panel
+    args:
+      - --output
+      - eDP-1
+      - --auto
+      - --primary
+      - --output
+      - HDMI-1
+      - --off
+
+  - key: docked
+    name: Docked
+    description: External display primary, laptop panel below
+    args:
+      - --output
+      - HDMI-1
+      - --auto
+      - --primary
+      - --output
+      - eDP-1
+      - --auto
+      - --below
+      - HDMI-1
+
+  - key: mirror
+    name: Mirror
+    command: "xrandr --output eDP-1 --auto --output HDMI-1 --auto --same-as eDP-1"

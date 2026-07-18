@@ -1,0 +1,163 @@
+schema_version: 1
+generated_at: '2026-07-18'
+project:
+  current_name: DeskHalloumi
+  slug: deskhalloumi
+  legacy_names:
+  - unilii
+  - uniliii
+  rename_plan: docs/project-renaming.md
+scope:
+- sxhkd replacement on i3/X11
+- native hotkey backend gaps
+- project rename compatibility
+- semantic versioning and release hygiene
+resolved:
+- id: HK-I3-001
+  status: complete
+  summary: Generate i3 bindsym include files from canonical TOML or sxhkd sources.
+  evidence:
+  - unilii/core/src/i3_keybindings.rs
+  - unilii/bin/src/hotkeyd_main.rs
+  - unilii/bin/tests/hotkeyd_e2e.rs
+- id: HK-I3-002
+  status: complete
+  summary: Preserve ordinary press and release bindings through i3 passive grabs.
+  evidence:
+  - bindsym and bindsym --release generation
+  - unit and process-level end-to-end tests
+- id: HK-I3-003
+  status: complete
+  summary: Write generated i3 configuration atomically and optionally reload i3.
+  evidence:
+  - --write-i3-bindings
+  - --reload-i3
+  - strict failures occur before file replacement
+- id: SXHKD-001
+  status: complete
+  summary: Expand simple comma-separated sxhkd chord and command braces pairwise.
+  evidence:
+  - unilii/core/src/key_import_sxhkd.rs
+  - unilii/core/tests/sxhkd_import_tests.rs
+- id: SXHKD-002
+  status: complete
+  summary: Reject unsupported chains, ranges, malformed braces, and semantic loss explicitly.
+  evidence:
+  - unsupported constructs are skipped with line-specific diagnostics
+- id: REL-001
+  status: complete
+  summary: Establish changelog and Semantic Versioning policy without inventing a release tag.
+  evidence:
+  - CHANGELOG.md
+  - docs/versioning.md
+  - scripts/check_release_metadata.py
+- id: NAME-001
+  status: complete
+  summary: Select DeskHalloumi and define the compatibility-first rename contract.
+  evidence:
+  - docs/project-renaming.md
+- id: HK-I3-010
+  status: complete
+  summary: Recursively scan the active i3 configuration, includes, variables, modes, and generated-binding
+    collisions.
+  evidence:
+  - unilii/core/src/i3_config.rs
+  - docs/i3-active-audit-2026-07-18.md
+- id: HK-X11-011
+  status: complete
+  summary: Provide a selective X11 passive-grab backend using the existing advanced key engine.
+  evidence:
+  - unilii/core/src/x11_hotkeys.rs
+  - scripts/test_i3_hotkeys.sh
+- id: HK-IPC-012
+  status: complete
+  summary: Route standalone bar, tray, and widget commands over a versioned user-scoped action bus.
+  evidence:
+  - unilii/core/src/action_bus.rs
+  - unilii/bin/src/main.rs
+- id: HK-E2E-013
+  status: complete
+  summary: Exercise generated i3 bindings and the selective X11 backend in an isolated Xvfb+i3 session.
+  evidence:
+  - scripts/test_i3_hotkeys.sh
+  - .github/workflows/ci.yml
+- id: NAME-010
+  status: complete
+  summary: Adopt DeskHalloumi package and command identities while retaining unilii compatibility aliases
+    and path/environment fallbacks.
+  evidence:
+  - Cargo.toml
+  - unilii/bin/Cargo.toml
+  - unilii/core/src/branding.rs
+  - docs/project-renaming.md
+  - contrib/systemd/user/deskhalloumi-hotkeyd.service
+- id: HK-SWAY-013
+  status: complete
+  summary: Define i3/X11 as the supported global-hotkey boundary without claiming Sway/Wayland parity.
+  evidence:
+  - README.md session support matrix
+  - docs/hotkeyd-architecture.md
+  - docs/hotkeyd-i3-feasibility.md
+- id: REL-010
+  status: complete
+  summary: Add candidate and annotated-tag release validation plus a tag-gated artifact workflow.
+  evidence:
+  - scripts/check_release_metadata.py
+  - .github/workflows/release.yml
+  - docs/versioning.md
+remaining:
+- id: SXHKD-010
+  status: pending
+  priority: P1
+  gap: sxhkd numeric ranges, nested/correlated expansions, modes/chains, and replay are not equivalent.
+  task: Extend migration parsing only where semantics can be represented exactly.
+  acceptance_criteria:
+  - Realistic fixture corpus classifies each binding as exact, approximate, or unsupported.
+  - No unsupported construct becomes an active literal chord.
+  - Generated TOML and i3 output round-trip through validation.
+  suggested_files:
+  - unilii/core/src/key_import_sxhkd.rs
+  - unilii/core/tests/fixtures/sxhkd
+- id: HK-KEYS-011
+  status: pending
+  priority: P1
+  gap: Current evdev physical-key naming and i3/X11 logical keysyms are not a single explicit model.
+  task: Define backend-neutral physical versus logical key semantics.
+  acceptance_criteria:
+  - Configuration chooses physical or logical interpretation explicitly.
+  - Import/export reports semantic changes caused by keyboard layout.
+  - Tests cover at least US and German layout-sensitive shortcuts.
+  suggested_files:
+  - unilii/core/src/key_spec.rs
+  - KEYBINDINGS.md
+- id: HK-EVDEV-012
+  status: pending
+  priority: P1
+  gap: The udev monitor does not add or remove active keyboard streams dynamically.
+  task: Implement keyboard hotplug lifecycle for the evdev backend.
+  acceptance_criteria:
+  - New keyboards become active without daemon restart.
+  - Removed devices do not terminate the aggregate stream.
+  - Device duplication and permission errors are observable.
+  suggested_files:
+  - unilii/lib/src/input.rs
+- id: HK-SOAK-020
+  status: pending
+  priority: P2
+  gap: Long-running reload, device, and action performance budgets are not recorded.
+  task: Add soak tests and bounded runtime metrics.
+  acceptance_criteria:
+  - Repeated reloads retain the last-known-good generation.
+  - Idle CPU and memory budgets are measured.
+  - Action failure volume cannot create unbounded logs or child processes.
+release_gate:
+  required_commands:
+  - cargo fmt --all -- --check
+  - python3 scripts/check_release_metadata.py --candidate
+  - scripts/test_safe.sh
+  - scripts/test_i3_hotkeys.sh
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
+  manual_checks:
+  - Review CHANGELOG.md migration notes.
+  - Confirm generated i3 include in an isolated or intentionally selected session.
+  - Confirm no sxhkd and i3 duplicate ownership remains at cutover.

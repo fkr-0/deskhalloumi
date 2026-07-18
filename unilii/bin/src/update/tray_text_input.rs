@@ -39,10 +39,14 @@ fn update_menu_item_value(items: &mut [TrayMenuItem], item_id: &str, value: &str
 
 #[cfg(test)]
 mod tests {
-    use crate::enhanced_tray::{self, EnhancedTrayState};
     use super::{clear_text_input_value, set_text_input_value};
+    use crate::enhanced_tray::{self, EnhancedTrayState};
 
-    fn text_input_item(app_id: &str, item_id: &str, default_value: &str) -> enhanced_tray::TrayMenuItem {
+    fn text_input_item(
+        app_id: &str,
+        item_id: &str,
+        default_value: &str,
+    ) -> enhanced_tray::TrayMenuItem {
         enhanced_tray::TrayMenuItem {
             id: item_id.into(),
             label: "Input".into(),
@@ -65,7 +69,10 @@ mod tests {
         }
     }
 
-    fn submenu_item(app_id: &str, child: enhanced_tray::TrayMenuItem) -> enhanced_tray::TrayMenuItem {
+    fn submenu_item(
+        app_id: &str,
+        child: enhanced_tray::TrayMenuItem,
+    ) -> enhanced_tray::TrayMenuItem {
         enhanced_tray::TrayMenuItem {
             id: "root".into(),
             label: "Root".into(),
@@ -104,7 +111,10 @@ mod tests {
             menu_object_path: None,
         };
         state.tree.update_app(icon);
-        state.tree.update_app_menu("app", vec![submenu_item("app", text_input_item("app", "input", "old"))]);
+        state.tree.update_app_menu(
+            "app",
+            vec![submenu_item("app", text_input_item("app", "input", "old"))],
+        );
         Some(state)
     }
 

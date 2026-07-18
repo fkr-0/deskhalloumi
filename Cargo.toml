@@ -11,10 +11,10 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
-authors = ["unilii contributors"]
+authors = ["DeskHalloumi contributors"]
 
 [workspace.dependencies]
 iced = { version = "0.14", features = [
@@ -90,6 +90,8 @@ tokio = { version = "1.49", features = [
   "time",
   "sync",
   "net",
+  "io-util",
+  "signal",
 ] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -103,12 +105,15 @@ tracing-subscriber = "0.3"
 chrono = "0.4"
 directories = "5"
 thiserror = "1.0"
+libc = "0.2"
+x11rb = "0.13.2"
+xkeysym = "0.2"
 zbus = { version = "4.4", default-features = false, features = ["tokio"] }
 
 # Internal crates
-unilii-lib = { path = "unilii/lib" }
-unilii-core = { path = "unilii/core" }
-unilii-clock = { path = "unilii/plugins/Clock" }
-unilii-battery = { path = "unilii/plugins/Battery" }
-unilii-tmux = { path = "unilii/plugins/Tmux" }
+deskhalloumi-lib = { path = "unilii/lib" }
+deskhalloumi-core = { path = "unilii/core" }
+deskhalloumi-clock = { path = "unilii/plugins/Clock" }
+deskhalloumi-battery = { path = "unilii/plugins/Battery" }
+deskhalloumi-tmux = { path = "unilii/plugins/Tmux" }
 # Core dependencies

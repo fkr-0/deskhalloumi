@@ -102,6 +102,7 @@ impl KeyEngine {
     pub fn process_event(&mut self, key: &str, value: i32, now: Instant) -> KeyEngineOutput {
         match value {
             1 => self.handle_press(key, now),
+            2 => self.handle_repeat(key, now),
             0 => self.handle_release(key, now),
             _ => KeyEngineOutput::default(),
         }
@@ -151,6 +152,30 @@ impl KeyEngine {
             self.press_already_triggered.insert(*index);
         }
 
+        KeyEngineOutput { triggered, traces }
+    }
+
+    fn handle_repeat(&mut self, key: &str, now: Instant) -> KeyEngineOutput {
+        if !self.pressed.contains(key) {
+            return KeyEngineOutput::default();
+        }
+        let mut traces = Vec::new();
+        let mut candidates = Vec::new();
+        for index in 0..self.bindings.len() {
+            let binding = &self.bindings[index];
+            if binding.trigger != KeyTrigger::Repeat
+                || !binding.trigger_keys.contains(key)
+                || !self.matches_binding(index)
+            {
+                continue;
+            }
+            if self.is_on_cooldown(index, now) {
+                traces.push(self.trace(index, KeyEngineTraceReason::Suppressed, "cooldown_active"));
+                continue;
+            }
+            candidates.push(index);
+        }
+        let triggered = self.resolve_and_mark(candidates, now, &mut traces);
         KeyEngineOutput { triggered, traces }
     }
 

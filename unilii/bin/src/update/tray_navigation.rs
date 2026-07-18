@@ -44,8 +44,8 @@ pub fn navigate_right(enhanced_tray_state: &mut Option<EnhancedTrayState>) {
 
 #[cfg(test)]
 mod tests {
-    use crate::enhanced_tray::{self, EnhancedTrayState, TrayViewState};
     use super::{navigate_left, navigate_right};
+    use crate::enhanced_tray::{self, EnhancedTrayState, TrayViewState};
 
     fn tray_icon(app_id: &str) -> enhanced_tray::TrayIcon {
         enhanced_tray::TrayIcon {
@@ -82,7 +82,11 @@ mod tests {
 
         let state = state.expect("state remains present");
         match state.current_view {
-            TrayViewState::SingleApp { app_id, navigation, submenu_path } => {
+            TrayViewState::SingleApp {
+                app_id,
+                navigation,
+                submenu_path,
+            } => {
                 assert_eq!(app_id, "left");
                 assert_eq!(navigation.current_app_index, 0);
                 assert!(!navigation.can_go_left);
@@ -101,7 +105,11 @@ mod tests {
 
         let state = state.expect("state remains present");
         match state.current_view {
-            TrayViewState::SingleApp { app_id, navigation, submenu_path } => {
+            TrayViewState::SingleApp {
+                app_id,
+                navigation,
+                submenu_path,
+            } => {
                 assert_eq!(app_id, "right");
                 assert_eq!(navigation.current_app_index, 1);
                 assert!(navigation.can_go_left);

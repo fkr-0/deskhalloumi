@@ -1,12 +1,36 @@
-use crate::enhanced_tray::{EnhancedTrayState, TrayViewState};
+use crate::enhanced_tray::{EnhancedTrayState, TrayMenuItem, TrayMenuTree, TrayViewState};
+
+fn first_selectable_index(items: &[TrayMenuItem]) -> Option<usize> {
+    items
+        .iter()
+        .filter(|item| item.visible)
+        .enumerate()
+        .find_map(|(index, item)| (item.enabled && !item.is_separator).then_some(index))
+}
+
+fn items_at_path<'a>(
+    tree: &'a TrayMenuTree,
+    app_id: &str,
+    submenu_path: &[String],
+) -> Option<&'a [TrayMenuItem]> {
+    let app = tree.apps.get(app_id)?;
+    let mut items = app.menu_items.as_slice();
+    for segment in submenu_path {
+        let next = items.iter().find(|item| item.id == *segment)?;
+        items = next.submenu.as_slice();
+    }
+    Some(items)
+}
 
 pub fn show_aggregated(enhanced_tray_state: &mut Option<EnhancedTrayState>) {
     let Some(tray_state) = enhanced_tray_state.as_mut() else {
         return;
     };
 
+    let items = tray_state.tree.get_aggregated_menu(None);
+    tray_state.selected_index = first_selectable_index(&items);
     tray_state.current_view = TrayViewState::Aggregated {
-        items: tray_state.tree.get_aggregated_menu(None),
+        items,
         filter: None,
     };
 }
@@ -16,9 +40,9 @@ pub fn show_favorites(enhanced_tray_state: &mut Option<EnhancedTrayState>) {
         return;
     };
 
-    tray_state.current_view = TrayViewState::Favorites {
-        items: tray_state.tree.get_favorites_menu(),
-    };
+    let items = tray_state.tree.get_favorites_menu();
+    tray_state.selected_index = first_selectable_index(&items);
+    tray_state.current_view = TrayViewState::Favorites { items };
 }
 
 pub fn update_filter(enhanced_tray_state: &mut Option<EnhancedTrayState>, filter_text: String) {
@@ -33,6 +57,7 @@ pub fn update_filter(enhanced_tray_state: &mut Option<EnhancedTrayState>, filter
             Some(filter_text.clone())
         };
         *items = tray_state.tree.get_aggregated_menu(filter.as_deref());
+        tray_state.selected_index = first_selectable_index(items);
     }
     tray_state.filter_text = filter_text;
 }
@@ -53,12 +78,16 @@ pub fn enter_submenu(
     } = &tray_state.current_view
         && current_app_id == app_id
     {
+        let Some(items) = items_at_path(&tray_state.tree, app_id, &submenu_path) else {
+            return;
+        };
+        let selected_index = first_selectable_index(items);
         tray_state.current_view = TrayViewState::SingleApp {
             app_id: app_id.to_string(),
             navigation: navigation.clone(),
             submenu_path,
         };
-        tray_state.selected_index = Some(0);
+        tray_state.selected_index = selected_index;
     }
 }
 
@@ -75,19 +104,21 @@ pub fn exit_submenu(enhanced_tray_state: &mut Option<EnhancedTrayState>) {
     {
         let mut new_path = submenu_path.clone();
         new_path.pop();
+        let selected_index =
+            items_at_path(&tray_state.tree, app_id, &new_path).and_then(first_selectable_index);
         tray_state.current_view = TrayViewState::SingleApp {
             app_id: app_id.clone(),
             navigation: navigation.clone(),
             submenu_path: new_path,
         };
-        tray_state.selected_index = Some(0);
+        tray_state.selected_index = selected_index;
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::enhanced_tray::{self, EnhancedTrayState, TrayViewState};
     use super::{enter_submenu, exit_submenu, show_aggregated, show_favorites, update_filter};
+    use crate::enhanced_tray::{self, EnhancedTrayState, TrayViewState};
 
     fn tray_icon(app_id: &str) -> enhanced_tray::TrayIcon {
         enhanced_tray::TrayIcon {
@@ -130,7 +161,10 @@ mod tests {
         state.tree.update_app(tray_icon("app"));
         state.tree.update_app_menu(
             "app",
-            vec![menu_item("app", "open", "Open"), menu_item("app", "quit", "Quit")],
+            vec![
+                menu_item("app", "open", "Open"),
+                menu_item("app", "quit", "Quit"),
+            ],
         );
         Some(state)
     }
@@ -157,7 +191,7 @@ mod tests {
     #[test]
     fn show_favorites_uses_tree_favorites() {
         let mut state = state_with_menu();
-        state.as_mut().unwrap().tree.toggle_favorite("quit");
+        state.as_mut().unwrap().tree.toggle_favorite("app", "quit");
 
         show_favorites(&mut state);
 
@@ -174,6 +208,19 @@ mod tests {
     #[test]
     fn submenu_enter_and_exit_update_path_and_selected_index() {
         let mut state = state_with_menu();
+        let mut status = menu_item("app", "status", "Review this action");
+        status.enabled = false;
+        let mut child = menu_item("app", "child", "Child");
+        child.widget_type = enhanced_tray::TrayWidgetType::SubmenuButton;
+        child.submenu = vec![status, menu_item("app", "confirm", "Confirm")];
+        let mut root = menu_item("app", "root", "Root");
+        root.widget_type = enhanced_tray::TrayWidgetType::SubmenuButton;
+        root.submenu = vec![child];
+        state
+            .as_mut()
+            .unwrap()
+            .tree
+            .update_app_menu("app", vec![root]);
         let navigation = state.as_ref().unwrap().tree.get_app_navigation("app");
         state.as_mut().unwrap().current_view = TrayViewState::SingleApp {
             app_id: "app".into(),
@@ -183,16 +230,42 @@ mod tests {
         state.as_mut().unwrap().selected_index = Some(3);
 
         enter_submenu(&mut state, "app", vec!["root".into(), "child".into()]);
+        assert_eq!(state.as_ref().unwrap().selected_index, Some(1));
         exit_submenu(&mut state);
 
         let state = state.expect("state remains present");
         assert_eq!(state.selected_index, Some(0));
         match state.current_view {
-            TrayViewState::SingleApp { app_id, submenu_path, .. } => {
+            TrayViewState::SingleApp {
+                app_id,
+                submenu_path,
+                ..
+            } => {
                 assert_eq!(app_id, "app");
                 assert_eq!(submenu_path, vec!["root".to_string()]);
             }
             other => panic!("expected single app view, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn invalid_submenu_path_does_not_change_the_current_view() {
+        let mut state = state_with_menu();
+        let navigation = state.as_ref().unwrap().tree.get_app_navigation("app");
+        state.as_mut().unwrap().current_view = TrayViewState::SingleApp {
+            app_id: "app".into(),
+            navigation,
+            submenu_path: vec![],
+        };
+        state.as_mut().unwrap().selected_index = Some(1);
+
+        enter_submenu(&mut state, "app", vec!["missing".into()]);
+
+        let state = state.expect("state remains present");
+        assert_eq!(state.selected_index, Some(1));
+        assert!(matches!(
+            state.current_view,
+            TrayViewState::SingleApp { submenu_path, .. } if submenu_path.is_empty()
+        ));
     }
 }

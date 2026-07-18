@@ -1,0 +1,23 @@
+[Unit]
+Description=DeskHalloumi hotkey daemon (legacy unilii compatibility name)
+Documentation=file:%h/.local/share/doc/deskhalloumi/project-renaming.md
+After=graphical-session.target
+PartOf=graphical-session.target
+Conflicts=deskhalloumi-hotkeyd.service
+
+[Service]
+Type=simple
+Environment=UNILII_RUNTIME_DIR=%t/unilii
+RuntimeDirectory=unilii
+RuntimeDirectoryMode=0700
+ExecStart=%h/.local/bin/unilii-hotkeyd --backend x11 --config %h/.config/unilii/hotkeys.toml --watch
+ExecReload=%h/.local/bin/unilii-hotkeyd --reload
+ExecStop=%h/.local/bin/unilii-hotkeyd --shutdown
+Restart=on-failure
+RestartSec=1
+TimeoutStopSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=graphical-session.target

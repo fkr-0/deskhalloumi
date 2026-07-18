@@ -1,5 +1,5 @@
 [package]
-name = "unilii-core"
+name = "deskhalloumi-core"
 version.workspace = true
 edition.workspace = true
 
@@ -7,10 +7,19 @@ edition.workspace = true
 iced.workspace = true
 tokio.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 async-trait.workspace = true
 toml.workspace = true
 tracing.workspace = true
 directories.workspace = true
-unilii-lib.workspace = true
+chrono.workspace = true
+libc.workspace = true
+x11rb.workspace = true
+xkeysym.workspace = true
+deskhalloumi-lib.workspace = true
 futures = "0.3"
 glob = "0.3"
+wait-timeout = "0.2"
+
+[dev-dependencies]
+tempfile = "3.13"

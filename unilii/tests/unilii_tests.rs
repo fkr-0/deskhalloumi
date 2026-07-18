@@ -1,4 +1,4 @@
-use unilii::util::{DockSide, build_strut_partial};
+use deskhalloumi::util::{DockSide, build_strut_partial};
 
 #[test]
 fn test_build_strut_partial_left() {

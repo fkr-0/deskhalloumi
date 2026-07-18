@@ -1,0 +1,24 @@
+[bar]
+height = 28
+position = "top"
+hot_reload = true
+
+[layout]
+left = ["custom"]
+center = []
+right = ["clock"]
+
+[[module]]
+id = "custom"
+type = "script"
+command = "printf custom-ok"
+interval_ms = 30000
+timeout_ms = 2000
+format = "{output}"
+on_click_left = "notify-send unilii-bar custom-click"
+
+[[module]]
+id = "clock"
+type = "clock"
+format = "%H:%M:%S"
+interval_ms = 1000

@@ -1,20 +1,66 @@
 [package]
-name = "unilii-bin"
+name = "deskhalloumi-bin"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "unilii"
+name = "deskhalloumi"
 path = "src/main.rs"
 
 [[bin]]
 name = "test_dbus"
 path = "src/test_dbus.rs"
 
+[[bin]]
+name = "deskhalloumi-bar"
+path = "src/bar_main.rs"
+
+[[bin]]
+name = "deskhalloumi-copyq"
+path = "src/copyq_main.rs"
+
+[[bin]]
+name = "deskhalloumi-filter-tab"
+path = "src/filter_tab_main.rs"
+
+[[bin]]
+name = "deskhalloumi-i3-vis"
+path = "src/i3_vis_main.rs"
+
+[[bin]]
+name = "deskhalloumi-hotkeyd"
+path = "src/hotkeyd_main.rs"
+
+# Compatibility aliases retained for the 0.x transition.
+[[bin]]
+name = "unilii"
+path = "src/legacy_main.rs"
+
+[[bin]]
+name = "unilii-bar"
+path = "src/legacy_bar_main.rs"
+
+[[bin]]
+name = "unilii-copyq"
+path = "src/legacy_copyq_main.rs"
+
+[[bin]]
+name = "unilii-filter-tab"
+path = "src/legacy_filter_tab_main.rs"
+
+[[bin]]
+name = "unilii-i3-vis"
+path = "src/legacy_i3_vis_main.rs"
+
+[[bin]]
+name = "unilii-hotkeyd"
+path = "src/legacy_hotkeyd_main.rs"
+
 [dependencies]
 iced.workspace = true
 tokio.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -24,20 +70,19 @@ clap.workspace = true
 chrono.workspace = true
 serde_yaml = "0.9"
 
-unilii-core.workspace = true
-unilii-lib.workspace = true
+deskhalloumi-core.workspace = true
+deskhalloumi-lib.workspace = true
 
 # Plugin modules (enabled via features)
-unilii-clock = { workspace = true, optional = true }
-unilii-battery = { workspace = true, optional = true }
-unilii-tmux = { workspace = true, optional = true }
+deskhalloumi-clock = { workspace = true, optional = true }
+deskhalloumi-battery = { workspace = true, optional = true }
+deskhalloumi-tmux = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3.13"
-serde_json.workspace = true
 
 [features]
 default = ["clock", "battery"]
-clock = ["unilii-clock"]
-battery = ["unilii-battery"]
-tmux = ["unilii-tmux"]
+clock = ["deskhalloumi-clock"]
+battery = ["deskhalloumi-battery"]
+tmux = ["deskhalloumi-tmux"]

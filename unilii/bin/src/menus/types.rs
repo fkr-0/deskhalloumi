@@ -1,8 +1,7 @@
 #![allow(dead_code)]
 // FIXME(T6): Menu lifecycle enum is the planned shared lifecycle surface pending MenuModel integration.
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum MenuLifecycleState {
     #[default]
     Closed,
@@ -18,4 +17,3 @@ pub enum MenuLifecycleState {
     },
     Stale,
 }
-

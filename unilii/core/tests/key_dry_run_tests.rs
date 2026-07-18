@@ -1,5 +1,5 @@
-use unilii_core::key_engine::KeyTrigger;
-use unilii_core::keys::{CommandType, KeyBinding, KeyDryRunEvent, dry_run_bindings};
+use deskhalloumi_core::key_engine::KeyTrigger;
+use deskhalloumi_core::keys::{CommandType, KeyBinding, KeyDryRunEvent, dry_run_bindings};
 
 #[test]
 fn dry_run_reports_triggered_binding_names() {

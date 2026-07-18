@@ -11,10 +11,10 @@ use crate::{
     tray,
     widgets::{Audio, Power, SysMonitor, Video, WidgetMessage, Wifi},
 };
+use deskhalloumi_core::{ModuleUpdate, config::Config, keys::KeybindingResult};
 use iced::{Task, window};
 use std::collections::{BTreeMap, HashMap};
 use tracing::{error, info};
-use unilii_core::{ModuleUpdate, config::Config, keys::KeybindingResult};
 
 /// A single panel in a multi-panel setup
 pub struct UniliiPanel {
@@ -166,12 +166,15 @@ pub struct UniliiBar {
     pub audio: Audio,
     pub video: Video,
     pub power: Power,
+    pub system_menu: crate::menus::system::SystemMenuRuntime,
     pub shift_held: bool,
     pub tray_icons: Vec<tray::TrayIcon>,
     pub enhanced_tray: Option<enhanced_tray::EnhancedTrayState>,
     pub tray_quickjump_active: bool,
     pub tray_quickjump_input: String,
     pub run_options: RunOptions,
+    /// True when the bar owns an embedded KeybindingDaemon action channel.
+    pub keybinding_actions_enabled: bool,
 }
 
 /// Application messages
@@ -227,6 +230,10 @@ pub enum Message {
     TraySpawnCommandDone(String, Result<(), String>),
     TrayAnimateTick,
     TrayMenuFetched(String, Result<Vec<enhanced_tray::TrayMenuItem>, String>),
+    /// Open one configured system-menu section (or "root").
+    SystemMenuPressed(String),
+    /// Completion of an asynchronous system-menu command.
+    SystemActionDone(String, Result<String, String>),
 
     // Legacy widget events
     LegacyWidget(WidgetMessage),

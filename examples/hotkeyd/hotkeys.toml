@@ -1,0 +1,39 @@
+# Standalone hotkeyd example. Bar/tray/widget actions belong in embedded mode.
+
+[[keybindings]]
+name = "menu_i3_vis"
+keysym = "Super+i"
+command = "toggle:i3-vis"
+type = "menu"
+trigger = "press"
+cooldown_ms = 250
+priority = 100
+consume = true
+
+[[keybindings]]
+name = "menu_filter_tab"
+keysym = "Super+u"
+command = "toggle:filter-tab"
+type = "menu"
+trigger = "press"
+cooldown_ms = 250
+priority = 100
+consume = true
+
+[[keybindings]]
+name = "menu_copyq"
+keysym = "Super+c"
+command = "toggle:copyq"
+type = "menu"
+trigger = "press"
+cooldown_ms = 250
+priority = 100
+consume = true
+
+[[keybindings]]
+name = "terminal"
+keysym = "Super+Return"
+command = "exec foot"
+type = "shell"
+priority = 50
+consume = true

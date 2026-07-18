@@ -1,0 +1,90 @@
+[bar]
+height = 28
+position = "top"
+reserve_space = true
+hot_reload = true
+
+[theme]
+background = "#1e1e2e"
+foreground = "#cdd6f4"
+accent = "#89b4fa"
+warning = "#f9e2af"
+critical = "#f38ba8"
+font_family = "monospace"
+font_size = 13
+padding = 8
+margin = 0
+border_size = 0
+
+[layout]
+left = ["workspaces"]
+center = ["window_title"]
+right = ["system", "network", "vpn", "audio", "battery", "clock"]
+
+[[module]]
+id = "workspaces"
+type = "workspaces"
+enabled = true
+interval_ms = 1000
+# backend = "i3"   # or "sway"; explicit command/workspaces_command overrides this
+
+[[module]]
+id = "window_title"
+type = "window_title"
+enabled = true
+interval_ms = 1000
+# backend = "i3"   # or "sway"; explicit command/tree_command overrides this
+format = "{title}"
+
+
+[[module]]
+id = "system"
+type = "system"
+enabled = true
+interval_ms = 2000
+format = "load {load1} mem {memory_used_percent}%"
+memory_warning_percent = 80
+memory_critical_percent = 90
+
+[[module]]
+id = "network"
+type = "network"
+enabled = true
+interval_ms = 5000
+format = "{interface} {state} {ip} {ssid}"
+
+[[module]]
+id = "vpn"
+type = "vpn"
+enabled = true
+interval_ms = 5000
+
+[[module]]
+id = "audio"
+type = "audio"
+enabled = true
+interval_ms = 1000
+on_click_left = "pavucontrol"
+
+[[module]]
+id = "battery"
+type = "battery"
+enabled = true
+interval_ms = 10000
+format = "{percentage}% {state}"
+
+[[module]]
+id = "clock"
+type = "clock"
+enabled = true
+interval_ms = 1000
+format = "%Y-%m-%d %H:%M:%S"
+
+[[module]]
+id = "example_script"
+type = "script"
+enabled = false
+interval_ms = 30000
+command = "echo ok"
+timeout_ms = 2000
+format = "{output}"

@@ -1,6 +1,6 @@
 use chrono::Local;
-use iced::{widget::text, Element};
-use unilii_core::{Module, ModuleConfig, ModuleUpdate, Result};
+use deskhalloumi_core::{Module, ModuleConfig, ModuleUpdate, Result};
+use iced::{Element, widget::text};
 
 pub struct Clock {
     format: String,
