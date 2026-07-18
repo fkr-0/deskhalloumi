@@ -6,7 +6,7 @@ use crate::tray::NetworkSnapshot;
 pub fn mark_special_view_loading(
     enhanced_tray_state: &mut Option<EnhancedTrayState>,
     icon_key: &str,
-    icon_key_for_app_id: impl FnOnce(&str) -> Option<String>,
+    icon_key_for_app_id: impl Fn(&str) -> Option<String>,
 ) -> bool {
     let Some(tray_state) = enhanced_tray_state.as_mut() else {
         return false;
@@ -30,12 +30,10 @@ pub fn mark_special_view_loading(
             loading,
             error,
             ..
-        } => {
-            if icon_key_for_app_id(app_id).as_deref() == Some(icon_key) {
-                *loading = true;
-                *error = None;
-                return true;
-            }
+        } if icon_key_for_app_id(app_id).as_deref() == Some(icon_key) => {
+            *loading = true;
+            *error = None;
+            return true;
         }
         _ => {}
     }
@@ -209,7 +207,7 @@ pub fn apply_spawn_command_done(
     enhanced_tray_state: &mut Option<EnhancedTrayState>,
     icon_key: &str,
     result: Result<(), String>,
-    icon_key_for_app_id: impl FnOnce(&str) -> Option<String>,
+    icon_key_for_app_id: impl Fn(&str) -> Option<String>,
 ) -> bool {
     let Some(tray_state) = enhanced_tray_state.as_mut() else {
         return false;
@@ -233,14 +231,12 @@ pub fn apply_spawn_command_done(
             loading,
             error,
             ..
-        } => {
-            if icon_key_for_app_id(app_id).as_deref() == Some(icon_key) {
-                *loading = false;
-                if let Err(message) = result {
-                    *error = Some(message);
-                }
-                return true;
+        } if icon_key_for_app_id(app_id).as_deref() == Some(icon_key) => {
+            *loading = false;
+            if let Err(message) = result {
+                *error = Some(message);
             }
+            return true;
         }
         _ => {}
     }

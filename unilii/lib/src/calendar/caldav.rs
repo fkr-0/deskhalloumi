@@ -147,10 +147,7 @@ fn extract_calendar_data_blocks(xml: &str) -> Vec<String> {
     let mut blocks = Vec::new();
     let mut rest = xml;
 
-    loop {
-        let Some(start) = rest.find("<calendar-data") else {
-            break;
-        };
+    while let Some(start) = rest.find("<calendar-data") {
         let Some(tag_end_rel) = rest[start..].find('>') else {
             break;
         };

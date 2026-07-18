@@ -1212,7 +1212,7 @@ fn resolve_custom_menu_includes(config_path: &Path, custom: &mut CustomMenuConfi
     }
 
     let mut sources = custom.sources.clone();
-    sources.sort_by(|left, right| left.priority.cmp(&right.priority));
+    sources.sort_by_key(|source| source.priority);
     for source in sources {
         if !source.enabled {
             continue;
@@ -1309,7 +1309,7 @@ fn load_custom_menu_sources(
         }
 
         let mut nested_sources = parsed_custom.sources.clone();
-        nested_sources.sort_by(|left, right| left.priority.cmp(&right.priority));
+        nested_sources.sort_by_key(|source| source.priority);
         for source in nested_sources {
             if !source.enabled {
                 continue;

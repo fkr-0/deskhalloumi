@@ -131,6 +131,11 @@ The `v0.2.0` retry also fixes the runner timezone to `Europe/Berlin`, matching
 the historical tagged calendar assertion. Current development tests derive
 their expected display time from the active local timezone instead.
 
+The retry pins Rust 1.94.1, the toolchain used for the original local release
+validation. Development CI continues to track current stable so newly added
+compiler and Clippy diagnostics are addressed on `main` without making an
+immutable historical tag depend on moving lint defaults.
+
 The release workflow does not publish crates or create a public GitHub release.
 Those remain explicit maintainer actions after artifact review.
 

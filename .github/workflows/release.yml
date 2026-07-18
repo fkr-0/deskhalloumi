@@ -18,6 +18,7 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
   RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.release_ref || github.ref_name }}
+  RELEASE_RUST: 1.94.1
   TZ: Europe/Berlin
 
 jobs:
@@ -32,11 +33,11 @@ jobs:
           persist-credentials: false
           ref: ${{ env.RELEASE_REF }}
 
-      - name: Install Rust stable
-        run: rustup toolchain install stable --profile minimal
+      - name: Install release Rust toolchain
+        run: rustup toolchain install "$RELEASE_RUST" --profile minimal
 
-      - name: Select Rust stable
-        run: rustup default stable
+      - name: Select release Rust toolchain
+        run: rustup default "$RELEASE_RUST"
 
       - name: Install isolated X11/i3 test dependencies
         run: |
@@ -60,9 +61,10 @@ jobs:
       - name: Run safe workspace tests
         run: |
           python3 scripts/audit_live_session_commands.py --quiet
-          # v0.2.0 contains one obsolete smoke assertion that requires a real
-          # /dev/input keyboard. The source release remains immutable, so the
-          # retry excludes only that hardware-presence test.
+          # v0.2.0 contains two obsolete workstation assertions: one requires
+          # a real /dev/input keyboard and one requires battery hardware. The
+          # source release remains immutable, so the retry excludes only those
+          # exact hardware-presence tests.
           cargo test --workspace -- \
             --skip test_keyboard_listener \
             --skip test_module_loading_with_enabled_modules

@@ -19,6 +19,8 @@ after that tag belong under `[Unreleased]`.
   keyboard discovery is validated safely even when the device set is empty.
 - Calendar formatting tests derive their expectation from the runner's local
   timezone, and module-loading tests no longer require physical battery hardware.
+- Release retries use the Rust 1.94.1 toolchain that validated `v0.2.0`, while
+  branch CI remains on current stable and the codebase is kept clean under new lints.
 
 ## [0.2.0] - 2026-07-18
 
