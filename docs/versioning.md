@@ -111,6 +111,17 @@ A compatibility alias is part of the public contract once released.
     reruns all release gates, builds the primary and compatibility binaries,
     and uploads a deterministic Linux archive with a SHA-256 checksum.
 
+If GitHub did not register the original tag event, or a runner-only failure was
+fixed after publication, rerun packaging without moving the tag:
+
+```sh
+gh workflow run release.yml --ref main -f release_ref=vX.Y.Z
+```
+
+The manual workflow checks out the requested annotated tag before validating,
+building, and packaging it. The workflow definition comes from `main`, while
+the source and release metadata remain pinned to the immutable tag.
+
 The release workflow does not publish crates or create a public GitHub release.
 Those remain explicit maintainer actions after artifact review.
 

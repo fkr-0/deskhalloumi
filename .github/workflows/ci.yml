@@ -26,7 +26,15 @@ jobs:
       - name: Install isolated X11/i3 test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb i3-wm xdotool x11-utils
+          sudo apt-get install -y --no-install-recommends \
+            i3-wm \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            pkg-config \
+            x11-utils \
+            xdotool \
+            xvfb
 
       - name: Validate release metadata
         run: python3 scripts/check_release_metadata.py

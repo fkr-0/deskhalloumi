@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_ref:
+        description: Annotated release tag to validate and package
+        required: true
+        default: v0.2.0
 
 permissions:
   contents: read
@@ -11,6 +17,7 @@ permissions:
 env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
+  RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.release_ref || github.ref_name }}
 
 jobs:
   validate-build-package:
@@ -22,6 +29,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ env.RELEASE_REF }}
 
       - name: Install Rust stable
         run: rustup toolchain install stable --profile minimal
@@ -34,6 +42,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             i3-wm \
+            libudev-dev \
             libwayland-dev \
             libxkbcommon-dev \
             pkg-config \
@@ -76,7 +85,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_REF#v}"
           platform="x86_64-unknown-linux-gnu"
           package="deskhalloumi-${version}-${platform}"
           stage="dist/${package}"
@@ -112,7 +121,7 @@ jobs:
       - name: Upload release archive
         uses: actions/upload-artifact@v6
         with:
-          name: deskhalloumi-${{ github.ref_name }}-linux-x86_64
+          name: deskhalloumi-${{ env.RELEASE_REF }}-linux-x86_64
           path: |
             dist/*.tar.gz
             dist/*.sha256

@@ -9,6 +9,13 @@ after that tag belong under `[Unreleased]`.
 
 ## [Unreleased]
 
+### Fixed
+
+- GitHub Actions now installs the `libudev` development headers required by the
+  evdev/udev crates on clean Ubuntu runners.
+- The release workflow can be dispatched manually for an immutable annotated
+  tag, allowing packaging to be retried without moving or replacing the tag.
+
 ## [0.2.0] - 2026-07-18
 
 ### Added
