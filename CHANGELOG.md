@@ -21,6 +21,8 @@ after that tag belong under `[Unreleased]`.
   timezone, and module-loading tests no longer require physical battery hardware.
 - Release retries use the Rust 1.94.1 toolchain that validated `v0.2.0`, while
   branch CI remains on current stable and the codebase is kept clean under new lints.
+- CI toolchain installation explicitly includes `rustfmt` and `clippy`, avoiding
+  missing-component failures when using rustup's minimal profile.
 
 ## [0.2.0] - 2026-07-18
 

@@ -34,7 +34,7 @@ jobs:
           ref: ${{ env.RELEASE_REF }}
 
       - name: Install release Rust toolchain
-        run: rustup toolchain install "$RELEASE_RUST" --profile minimal
+        run: rustup toolchain install "$RELEASE_RUST" --profile minimal -c rustfmt -c clippy
 
       - name: Select release Rust toolchain
         run: rustup default "$RELEASE_RUST"
