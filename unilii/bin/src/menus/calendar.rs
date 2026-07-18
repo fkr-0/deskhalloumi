@@ -275,9 +275,13 @@ mod tests {
 
     #[test]
     fn event_start_is_humanized_or_preserved() {
-        let (day, time) = format_event_start("2026-07-10T14:30:00+02:00");
-        assert!(day.contains("2026-07-10"));
-        assert_eq!(time, "14:30");
+        let input = "2026-07-10T14:30:00+02:00";
+        let expected = DateTime::parse_from_rfc3339(input)
+            .expect("valid fixture timestamp")
+            .with_timezone(&Local);
+        let (day, time) = format_event_start(input);
+        assert_eq!(day, expected.format("%A, %Y-%m-%d").to_string());
+        assert_eq!(time, expected.format("%H:%M").to_string());
         assert_eq!(format_event_start("unknown").1, "unknown");
     }
 

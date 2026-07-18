@@ -17,6 +17,8 @@ after that tag belong under `[Unreleased]`.
   tag, allowing packaging to be retried without moving or replacing the tag.
 - Hardware-neutral CI no longer requires an accessible `/dev/input` keyboard;
   keyboard discovery is validated safely even when the device set is empty.
+- Calendar formatting tests derive their expectation from the runner's local
+  timezone, and module-loading tests no longer require physical battery hardware.
 
 ## [0.2.0] - 2026-07-18
 

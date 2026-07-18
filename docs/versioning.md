@@ -127,6 +127,10 @@ for obsolete hardware-presence smoke assertions in the tagged tree. Such an
 exclusion must name the exact test and may not skip parser, engine, integration,
 or release-metadata coverage.
 
+The `v0.2.0` retry also fixes the runner timezone to `Europe/Berlin`, matching
+the historical tagged calendar assertion. Current development tests derive
+their expected display time from the active local timezone instead.
+
 The release workflow does not publish crates or create a public GitHub release.
 Those remain explicit maintainer actions after artifact review.
 
