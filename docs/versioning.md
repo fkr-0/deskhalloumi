@@ -2,10 +2,10 @@
 
 ## Current state
 
-The active Cargo workspace declares a shared version of `0.2.0` in the root
+The active Cargo workspace declares a shared version of `0.3.0` in the root
 `Cargo.toml`, and the main crates inherit it with `version.workspace = true`.
 The released commit includes a dated changelog section, automated
-release-metadata checks, and the annotated `v0.2.0` tag. The canonical remote is
+release-metadata checks, and the annotated `v0.3.0` tag. The canonical remote is
 `https://github.com/fkr-0/deskhalloumi`.
 
 This document defines the contract; a version heading alone does not claim that
@@ -154,9 +154,9 @@ publication remains an explicit maintainer action.
 
 ## Current release
 
-Version `0.2.0` is the first DeskHalloumi-branded release. It includes the
-compatibility-first command rename, selective X11 hotkeys, active i3 auditing,
-cross-process actions, menu/front-end work, dynamic evdev keyboard hot-plug,
-sxhkd migration improvements, and release automation. New work must return to
-the `[Unreleased]` changelog section and select a later SemVer version before
-the next annotated tag is created.
+Version `0.3.0` adds the supervised asynchronous runtime, typed generation-safe
+providers, renderer-neutral menus and quick-select, action history, CLI
+introspection, and live runtime metrics while retaining the compatibility-first
+command, configuration-path, and application-ID contracts from `0.2.0`. New
+work must return to the `[Unreleased]` changelog section and select a later
+SemVer version before the next annotated tag is created.

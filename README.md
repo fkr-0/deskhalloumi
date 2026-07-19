@@ -11,18 +11,18 @@ commands and config fallbacks remain available during the pre-1.0 migration.
 
 Canonical repository: <https://github.com/fkr-0/deskhalloumi>
 
-## Release 0.2.0
+## Release 0.3.0
 
-`v0.2.0`, released on July 18, 2026, is the first DeskHalloumi-branded release.
-It introduces the compatibility-first rename, standalone and generated i3/X11
-hotkeys, recursive i3 conflict auditing, selective native X11 semantics,
-dynamic evdev keyboard hot-plug, the versioned desktop action bus, and the
-expanded menu and popup frontends.
+`v0.3.0`, released on July 19, 2026, introduces the supervised asynchronous
+runtime, generation-safe typed provider state, renderer-neutral menus and
+quick-select, live runtime diagnostics, CLI introspection, and bounded visible
+action history. The existing i3/X11, configuration-path, application-ID, and
+`unilii-*` compatibility contracts remain available.
 
-- [Release notes](docs/releases/0.2.0.md)
+- [Release notes](docs/releases/0.3.0.md)
 - [Complete changelog](CHANGELOG.md)
 - [Versioning and release policy](docs/versioning.md)
-- [Binary release and source tag `v0.2.0`](https://github.com/fkr-0/deskhalloumi/releases/tag/v0.2.0)
+- [Binary release and source tag `v0.3.0`](https://github.com/fkr-0/deskhalloumi/releases/tag/v0.3.0)
 - [Installation and upgrade guide](docs/installation.md)
 
 Clone the repository with:

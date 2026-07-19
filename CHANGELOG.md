@@ -4,10 +4,12 @@ All notable user-visible changes to the active DeskHalloumi workspace are
 recorded in this file. The project follows Semantic Versioning as described in
 [`docs/versioning.md`](docs/versioning.md).
 
-Version `0.2.0` is identified by the annotated `v0.2.0` release tag. Changes
+Version `0.3.0` is identified by the annotated `v0.3.0` release tag. Changes
 after that tag belong under `[Unreleased]`.
 
 ## [Unreleased]
+
+## [0.3.0] - 2026-07-19
 
 ### Added
 
@@ -175,5 +177,6 @@ after that tag belong under `[Unreleased]`.
 - sxhkd Cartesian brace expansion is capped at 4096 generated values to prevent
   accidental configuration blow-ups during migration.
 
-[Unreleased]: https://github.com/fkr-0/deskhalloumi/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/fkr-0/deskhalloumi/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/fkr-0/deskhalloumi/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/fkr-0/deskhalloumi/tree/v0.2.0

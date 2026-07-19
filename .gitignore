@@ -12,6 +12,7 @@ htmlcov
 # Generated files
 # Generated files
 /target/
+/dist/
 //target/
 /**/*.rs.bk
 

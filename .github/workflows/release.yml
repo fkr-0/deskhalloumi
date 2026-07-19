@@ -9,7 +9,7 @@ on:
       release_ref:
         description: Annotated release tag to validate and package
         required: true
-        default: v0.2.0
+        default: v0.3.0
 
 permissions:
   contents: write
@@ -59,15 +59,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run safe workspace tests
-        run: |
-          python3 scripts/audit_live_session_commands.py --quiet
-          # v0.2.0 contains two obsolete workstation assertions: one requires
-          # a real /dev/input keyboard and one requires battery hardware. The
-          # source release remains immutable, so the retry excludes only those
-          # exact hardware-presence tests.
-          cargo test --workspace -- \
-            --skip test_keyboard_listener \
-            --skip test_module_loading_with_enabled_modules
+        run: scripts/test_safe.sh
 
       - name: Test i3 and selective X11 hotkeys
         run: scripts/test_i3_hotkeys.sh

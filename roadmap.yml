@@ -1,11 +1,11 @@
 schema_version: 2
 kind: internal_maintainer_roadmap
-updated_at: '2026-07-18'
+updated_at: '2026-07-19'
 project:
   name: DeskHalloumi
   slug: deskhalloumi
   repository: https://github.com/fkr-0/deskhalloumi
-  current_version: 0.2.0
+  current_version: 0.3.0
   supported_session: i3/X11
   compatibility_boundary:
   - unilii command aliases remain available during 0.x
@@ -21,7 +21,7 @@ planning_principles:
 - Do not claim Sway or Wayland global-hotkey parity before a separately tested backend exists.
 current_baseline:
   release:
-    tag: v0.2.0
+    tag: v0.3.0
     source_status: published
     linux_binary_archive: published
     checksum: published
@@ -41,6 +41,10 @@ current_baseline:
   - versioned local action bus
   - deterministic Linux release archive
   - shared menu and popup implementation slices
+  - supervised asynchronous runtime with bounded shutdown
+  - typed generation-safe provider lifecycle
+  - renderer-neutral menu and quick-select contracts
+  - CLI introspection, action history, and live runtime metrics
 release_targets:
 - version: 0.2.1
   theme: reliability, distribution, and documentation
@@ -51,6 +55,7 @@ release_targets:
   - current-stable CI and the pinned release toolchain are both documented.
 - version: 0.3.0
   theme: structured runtime and action execution
+  status: completed
   exit_criteria:
   - detached long-lived tasks are replaced by owned supervisors or documented process-lifetime tasks.
   - action execution has one typed policy for timeout, cwd, environment, output, and cancellation.

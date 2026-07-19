@@ -14,21 +14,21 @@ deskhalloumi-<version>-x86_64-unknown-linux-gnu.tar.gz
 deskhalloumi-<version>-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
-For `0.2.0`, the release page is:
+For `0.3.0`, the release page is:
 
-<https://github.com/fkr-0/deskhalloumi/releases/tag/v0.2.0>
+<https://github.com/fkr-0/deskhalloumi/releases/tag/v0.3.0>
 
 Verify the archive from the directory containing both downloaded files:
 
 ```sh
-sha256sum -c deskhalloumi-0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c deskhalloumi-0.3.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
 Extract it:
 
 ```sh
-tar -xzf deskhalloumi-0.2.0-x86_64-unknown-linux-gnu.tar.gz
-cd deskhalloumi-0.2.0-x86_64-unknown-linux-gnu
+tar -xzf deskhalloumi-0.3.0-x86_64-unknown-linux-gnu.tar.gz
+cd deskhalloumi-0.3.0-x86_64-unknown-linux-gnu
 ```
 
 The archive contains these primary commands:
