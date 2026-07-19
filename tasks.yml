@@ -2715,3 +2715,4 @@ provider_reload_metrics_runtime_decision_2026_07_19:
   - action-bus metrics response round-trip test
   - deskhalloumi runtime-metrics CLI parsing and client decoding tests
   - deskhalloumi-bar runtime-contract parsing test
+  - managed menu process identity stress test uses Linux process start ticks and passes repeated immediate status checks

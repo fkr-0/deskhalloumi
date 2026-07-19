@@ -62,6 +62,8 @@ after that tag belong under `[Unreleased]`.
 
 ### Fixed
 
+- Managed menu process records now use Linux process start-time identity rather
+  than relying on an immediately stable `/proc/<pid>/cmdline`, removing a clean-runner spawn/exec race while retaining PID-reuse protection.
 - GitHub Actions now installs the `libudev` development headers required by the
   evdev/udev crates on clean Ubuntu runners.
 - The release workflow can be dispatched manually for an immutable annotated

@@ -71,6 +71,11 @@ pub struct MenuProcessManager {
 struct MenuProcessRecord {
     pid: u32,
     executable: String,
+    /// Linux `/proc/<pid>/stat` field 22. This identifies one process lifetime
+    /// without depending on the child having completed `exec` or on cmdline
+    /// formatting. Older record files omit it and use the legacy fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    process_start_ticks: Option<u64>,
 }
 
 pub struct MenuInstanceGuard {
@@ -194,6 +199,7 @@ impl MenuProcessManager {
             &MenuProcessRecord {
                 pid,
                 executable: executable_identity(&spec.executable),
+                process_start_ticks: process_start_ticks(pid),
             },
         )?;
         self.spawn_reaper(name.clone(), pid, child);
@@ -295,6 +301,7 @@ impl MenuProcessManager {
             &MenuProcessRecord {
                 pid,
                 executable: executable_identity(&current),
+                process_start_ticks: process_start_ticks(pid),
             },
         )?;
         Ok(MenuInstanceGuard {
@@ -510,6 +517,7 @@ fn acquire_process_instance_in(runtime: &Path, name: &str) -> Result<ProcessInst
     let record = MenuProcessRecord {
         pid,
         executable: executable_identity(&current),
+        process_start_ticks: process_start_ticks(pid),
     };
     let bytes = serde_json::to_vec(&record).map_err(|error| error.to_string())?;
     file.write_all(&bytes).map_err(|error| error.to_string())?;
@@ -560,12 +568,18 @@ fn process_matches(record: &MenuProcessRecord) -> bool {
     if !proc_dir.exists() {
         return false;
     }
-    if fs::read_to_string(proc_dir.join("stat"))
-        .ok()
-        .and_then(|stat| proc_state(&stat))
-        .is_some_and(|state| matches!(state, 'Z' | 'X'))
-    {
+    let stat = match fs::read_to_string(proc_dir.join("stat")) {
+        Ok(stat) => stat,
+        Err(_) => return false,
+    };
+    let Some(identity) = proc_identity(&stat) else {
         return false;
+    };
+    if matches!(identity.state, 'Z' | 'X') {
+        return false;
+    }
+    if let Some(expected_start_ticks) = record.process_start_ticks {
+        return identity.start_ticks == Some(expected_start_ticks);
     }
     let cmdline = fs::read(proc_dir.join("cmdline")).unwrap_or_default();
     if cmdline.is_empty() || record.executable.is_empty() {
@@ -577,9 +591,44 @@ fn process_matches(record: &MenuProcessRecord) -> bool {
         .any(|part| part.ends_with(identity))
 }
 
+#[cfg(test)]
 fn proc_state(stat: &str) -> Option<char> {
+    proc_identity(stat).map(|identity| identity.state)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcIdentity {
+    state: char,
+    start_ticks: Option<u64>,
+}
+
+fn proc_identity(stat: &str) -> Option<ProcIdentity> {
     let command_end = stat.rfind(") ")?;
-    stat[command_end + 2..].chars().next()
+    let fields = stat[command_end + 2..]
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    let state = fields.first()?.chars().next()?;
+    // After removing fields 1 (pid) and 2 (comm), field 22 (starttime) is
+    // zero-based index 19 in the remaining field list beginning with state.
+    let start_ticks = fields.get(19).and_then(|value| value.parse().ok());
+    Some(ProcIdentity { state, start_ticks })
+}
+
+fn process_start_ticks(pid: u32) -> Option<u64> {
+    let stat_path = PathBuf::from("/proc").join(pid.to_string()).join("stat");
+    for attempt in 0..5 {
+        if let Some(start_ticks) = fs::read_to_string(&stat_path)
+            .ok()
+            .and_then(|stat| proc_identity(&stat))
+            .and_then(|identity| identity.start_ticks)
+        {
+            return Some(start_ticks);
+        }
+        if attempt < 4 {
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+    None
 }
 
 fn record_pid(path: &Path) -> Option<u32> {
@@ -660,6 +709,26 @@ mod tests {
         drop(first);
         let replacement = acquire_process_instance_in(temp.path(), "hotkeyd-test");
         assert!(replacement.is_ok());
+    }
+
+    #[test]
+    fn proc_identity_handles_command_spaces_and_extracts_start_time() {
+        let mut fields = vec!["S".to_string()];
+        fields.extend((4..=21).map(|field| field.to_string()));
+        fields.push("424242".to_string());
+        let stat = format!("123 (menu process with spaces) {}", fields.join(" "));
+        assert_eq!(
+            proc_identity(&stat),
+            Some(ProcIdentity {
+                state: 'S',
+                start_ticks: Some(424242),
+            })
+        );
+    }
+
+    #[test]
+    fn current_process_has_start_time_identity() {
+        assert!(process_start_ticks(std::process::id()).is_some());
     }
 
     #[test]
