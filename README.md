@@ -21,6 +21,7 @@ action history. The existing i3/X11, configuration-path, application-ID, and
 
 - [Release notes](docs/releases/0.3.0.md)
 - [Complete changelog](CHANGELOG.md)
+- [Roadmap for 0.4.0–0.8.0](docs/roadmap.md)
 - [Versioning and release policy](docs/versioning.md)
 - [Binary release and source tag `v0.3.0`](https://github.com/fkr-0/deskhalloumi/releases/tag/v0.3.0)
 - [Installation and upgrade guide](docs/installation.md)

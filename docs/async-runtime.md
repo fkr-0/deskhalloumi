@@ -182,18 +182,28 @@ span awaits; they should not replace ordinary mutexes mechanically.
 
 ## Provider lifecycle
 
-A provider should expose these states independently:
+A provider publishes the canonical typed states defined in
+[`runtime-contracts.md`](runtime-contracts.md):
 
 ```text
-loading
+startup
+loading(previous?)
 fresh(value)
 stale(value, reason)
-unavailable(reason)
+error(reason)
+disabled(reason)
+shutting_down
+stopped
 ```
 
 Refresh should be idempotent, timeout-bounded, and safe to cancel. A provider
 failure must not crash the panel. The UI should retain the last known value when
 that is safer than replacing it with an empty state.
+
+Each snapshot carries a provider-instance generation and an in-instance refresh
+generation. A late result is accepted only when both still match the active
+provider. Keyed refresh admission coalesces duplicate in-flight requests and
+prevents one provider from creating unbounded overlapping work.
 
 ## Reload generations
 

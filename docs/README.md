@@ -31,6 +31,7 @@ operators, contributors, and maintainers who need more detail.
 
 ## Releases and maintenance
 
+- [Human-readable release roadmap](roadmap.md)
 - [DeskHalloumi 0.3.0 release notes](releases/0.3.0.md)
 - [DeskHalloumi 0.2.0 release notes](releases/0.2.0.md)
 - [Versioning and release policy](versioning.md)

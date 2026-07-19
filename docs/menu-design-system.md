@@ -1,12 +1,18 @@
 # Menu design system and runtime architecture
 
-This document describes the release menu architecture shared by the unilii tray, built-in system menus, Wi-Fi, storage, calendar, and configured custom launchers.
+This document describes the release menu architecture shared by the DeskHalloumi tray, built-in system menus, Wi-Fi, storage, calendar, filter-tab, and configured custom launchers.
 
 The goal is not merely consistent styling. Every menu now follows the same interaction contract, data ordering, failure model, command-safety rules, and configuration boundaries.
 
+The canonical renderer-neutral core type is
+`deskhalloumi_core::menu::MenuModel`. Existing `TrayMenuItem` and domain-specific
+row types are Iced, DBus, or provider adapters while the remaining 0.5.0
+convergence work is completed; they are not a second source of lifecycle,
+selection, quick-select, or typed-action semantics.
+
 ## Design principles
 
-1. **One ordered model.** The same ordered `TrayMenuItem` rows drive rendering, mouse activation, keyboard selection, quick-jump labels, item counts, and action lookup. A menu must not render one order and activate another.
+1. **One ordered model.** The same ordered core `MenuItem` rows drive rendering, mouse activation, keyboard selection, quick-select labels, item counts, and action lookup. Adapters may change presentation, but a menu must not render one order and activate another.
 2. **Actions and information are distinct.** Section headings, status cards, separators, loading rows, and empty states are visible but never keyboard-selectable.
 3. **Progressive disclosure.** Primary actions remain at the top. Secondary details are grouped below headings. Destructive or explicitly confirmed custom actions open a review submenu before execution.
 4. **Keyboard and pointer parity.** Anything clickable is reachable by keyboard. Keyboard activation uses the same message/action path as pointer activation.
@@ -33,13 +39,18 @@ Providers / snapshots
   ├─ CalDAV/cache helpers
   └─ configured custom items
 
-Canonical menu models
+Canonical core model
+  └─ deskhalloumi_core::menu::MenuModel
+
+Provider and renderer adapters
+  ├─ enhanced_tray / DBus conversion
   ├─ menus/presentation.rs
   ├─ menus/wifi.rs
   ├─ menus/mount.rs
   ├─ menus/calendar.rs
   ├─ menus/custom.rs
-  └─ menus/system.rs
+  ├─ menus/system.rs
+  └─ filter-tab conversion
 
 EnhancedTrayState
   ├─ current view
@@ -59,7 +70,10 @@ Iced popup renderer
 
 ## Menu row semantics
 
-The existing `TrayMenuItem` structure remains the common transport type. Shared constructors in `menus/presentation.rs` encode semantics without introducing a second incompatible UI tree.
+`MenuItem` is the canonical semantic row. `TrayMenuItem` remains a compatibility
+and rendering adapter for existing tray code. Shared constructors in
+`menus/presentation.rs` must preserve the core item's id, lifecycle,
+enablement, hierarchy, and typed action rather than inventing parallel behavior.
 
 | Row | Purpose | Selectable | Typical rendering |
 |---|---|---:|---|
@@ -99,8 +113,8 @@ DBus mnemonic markers are normalized for display: `_Open` is rendered as `Open`,
 | Enter | Activate the selected row |
 | Right | Enter the selected submenu; otherwise move to the next tray application |
 | Left | Leave the current submenu; otherwise move to the previous tray application |
-| Escape | Cancel quick-jump, then leave one submenu level, then close the popup at the root |
-| `g` | Toggle quick-jump mode |
+| Escape | Abort quick-select when armed; otherwise leave one submenu level, then close the popup at the root |
+| `g` | Arm the one-shot quick-select overlay |
 | `f` | Toggle the selected item as a favorite when the current view supports it |
 | `a` | Open the aggregated All actions view |
 | `v` | Open Favorites |
@@ -113,11 +127,19 @@ Focused Iced events and the embedded/global evdev path implement the same semant
 - Changing an aggregated filter recomputes selection against the filtered results.
 - Invalid submenu paths leave the current view unchanged.
 - Entering a submenu never starts closing the popup.
-- Informational rows never receive quick-jump labels.
+- Informational rows never receive quick-select labels.
 
-## Quick-jump
+## Quick-select
 
-Quick-jump labels are generated only for actionable rows. Labels use the configured custom-menu alphabet for matching custom providers and the standard home-row-oriented alphabet elsewhere.
+The older tray UI called this feature quick-jump. The canonical core contract is
+now `QuickSelectSession`, and adapters must preserve its one-shot behavior.
+
+Labels are generated only for actionable rows, in visible action order, from
+`asdfhjklqwertyuiopzxcvbnm1234567890`. The overlay displays the assigned key
+beside each action. A plain mapped key invokes exactly one action and terminates
+the session. Any other key—including an unmapped printable key, named key, or
+modified key—aborts the session and is consumed rather than reaching the
+underlying menu.
 
 The displayed hint, keyboard lookup, and action index are derived from one selectable-index vector. This prevents headings or disabled rows from shifting activation targets.
 

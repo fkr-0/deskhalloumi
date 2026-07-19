@@ -17,6 +17,11 @@ Quick-select is a one-shot overlay over an ordered action set.
 
 Clock, battery, network, audio, system, and optional Tmux providers expose one lifecycle through `deskhalloumi_core::runtime`.
 
+This contract shipped in 0.3.0. The 0.4.0 work is migration completion and
+hardening: remove any remaining provider-specific production path, add repeated
+replacement/refresh soak tests, and expose the same health data through live
+operator-facing introspection.
+
 Each provider declares a `ProviderContract` containing:
 
 - stable id and display name;
@@ -40,6 +45,11 @@ Refreshes use generation tokens. A result is accepted only when its refresh gene
 
 Tests use fixture or in-memory backends. Ordinary tests must not require a physical battery, evdev access, NetworkManager, PulseAudio/PipeWire, tmux, i3, X11, or a live desktop session.
 
+Provider health is not only a rendering hint. Operator-facing diagnostics must
+be able to report the provider id, lifecycle/health state, active instance and
+refresh generations, last successful update, calculable last-update age, and
+current error without forcing a refresh.
+
 ## Menu model
 
 `deskhalloumi_core::menu::MenuModel` is the canonical renderer-neutral representation for:
@@ -53,6 +63,11 @@ Tests use fixture or in-memory backends. Ordinary tests must not require a physi
 A menu carries a stable id, title, source, generation, last-update timestamp, lifecycle, and recursive items. Menu lifecycle is standardized as closed, loading, busy, fresh, stale, disabled, or error. Generation checks reject stale menu publications.
 
 Items expose typed actions rather than renderer callbacks. Iced adapters translate those actions at the edge; CLI introspection serializes the same model.
+
+`TrayMenuItem` and other provider/renderer-specific row structures are edge
+adapters during migration. They must not become a second canonical lifecycle,
+selection, quick-select, or action-routing model. Version 0.5.0 completes this
+convergence and makes live runtime introspection authoritative where available.
 
 ## Typed actions and history
 

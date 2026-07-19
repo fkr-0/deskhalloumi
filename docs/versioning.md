@@ -51,6 +51,22 @@ Version decisions must account for more than Rust APIs:
 
 A compatibility alias is part of the public contract once released.
 
+## Roadmap and target policy
+
+The human-readable [release roadmap](roadmap.md) describes intended minor
+release boundaries. It is a plan, not a date or artifact promise. The structured
+source of truth is [`roadmap.yml`](../roadmap.yml).
+
+Features may move between pre-1.0 minor releases when earlier work ships more
+foundation than expected, but completed behavior must not be relabelled as
+future greenfield work. Later milestones should identify the remaining
+migration, hardening, and operational acceptance criteria.
+
+A newly published CPU architecture requires native build, installation,
+runtime-smoke, and removal tests against the assembled release artifact.
+Cross-compilation alone is insufficient. Experimental libc or compositor
+targets may conclude with an architecture decision not to publish an artifact.
+
 ## Tags and changelog
 
 - Release tags use `vMAJOR.MINOR.PATCH`, for example `v0.2.0`.
@@ -110,6 +126,10 @@ A compatibility alias is part of the public contract once released.
     that the tag object is annotated and points at the checked-out commit,
     reruns all release gates, builds the primary and compatibility binaries,
     and uploads a deterministic Linux archive with a SHA-256 checksum.
+
+12. For every newly published architecture, download the exact uploaded asset
+    on that architecture, verify its checksum, install it into a clean prefix,
+    smoke-test every packaged primary command, and verify clean removal.
 
 If GitHub did not register the original tag event, or a runner-only failure was
 fixed after publication, rerun packaging without moving the tag:

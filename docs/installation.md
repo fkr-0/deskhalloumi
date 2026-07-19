@@ -5,6 +5,16 @@ supported GitHub release. Building from source remains the recommended path for
 other architectures, distributions with incompatible system libraries, and
 contributors.
 
+The published archive is currently `x86_64-unknown-linux-gnu`. Linux AArch64 is
+planned only after a native AArch64 release build, extraction, installation,
+runtime smoke test, and uninstall test pass for every packaged primary command.
+Cross-compilation by itself will not trigger publication.
+
+A musl artifact is investigatory rather than promised. Iced, graphics, DBus,
+udev, font, X11/Wayland, and other desktop dependencies may prevent a genuinely
+portable static build. See the [release roadmap](roadmap.md) for the acceptance
+criteria and explicit non-goals.
+
 ## Prebuilt Linux archive
 
 Open the GitHub release page and download both files for the desired version:

@@ -19,6 +19,8 @@ planning_principles:
 - Keep release tags immutable and make every published binary reproducible from an annotated source tag.
 - Make hardware, locale, and live-session assumptions explicit in tests.
 - Do not claim Sway or Wayland global-hotkey parity before a separately tested backend exists.
+- Treat provider and menu contracts shipped in 0.3.0 as foundations to finish migrating and hardening, not as future greenfield work.
+- Publish a new architecture target only after native installation and runtime smoke tests pass on that target.
 current_baseline:
   release:
     tag: v0.3.0
@@ -46,33 +48,110 @@ current_baseline:
   - renderer-neutral menu and quick-select contracts
   - CLI introspection, action history, and live runtime metrics
 release_targets:
-- version: 0.2.1
-  theme: reliability, distribution, and documentation
-  exit_criteria:
-  - GitHub Releases are the durable binary distribution channel.
-  - installation, upgrade, rollback, and checksum instructions are complete.
-  - asynchronous command execution is timeout-bounded, output-bounded, and descendant-safe.
-  - current-stable CI and the pinned release toolchain are both documented.
 - version: 0.3.0
   theme: structured runtime and action execution
   status: completed
+  absorbed_scope:
+  - reliability, distribution, and documentation work originally considered for 0.2.1
+  - first provider lifecycle and renderer-neutral menu foundations originally considered for later releases
   exit_criteria:
   - detached long-lived tasks are replaced by owned supervisors or documented process-lifetime tasks.
   - action execution has one typed policy for timeout, cwd, environment, output, and cancellation.
   - provider refreshes use bounded concurrency and explicit stale/error states.
   - runtime metrics expose task failures, command timeouts, and dropped/coalesced updates.
 - version: 0.4.0
-  theme: widget and provider architecture
+  theme: provider hardening and target expansion
+  foundation_status:
+  - 0.3.0 introduced ProviderContract, ProviderSnapshot, Tokio watch channels, generation suppression, test backends, and provider health.
+  - 0.4.0 completes migration, soak testing, operator visibility, and architecture-target validation.
+  primary_work:
+  - Complete one lifecycle contract for clock, battery, network, audio, system, and optional Tmux providers.
+  - Remove any remaining fixed clock/battery registry or provider-specific state path from the production runtime.
+  - Require startup, loading, fresh, stale, error, disabled, shutdown, refresh-policy, and hardware-free test behavior from every provider.
+  - Exercise repeated replacement, overlapping refresh, cancellation, stale-result, and last-known-good retention behavior under soak tests.
+  - Surface provider health, active instance generation, refresh generation, and last-update age in live diagnostics and panel status.
+  - Add a native Linux AArch64 build, installation, and runtime-smoke lane; publish AArch64 archives only after that lane passes.
+  - Investigate a musl build and record an ADR without promising a static artifact.
   exit_criteria:
-  - clock, battery, network, audio, and system providers share one lifecycle contract.
-  - provider state can be tested without live desktop services.
-  - external command widgets use a bounded versioned protocol.
+  - All named production providers publish through the shared typed watch-channel contract and no production global registry remains.
+  - Ordinary provider tests require no physical battery, input device, NetworkManager, audio daemon, tmux server, compositor, or desktop session.
+  - Keyed admission prevents overlapping refreshes, and both refresh-generation and instance-generation tests prove stale results cannot overwrite replacements.
+  - Provider health and last-update age are visible through live action-bus introspection and at least one operator-facing panel surface.
+  - Repeated provider replacement completes without leaked tasks, stale updates, or unbounded log growth.
+  - Linux AArch64 archives are published only if native install and runtime smoke tests pass for every packaged primary binary.
+  - The musl investigation documents graphics, Iced, DBus, udev, libc, and desktop-library constraints and may conclude that no artifact should be published.
+  non_goals:
+  - Cross-compilation alone is not sufficient evidence for AArch64 publication.
+  - A fully static or universally portable musl build is not promised.
 - version: 0.5.0
-  theme: menu and automation convergence
+  theme: menu and action convergence
+  foundation_status:
+  - 0.3.0 introduced MenuModel, typed menu actions, quick-select, CLI inventories, runtime metrics, and bounded action history.
+  - 0.5.0 removes remaining parallel semantics and makes live runtime state authoritative.
+  primary_work:
+  - Finish one renderer-neutral menu model for tray menus, widget menus, custom launchers, filter-tab, and system actions.
+  - Make CLI introspection list live active modules, menus, actions, and hotkeys, with configured-state fallback only when no daemon is running.
+  - Invoke typed actions through one validated routing path and expose recent action outcomes and failure details.
+  - Standardize loading, busy, fresh, stale, disabled, and error presentation across all menu adapters.
+  - Split main.rs into bootstrap, runtime ownership, action routing, and Iced adapters.
+  - Remove transitional duplicate paths, compatibility-only internal models, and broad dead-code allowances where feasible.
   exit_criteria:
-  - tray, widget, custom, and filterer menus share one renderer-neutral model.
-  - CLI introspection can list and invoke active actions, menus, widgets, and hotkeys.
-  - action history and failure feedback are visible from the panel.
+  - Core menu semantics contain no Iced callback or DBus-renderer dependency; renderer adapters translate only at process edges.
+  - Tray, widget, custom, filter-tab, and system surfaces derive selection, enablement, lifecycle, and typed action lookup from MenuModel.
+  - CLI JSON distinguishes live, configured-only, stale, disabled, and unavailable data.
+  - Typed action invocation returns a structured outcome or action-history identifier rather than fire-and-forget success.
+  - Recent failed, timed-out, and cancelled actions are visible with bounded detail and no secret-bearing command output by default.
+  - main.rs is a composition root rather than the owner of provider, menu, action, or introspection semantics.
+  - Removed duplicate paths are covered by migration tests or compatibility launchers where public behavior must remain.
+- version: 0.6.0
+  theme: input semantics and migration completion
+  primary_work:
+  - Define explicit logical-key versus physical-key configuration semantics.
+  - Add US and German layout-sensitive tests and report layout-dependent migration changes.
+  - Extend sxhkd import only where semantics can be represented exactly.
+  - Keep replay, synchronous execution, unsupported chains, and lossy constructs visibly approximate or unsupported.
+  - Add long-running hot-plug, reload, action-bus, and managed-menu soak tests.
+  - Record idle CPU, resident memory, task-count, file-descriptor, and log-volume budgets.
+  exit_criteria:
+  - Every keybinding declares or inherits an explicit logical/physical interpretation.
+  - en-US and de-DE fixtures cover symbols, shifted digits, punctuation, modifier release, and physical-key migration.
+  - Migration reports identify exact, approximate, layout-dependent, and unsupported bindings before writing output.
+  - No unsupported sxhkd construct is silently imported as a different semantic operation.
+  - Soak tests run repeated hot-plug and reload cycles without duplicate grabs, stale generations, task leaks, or action-bus degradation.
+  - Performance budgets are measured on a documented reference environment and regressions fail CI or require an explicit waiver.
+- version: 0.7.0
+  theme: packaging and operational maturity
+  primary_work:
+  - Package-quality systemd user integration.
+  - Arch repository packaging or reproducible package generation.
+  - SBOM and dependency/license inventory.
+  - Build provenance and artifact attestations.
+  - Automated checksum, extraction, installation, and command-smoke verification after publication.
+  - Upgrade and rollback tests between consecutive releases.
+  - A bounded diagnostics bundle for bug reports.
+  - Configuration migration preview, backup, and restore tooling.
+  exit_criteria:
+  - Packages install and remove files reproducibly without enabling user services implicitly.
+  - Published archives and packages carry verifiable checksums, SBOMs, provenance, and license inventory.
+  - Post-publication verification installs the exact uploaded assets and exercises every packaged primary command.
+  - Upgrade and rollback tests preserve configuration, runtime paths, service ownership, and compatibility launchers.
+  - Diagnostics collection redacts secrets, bounds output size, and records versions, health, recent failures, and platform/session facts.
+  - Migration tooling defaults to preview, creates a restorable backup before writing, and reports every changed file.
+- version: 0.8.0
+  theme: experimental compositor portability
+  status: experimental
+  primary_work:
+  - Write a Sway/Wayland architecture decision record.
+  - Separate compositor-neutral actions from i3/X11-specific implementations.
+  - Prototype layer-shell panel behavior, Sway IPC, output control, and portal or compositor-specific shortcut registration.
+  - Run isolated compositor tests for process lifecycle, popup focus, output changes, and shortcut ownership.
+  exit_criteria:
+  - Experimental backends are feature-gated and cannot silently replace the supported i3/X11 path.
+  - Isolated tests cover compositor startup/shutdown, panel placement, popup focus, IPC reconnect, output churn, and shortcut registration failure.
+  - Documentation lists each capability as validated, partial, unavailable, or compositor-specific.
+  non_goals:
+  - Do not call the backend parity until global shortcuts, popup focus, output control, reload, shutdown, and failure behavior are independently validated.
+  - Do not weaken the existing i3/X11 support contract to make an experimental backend appear complete.
 - version: 1.0.0
   theme: stable desktop-control contract
   exit_criteria:
@@ -87,22 +166,30 @@ workstreams:
   status: active
   completed:
   - annotated v0.2.0 tag
+  - annotated v0.3.0 tag
   - deterministic Linux x86-64 archive
   - SHA-256 checksum
   - public GitHub Release assets
+  - release notes sourced from docs/releases/<version>.md
+  - explicit immutable-tag release retry path
   next:
   - id: REL-01
-    task: Publish release archives and checksums automatically from the validated release workflow.
+    task: Add native Linux AArch64 release validation and conditional publication.
     acceptance:
-    - Existing release assets are replaced atomically on an explicit retry.
-    - Release notes come from docs/releases/<version>.md.
-    - The checksum file verifies from the download directory without path rewriting.
+    - Build, extraction, installation, and runtime smoke tests run on native AArch64 hardware or a native AArch64 hosted runner.
+    - Publication is skipped rather than guessed when the native lane is unavailable or failing.
   - id: REL-02
-    task: Add packaging targets for Arch Linux and a generic install script without weakening source-tag verification.
+    task: Investigate musl feasibility without committing to a static release artifact.
+    acceptance:
+    - An ADR records Iced, graphics, DBus, udev, libc, and desktop-service limitations.
+    - The outcome may explicitly reject musl publication.
+  - id: REL-03
+    task: Add Arch packaging, reproducible installation, and post-publication verification.
     acceptance:
     - Install and uninstall are reproducible.
     - User systemd units are installed without being enabled implicitly.
-  - id: REL-03
+    - Uploaded assets are downloaded and smoke-tested after publication.
+  - id: REL-04
     task: Decide whether first-party crates should be published to crates.io.
     acceptance:
     - Internal-only crates are clearly marked or publishable metadata is complete.
@@ -225,10 +312,23 @@ workstreams:
     task: Document async runtime ownership, blocking boundaries, cancellation, and subprocess policy.
   - id: DOC-04
     task: Add task-oriented examples for panel-only, hotkeys-only, and combined deployments.
+- id: PACKAGE
+  name: packaging, provenance, and operations
+  priority: P1
+  status: planned
+  target_release: 0.7.0
+  next:
+  - id: PACKAGE-01
+    task: Add reproducible Arch packaging and package-quality systemd user integration.
+  - id: PACKAGE-02
+    task: Generate SBOM, license inventory, provenance, and artifact attestations.
+  - id: PACKAGE-03
+    task: Test install, upgrade, rollback, diagnostics collection, and configuration backup/restore.
 - id: WAYLAND
   name: compositor portability
   priority: P2
   status: research
+  target_release: 0.8.0
   next:
   - id: WAYLAND-01
     task: Write a backend feasibility ADR for Sway/Wayland shortcuts, output control, and layer-shell behavior.
@@ -248,6 +348,11 @@ quality_gates:
   - deterministic archive and checksum are generated
   - release notes exist under docs/releases
   - downloadable assets are attached to the GitHub Release
+  required_for_new_architecture_target:
+  - native build on the target architecture
+  - install and removal test from the assembled artifact
+  - runtime smoke test for every packaged primary command
+  - target-specific limitations documented before publication
 runtime_metrics:
   implemented:
   - active supervised task count
@@ -265,10 +370,14 @@ risk_register:
 - risk: main.rs remains a high-coupling integration boundary.
   mitigation: extract ownership boundaries in small tested slices.
 - risk: headless compatibility and scaffold paths still use synchronous command helpers.
-  mitigation: keep them out of Iced update paths and decide their long-term runtime contract in ASYNC-09.
+  mitigation: keep them out of Iced update paths; deskhalloumi-bar is intentionally synchronous and headless by the completed ASYNC-09 decision.
 - risk: provider generations are typed but live reload can still require cross-provider generation coordination.
   mitigation: keep generation ownership inside provider supervisors and add reload soak tests before dynamic replacement.
 - risk: Linux release binaries are not portable across all distributions.
-  mitigation: document the glibc/system-library boundary and add distro packaging or broader build targets.
+  mitigation: document the glibc/system-library boundary, require native smoke tests for AArch64, investigate musl without promising it, and add distro packaging.
+- risk: roadmap items can duplicate foundations already shipped in 0.3.0 and hide the remaining migration work.
+  mitigation: each release target records foundation_status, remaining primary_work, explicit exit criteria, and non-goals.
+- risk: experimental Wayland work is mistaken for supported parity.
+  mitigation: feature-gate prototypes, retain i3/X11 as the supported baseline, and publish a capability matrix with independently tested acceptance criteria.
 - risk: compatibility aliases expand maintenance cost.
   mitigation: track usage and make a pre-1.0 retirement decision.

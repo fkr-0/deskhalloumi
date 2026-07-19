@@ -9,6 +9,16 @@ after that tag belong under `[Unreleased]`.
 
 ## [Unreleased]
 
+### Changed
+
+- Reconciled the provider, menu, and runtime documentation with the contracts
+  already shipped in 0.3.0, making provider-specific and tray-specific types
+  explicit migration adapters rather than parallel canonical models.
+- Added a detailed 0.4.0–0.8.0 roadmap covering provider hardening, native
+  Linux AArch64 release gates, a non-promissory musl investigation, menu/action
+  convergence, input semantics, packaging maturity, and experimental
+  Sway/Wayland portability.
+
 ## [0.3.0] - 2026-07-19
 
 ### Added

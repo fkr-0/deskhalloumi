@@ -2716,3 +2716,31 @@ provider_reload_metrics_runtime_decision_2026_07_19:
   - deskhalloumi runtime-metrics CLI parsing and client decoding tests
   - deskhalloumi-bar runtime-contract parsing test
   - managed menu process identity stress test uses Linux process start ticks and passes repeated immediate status checks
+
+documentation_and_release_roadmap_2026_07_19:
+  status: complete
+  scope:
+  - reconcile runtime/provider/menu documents with the 0.3.0 implementation
+  - distinguish shipped foundations from remaining migration and hardening work
+  - define release targets 0.4.0 through 0.8.0 with acceptance criteria and non-goals
+  - define native Linux AArch64 publication gates and a non-promissory musl investigation
+  - preserve i3/X11 as the supported baseline while keeping 0.8.0 compositor work experimental
+  documentation_evidence:
+  - docs/roadmap.md
+  - docs/runtime-contracts.md
+  - docs/async-runtime.md
+  - docs/menu-design-system.md
+  - docs/installation.md
+  - docs/versioning.md
+  - docs/README.md
+  - README.md
+  - roadmap.yml
+  review_findings:
+  - the previous roadmap listed provider and menu foundations as future work even though 0.3.0 shipped them
+  - async-runtime.md used an obsolete four-state provider sketch
+  - menu-design-system.md described TrayMenuItem as canonical despite MenuModel being canonical in deskhalloumi-core
+  remaining_release_work:
+  - 0.4.0 provider replacement soak tests and live provider-health introspection
+  - native AArch64 installation and runtime smoke infrastructure
+  - musl feasibility ADR
+  - 0.5.0 completion of menu adapters and main.rs decomposition
