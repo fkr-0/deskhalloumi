@@ -1,6 +1,7 @@
 //! Core plugin API for unilii status bar modules.
 
 pub mod action_bus;
+pub mod action_history;
 pub mod bar;
 pub mod bar_runtime;
 pub mod branding;
@@ -13,7 +14,9 @@ pub mod i3_vis;
 pub mod key_engine;
 pub mod key_import_sxhkd;
 pub mod keys;
+pub mod menu;
 pub mod menu_process;
+pub mod quick_select;
 pub mod runtime;
 pub mod x11_hotkeys;
 

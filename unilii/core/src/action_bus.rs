@@ -78,6 +78,8 @@ pub struct ActionBusResponse {
     pub request_id: String,
     pub ok: bool,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 impl ActionBusResponse {
@@ -87,6 +89,21 @@ impl ActionBusResponse {
             request_id: request_id.into(),
             ok: true,
             message: message.into(),
+            data: None,
+        }
+    }
+
+    pub fn ok_with_data(
+        request_id: impl Into<String>,
+        message: impl Into<String>,
+        data: serde_json::Value,
+    ) -> Self {
+        Self {
+            protocol_version: ACTION_BUS_PROTOCOL_VERSION,
+            request_id: request_id.into(),
+            ok: true,
+            message: message.into(),
+            data: Some(data),
         }
     }
 
@@ -96,6 +113,7 @@ impl ActionBusResponse {
             request_id: request_id.into(),
             ok: false,
             message: message.into(),
+            data: None,
         }
     }
 }
@@ -202,5 +220,17 @@ mod tests {
         let request = ActionBusRequest::new("test-3", DesktopAction::Bar("reload".into()));
         let error = send_action_request(temp.path().join("missing.sock"), &request).unwrap_err();
         assert!(error.contains("receiver unavailable"));
+    }
+
+    #[test]
+    fn response_can_carry_structured_diagnostic_data() {
+        let response = ActionBusResponse::ok_with_data(
+            "metrics-1",
+            "runtime metrics",
+            serde_json::json!({"active_tasks": 3}),
+        );
+        let encoded = serde_json::to_string(&response).unwrap();
+        let decoded: ActionBusResponse = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.data.unwrap()["active_tasks"], 3);
     }
 }

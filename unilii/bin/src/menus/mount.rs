@@ -1,12 +1,9 @@
 #![allow(dead_code)]
 // FIXME(T6): Mount menu model is planned toolbar/menu integration surface pending canonical MenuModel wiring.
 
-use super::common::MenuController;
-use super::common::{FilterableMenu, QuickjumpMenu};
 use super::presentation::{
     ActionItemOptions, action_item, section_item, shell_escape, status_item,
 };
-use super::types::MenuLifecycleState;
 use crate::enhanced_tray::{TrayMenuAction, TrayMenuItem};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,97 +64,6 @@ pub struct MountMenuSnapshot {
     pub sshfs_profiles: Vec<SshfsProfile>,
     pub loop_mounts: Vec<LoopMount>,
     pub vcvolume_profiles: Vec<VcvolumeProfile>,
-}
-
-#[derive(Debug, Default)]
-pub struct MountMenuController {
-    lifecycle: MenuLifecycleState,
-    snapshot: MountMenuSnapshot,
-}
-
-impl MountMenuController {
-    pub fn snapshot(&self) -> &MountMenuSnapshot {
-        &self.snapshot
-    }
-}
-
-impl FilterableMenu for MountMenuSnapshot {
-    type ItemId = String;
-
-    fn filter_tokens_for(&self, item_id: &Self::ItemId) -> Vec<String> {
-        if let Some(device) = self.local_devices.iter().find(|row| &row.name == item_id) {
-            return vec![
-                device.name.clone(),
-                device.kind.clone(),
-                device.filesystem.clone().unwrap_or_default(),
-                device.label.clone().unwrap_or_default(),
-                device.model.clone().unwrap_or_default(),
-                device.mountpoint.clone().unwrap_or_default(),
-            ];
-        }
-        if let Some(profile) = self.sshfs_profiles.iter().find(|row| &row.name == item_id) {
-            return vec![
-                profile.name.clone(),
-                profile.host.clone(),
-                profile.remote_path.clone(),
-                profile.mountpoint.clone(),
-            ];
-        }
-        if let Some(loop_mount) = self
-            .loop_mounts
-            .iter()
-            .find(|row| &row.image_path == item_id)
-        {
-            return vec![
-                loop_mount.image_path.clone(),
-                loop_mount.loop_device.clone().unwrap_or_default(),
-                loop_mount.mountpoint.clone().unwrap_or_default(),
-            ];
-        }
-        if let Some(profile) = self
-            .vcvolume_profiles
-            .iter()
-            .find(|row| &row.name == item_id)
-        {
-            return vec![
-                profile.name.clone(),
-                profile.volume_path.clone(),
-                profile.mountpoint.clone(),
-            ];
-        }
-        Vec::new()
-    }
-}
-
-impl QuickjumpMenu for MountMenuSnapshot {
-    type ItemId = String;
-
-    fn quickjump_targets(&self) -> Vec<Self::ItemId> {
-        self.local_devices
-            .iter()
-            .map(|row| row.name.clone())
-            .chain(self.sshfs_profiles.iter().map(|row| row.name.clone()))
-            .chain(self.loop_mounts.iter().map(|row| row.image_path.clone()))
-            .chain(self.vcvolume_profiles.iter().map(|row| row.name.clone()))
-            .collect()
-    }
-}
-
-impl MenuController for MountMenuController {
-    type Snapshot = MountMenuSnapshot;
-
-    fn lifecycle_state(&self) -> &MenuLifecycleState {
-        &self.lifecycle
-    }
-
-    fn lifecycle_state_mut(&mut self) -> &mut MenuLifecycleState {
-        &mut self.lifecycle
-    }
-
-    fn apply_snapshot(&mut self, snapshot: Self::Snapshot) {
-        self.snapshot = snapshot;
-        self.lifecycle = MenuLifecycleState::Ready;
-    }
 }
 
 pub fn build_menu_items(

@@ -241,7 +241,7 @@ pub fn view_filter_tab_menu_with_previews<'a>(
                 column![
                     text("Window Filter Tabs").size(24),
                     text(if snapshot.quick_select_armed {
-                        "quick select: press a/s/d/f/h/j/k/l · Esc disarms"
+                        "quick select: press the shown key · any other key aborts"
                     } else {
                         "j/k wraps · g/G ends · Ctrl+U clears · Ctrl+R refreshes · mod-release confirms"
                     })
@@ -437,8 +437,8 @@ mod tests {
         assert_eq!(snapshot.rows.len(), 10);
         assert_eq!(snapshot.rows[0].quick_label, Some('a'));
         assert_eq!(snapshot.rows[7].quick_label, Some('l'));
-        assert_eq!(snapshot.rows[8].quick_label, None);
-        assert_eq!(snapshot.rows[9].quick_label, None);
+        assert_eq!(snapshot.rows[8].quick_label, Some('q'));
+        assert_eq!(snapshot.rows[9].quick_label, Some('w'));
     }
 
     #[test]

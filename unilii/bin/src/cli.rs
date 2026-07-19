@@ -3,7 +3,7 @@
 //! This module defines the CLI structure using clap, providing a clean and
 //! intuitive interface for running and configuring DeskHalloumi.
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 /// DeskHalloumi: a modern, modular desktop bar for Linux
@@ -28,6 +28,13 @@ pub struct Cli {
     /// Subcommands for advanced operations
     #[command(subcommand)]
     pub command: Option<Commands>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ActionKind {
+    Bar,
+    Tray,
+    Widget,
 }
 
 /// Subcommands for DeskHalloumi
@@ -60,8 +67,47 @@ pub enum Commands {
         no_hotkeyd: bool,
     },
 
-    /// List available modules
-    ListModules,
+    /// List enabled/configured modules and their provider policy
+    ListModules {
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// List renderer-neutral menus
+    ListMenus {
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// List typed actions exposed by configuration and built-in menus
+    ListActions {
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// List configured hotkeys
+    ListHotkeys {
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Invoke a typed bar action through the local action bus
+    InvokeAction {
+        #[arg(value_enum)]
+        kind: ActionKind,
+        /// Typed action payload, for example `open-system-menu` or `show-favorites`.
+        payload: String,
+        #[arg(long, value_name = "SOCKET")]
+        socket: Option<PathBuf>,
+    },
+
+    /// Query live runtime counters from the running bar
+    RuntimeMetrics {
+        #[arg(long)]
+        json: bool,
+        #[arg(long, value_name = "SOCKET")]
+        socket: Option<PathBuf>,
+    },
 
     /// Show current configuration
     ShowConfig,
@@ -84,7 +130,7 @@ pub enum Commands {
         config: Option<PathBuf>,
     },
 
-    /// Generate a starter configuration for the headless unilii-bar scaffold
+    /// Generate a starter configuration for the synchronous headless reference runtime
     InitBarConfig {
         /// Output file path. If omitted, print to stdout.
         #[arg(short, long, value_name = "FILE")]
@@ -95,7 +141,7 @@ pub enum Commands {
         force: bool,
     },
 
-    /// Validate a unilii-bar configuration file
+    /// Validate a deskhalloumi-bar headless-runtime configuration file
     ValidateBarConfig {
         /// Bar configuration file to validate
         #[arg(short, long, value_name = "FILE")]
@@ -225,5 +271,28 @@ mod tests {
         assert_eq!(opts.tray_poll_ms, 1500);
         assert!(!opts.debug_focus);
         assert!(!opts.no_hotkeyd);
+    }
+
+    #[test]
+    fn introspection_and_typed_action_commands_parse() {
+        let cli = Cli::try_parse_from(["deskhalloumi", "list-menus", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::ListMenus { json: true })
+        ));
+        let cli = Cli::try_parse_from(["deskhalloumi", "invoke-action", "tray", "show-favorites"])
+            .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::InvokeAction {
+                kind: ActionKind::Tray,
+                ..
+            })
+        ));
+        let cli = Cli::try_parse_from(["deskhalloumi", "runtime-metrics", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::RuntimeMetrics { json: true, .. })
+        ));
     }
 }

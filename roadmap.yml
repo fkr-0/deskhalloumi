@@ -135,20 +135,32 @@ workstreams:
     - Action-bus socket ownership is scoped to the supervised listener.
     - Module producers and consumers select on the shared cancellation token.
     - Tray subscription children are retained in a JoinSet.
-  next:
   - id: ASYNC-07
     task: Add generation-aware provider state and retain last-known-good values across failed or late refreshes.
-    acceptance:
-    - Late results from replaced generations cannot overwrite newer state.
-    - Provider state distinguishes loading, fresh, stale, and unavailable.
+    evidence:
+    - ProviderSnapshot carries a monotonic generation and explicit startup/loading/fresh/stale/error/disabled/shutdown states.
+    - ProviderPublisher rejects results whose generation no longer matches the current refresh generation.
+    - Every provider channel receives a unique instance generation; Iced subscription identity and the update acceptance gate reject queued snapshots from replaced instances.
+    - Failed refreshes retain the last known good value as stale and expose health plus last-update age.
+    - Clock, battery, network, audio, system, and Tmux declare refresh/shutdown/test-backend contracts.
   - id: ASYNC-08
     task: Expose runtime metrics through a local diagnostic command or action-bus query.
-    acceptance:
-    - Operators can inspect task, action, timeout, truncation, refresh, and queue-pressure counters without stopping the bar.
+    evidence:
+    - deskhalloumi runtime-metrics queries the running daemon through the bounded action bus.
+    - ActionBusResponse carries optional structured data and the daemon answers metrics requests synchronously without queueing a UI action.
+    - Text and JSON output expose task, action, timeout, truncation, refresh, and queue-pressure counters.
   - id: ASYNC-09
     task: Decide whether the synchronous deskhalloumi-bar scaffold should adopt the shared Tokio runtime or remain a deliberately headless blocking CLI.
+    decision: Keep it synchronous as a headless reference and diagnostics runtime; production interactive work belongs to deskhalloumi.
+    evidence:
+    - deskhalloumi-bar --runtime-contract emits a machine-readable role contract.
+    - Help and runtime output identify it as headless and synchronous.
+    - docs/runtime-contracts.md defines supported and excluded uses.
+  next:
+  - id: ASYNC-10
+    task: Add reload and provider-churn soak tests across repeated instance replacement.
     acceptance:
-    - The supported runtime boundary is explicit in documentation and tests.
+    - Repeated replacement cannot apply stale snapshots or leak subscription tasks.
 - id: ARCH
   name: architecture decomposition
   priority: P1
@@ -157,12 +169,28 @@ workstreams:
   - id: ARCH-02
     task: Move ActionRunner policy into the shared deskhalloumi-core runtime boundary.
   - id: ARCH-03
-    task: Replace the fixed clock/battery registry with generic latest-value module storage and polling.
+    task: Replace the fixed clock/battery registry with typed Tokio watch provider snapshots.
+  - id: ARCH-04
+    task: Consolidate tray, widget, custom, filter-tab, and system surfaces into one renderer-neutral MenuModel.
+  - id: ARCH-05
+    task: Extract typed action routing and CLI introspection from the transitional main.rs composition root.
   next:
   - id: ARCH-01
-    task: Continue splitting main.rs into bootstrap, runtime ownership, action routing, and Iced adapter modules.
-  - id: ARCH-04
-    task: Consolidate menu lifecycle and filtering into one renderer-neutral model.
+    task: Continue splitting main.rs by extracting runtime bootstrap and the remaining Iced update/view adapters.
+- id: INTERACTION
+  name: quick-select and typed interaction contracts
+  priority: P1
+  status: active
+  completed:
+  - id: INTERACTION-01
+    task: Define one-shot quick-select over an ordered action set with home-row-first bindings and abort-on-any-other-key semantics.
+  - id: INTERACTION-02
+    task: Add typed action history with visible failure details and standardized menu lifecycle states.
+  - id: INTERACTION-03
+    task: Add CLI inventories for modules, menus, actions, hotkeys, and typed action invocation.
+  next:
+  - id: INTERACTION-04
+    task: Expose live provider health and action history through action-bus introspection rather than configuration-only CLI inventory.
 - id: HOTKEY
   name: hotkeys and input semantics
   priority: P1
@@ -227,14 +255,14 @@ runtime_metrics:
   - idle CPU and resident memory
   - hotkey reload success, rollback, and duration
   - DBus and action-bus request latency
-  - per-provider stale age and generation
+  - per-provider latency histograms and refresh failure totals
 risk_register:
 - risk: main.rs remains a high-coupling integration boundary.
   mitigation: extract ownership boundaries in small tested slices.
 - risk: headless compatibility and scaffold paths still use synchronous command helpers.
   mitigation: keep them out of Iced update paths and decide their long-term runtime contract in ASYNC-09.
-- risk: late provider results can overwrite newer state during future live reload work.
-  mitigation: add generation-aware provider state and stale-result suppression in ASYNC-07.
+- risk: provider generations are typed but live reload can still require cross-provider generation coordination.
+  mitigation: keep generation ownership inside provider supervisors and add reload soak tests before dynamic replacement.
 - risk: Linux release binaries are not portable across all distributions.
   mitigation: document the glibc/system-library boundary and add distro packaging or broader build targets.
 - risk: compatibility aliases expand maintenance cost.

@@ -27,7 +27,7 @@ pub fn show_aggregated(enhanced_tray_state: &mut Option<EnhancedTrayState>) {
         return;
     };
 
-    let items = tray_state.tree.get_aggregated_menu(None);
+    let items = tray_state.tree.aggregated_menu_model(None).items;
     tray_state.selected_index = first_selectable_index(&items);
     tray_state.current_view = TrayViewState::Aggregated {
         items,
@@ -40,7 +40,7 @@ pub fn show_favorites(enhanced_tray_state: &mut Option<EnhancedTrayState>) {
         return;
     };
 
-    let items = tray_state.tree.get_favorites_menu();
+    let items = tray_state.tree.favorites_menu_model().items;
     tray_state.selected_index = first_selectable_index(&items);
     tray_state.current_view = TrayViewState::Favorites { items };
 }
@@ -56,7 +56,10 @@ pub fn update_filter(enhanced_tray_state: &mut Option<EnhancedTrayState>, filter
         } else {
             Some(filter_text.clone())
         };
-        *items = tray_state.tree.get_aggregated_menu(filter.as_deref());
+        *items = tray_state
+            .tree
+            .aggregated_menu_model(filter.as_deref())
+            .items;
         tray_state.selected_index = first_selectable_index(items);
     }
     tray_state.filter_text = filter_text;

@@ -4,7 +4,10 @@ use std::{ffi::OsString, time::Duration};
 
 use deskhalloumi_core::{
     Module, ModuleConfig, ModuleUpdate, Result,
-    runtime::{ActionCommand, ActionRunner, ModuleSubscription, global_runtime_metrics},
+    runtime::{
+        ActionCommand, ActionRunner, ModuleSubscription, ProviderContract, ProviderRefreshPolicy,
+        global_runtime_metrics,
+    },
 };
 use iced::{
     Element, Length,
@@ -21,6 +24,20 @@ pub struct TmuxPane {
     pub window_index: usize,
     pub pane_index: usize,
     pub current: bool,
+}
+
+pub fn provider_contract() -> ProviderContract {
+    ProviderContract::new(
+        "tmux",
+        "Tmux",
+        ProviderRefreshPolicy {
+            interval: Duration::from_secs(2),
+            timeout: Duration::from_secs(2),
+            stale_after: Duration::from_secs(8),
+            refresh_on_start: true,
+        },
+        "TestProviderBackend<Vec<TmuxPane>>",
+    )
 }
 
 fn parse_tmux_pane_line(line: &str) -> Option<TmuxPane> {
@@ -255,41 +272,44 @@ impl Module for Tmux {
         let (control_tx, mut control_rx) = mpsc::channel(8);
         self.control_tx = Some(control_tx);
 
-        Ok(Some(ModuleSubscription::new(move |updates| async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(2));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                let command = tokio::select! {
-                    _ = interval.tick() => TmuxCommand::Refresh,
-                    command = control_rx.recv() => {
-                        let Some(command) = command else { break; };
-                        command
-                    }
-                };
+        Ok(Some(ModuleSubscription::with_contract(
+            provider_contract(),
+            move |updates| async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(2));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    let command = tokio::select! {
+                        _ = interval.tick() => TmuxCommand::Refresh,
+                        command = control_rx.recv() => {
+                            let Some(command) = command else { break; };
+                            command
+                        }
+                    };
 
-                match command {
-                    TmuxCommand::Refresh => {}
-                    TmuxCommand::Select(pane) => {
-                        if let Err(error) = Self::switch_to_pane(&pane).await {
-                            error!(%error, "failed to switch tmux pane");
+                    match command {
+                        TmuxCommand::Refresh => {}
+                        TmuxCommand::Select(pane) => {
+                            if let Err(error) = Self::switch_to_pane(&pane).await {
+                                error!(%error, "failed to switch tmux pane");
+                            }
                         }
                     }
-                }
 
-                match Self::list_panes().await {
-                    Ok(panes) => {
-                        let json = serde_json::json!({
-                            "action": "update_panes",
-                            "panes": panes,
-                        });
-                        if !updates.send(ModuleUpdate::Custom(json.to_string())) {
-                            break;
+                    match Self::list_panes().await {
+                        Ok(panes) => {
+                            let json = serde_json::json!({
+                                "action": "update_panes",
+                                "panes": panes,
+                            });
+                            if !updates.send(ModuleUpdate::Custom(json.to_string())) {
+                                break;
+                            }
                         }
+                        Err(error) => warn!(%error, "failed to refresh tmux panes"),
                     }
-                    Err(error) => warn!(%error, "failed to refresh tmux panes"),
                 }
-            }
-        })))
+            },
+        )))
     }
 
     fn update_interval(&self) -> Option<u64> {
@@ -312,5 +332,12 @@ mod tests {
 
         assert!(parse_tmux_pane_line("17 work 2 1 1").is_none());
         assert!(parse_tmux_pane_line("%17 missing fields").is_none());
+    }
+
+    #[test]
+    fn lifecycle_contract_has_session_free_test_backend() {
+        let contract = provider_contract();
+        assert_eq!(contract.id, "tmux");
+        assert!(contract.test_backend.contains("TestProviderBackend"));
     }
 }

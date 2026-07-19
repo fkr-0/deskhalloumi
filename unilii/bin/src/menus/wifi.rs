@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 // FIXME(T6): WiFi menu model is planned toolbar/menu integration surface pending canonical MenuModel wiring.
 
-use super::common::{FilterableMenu, QuickjumpMenu};
 use super::presentation::{ActionItemOptions, action_item, section_item, status_item};
 use crate::enhanced_tray::{TrayMenuAction, TrayMenuItem};
 use crate::tray::NetworkSnapshot;
@@ -46,36 +45,6 @@ pub struct WifiMenuViewModel {
     pub status_text: String,
     pub available: Vec<WifiNetworkRow>,
     pub known: Vec<KnownNetworkRow>,
-}
-
-impl FilterableMenu for WifiMenuViewModel {
-    type ItemId = String;
-
-    fn filter_tokens_for(&self, item_id: &Self::ItemId) -> Vec<String> {
-        if let Some(network) = self.available.iter().find(|row| &row.ssid == item_id) {
-            return vec![
-                network.ssid.clone(),
-                network.security.clone(),
-                network.signal.to_string(),
-            ];
-        }
-        if let Some(known) = self.known.iter().find(|row| &row.name == item_id) {
-            return vec![known.name.clone(), "known".to_string()];
-        }
-        Vec::new()
-    }
-}
-
-impl QuickjumpMenu for WifiMenuViewModel {
-    type ItemId = String;
-
-    fn quickjump_targets(&self) -> Vec<Self::ItemId> {
-        self.available
-            .iter()
-            .map(|row| row.ssid.clone())
-            .chain(self.known.iter().map(|row| row.name.clone()))
-            .collect()
-    }
 }
 
 pub fn build_view_model(

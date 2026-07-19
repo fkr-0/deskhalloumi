@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 // FIXME(T6): Calendar menu model is a planned menu-system slice pending canonical MenuModel integration.
 
-use super::common::{FilterableMenu, QuickjumpMenu};
 use super::presentation::{ActionItemOptions, action_item, section_item, status_item};
 use crate::enhanced_tray::{TrayMenuAction, TrayMenuItem};
 use chrono::{DateTime, Local};
@@ -233,40 +232,6 @@ pub fn build_menu_items(
         }
     }
     items
-}
-
-impl FilterableMenu for CalendarMenuSnapshot {
-    type ItemId = String;
-
-    fn filter_tokens_for(&self, item_id: &Self::ItemId) -> Vec<String> {
-        if let Some(event) = self.events.iter().find(|row| &row.title == item_id) {
-            return vec![
-                event.title.clone(),
-                event.account_id.clone(),
-                event.start_rfc3339.clone(),
-                event.location.clone().unwrap_or_default(),
-            ];
-        }
-        if self
-            .account_ids
-            .iter()
-            .any(|account_id| account_id == item_id)
-        {
-            return vec![item_id.clone(), "account".to_string()];
-        }
-        Vec::new()
-    }
-}
-
-impl QuickjumpMenu for CalendarMenuSnapshot {
-    type ItemId = String;
-
-    fn quickjump_targets(&self) -> Vec<Self::ItemId> {
-        self.events
-            .iter()
-            .map(|event| event.title.clone())
-            .collect()
-    }
 }
 
 #[cfg(test)]

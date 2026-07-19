@@ -1,4 +1,3 @@
-pub mod enhanced_tray_events;
 pub mod tray_animation;
 pub mod tray_favorites;
 pub mod tray_icon_press;

@@ -26,6 +26,17 @@ after that tag belong under `[Unreleased]`.
 - Runtime metrics for active tasks, task outcomes, action durations and
   timeouts, output truncation/discarded bytes, provider coalescing/saturation,
   and dropped or overwritten updates.
+- A canonical one-shot quick-select contract with ordered home-row-first key
+  bindings, visible overlays, typed activation, and abort-on-any-other-key behavior.
+- Typed provider lifecycle snapshots for clock, battery, network, audio, system,
+  and Tmux, including health, generations, refresh policy, test backends, stale
+  value retention, last-update age, and explicit shutdown states.
+- A renderer-neutral menu model shared by tray, widget, custom, filter-tab, and
+  system surfaces, plus bounded visible action history with failure details.
+- CLI introspection for modules, menus, actions, and hotkeys, and typed local
+  action invocation through the action bus.
+- Live `runtime-metrics` diagnostics over the action bus, with structured CLI
+  output for task, action, timeout, truncation, provider-pressure, and update counters.
 
 ### Changed
 
@@ -40,6 +51,14 @@ after that tag belong under `[Unreleased]`.
   asynchronously with explicit duration and output limits.
 - Repeated provider refreshes are coalesced by key and globally bounded; closing
   the main bar cancels and joins its runtime tree within a fixed shutdown window.
+- Module subscriptions now publish typed Tokio watch snapshots instead of using
+  a fixed clock/battery registry; stale generations cannot overwrite newer data.
+- Provider replacements receive unique instance generations, so queued snapshots
+  from a pre-reload provider cannot update the active replacement.
+- Action-bus routing and CLI inventories were extracted from the transitional
+  `main.rs`, and duplicate menu/update paths and broad dead-code allowances were reduced.
+- `deskhalloumi-bar` is now explicitly defined as a synchronous headless reference
+  runtime; the supported interactive and supervised runtime remains `deskhalloumi`.
 
 ### Fixed
 

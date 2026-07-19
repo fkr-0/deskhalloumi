@@ -5,6 +5,9 @@ use iced::widget::text;
 use iced::{Color, Element};
 use std::ffi::CString;
 use std::fs;
+use std::time::Duration;
+
+use deskhalloumi_core::runtime::{ProviderContract, ProviderRefreshPolicy};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SystemStatsSnapshot {
@@ -13,6 +16,20 @@ pub struct SystemStatsSnapshot {
     pub load_average: [f32; 3],
     pub uptime_seconds: u64,
     pub root_disk_percent: Option<u8>,
+}
+
+pub fn provider_contract() -> ProviderContract {
+    ProviderContract::new(
+        "system",
+        "System",
+        ProviderRefreshPolicy {
+            interval: Duration::from_secs(2),
+            timeout: Duration::from_millis(500),
+            stale_after: Duration::from_secs(6),
+            refresh_on_start: true,
+        },
+        "TestProviderBackend<SystemStatsSnapshot>",
+    )
 }
 
 impl Default for SystemStatsSnapshot {
@@ -233,5 +250,12 @@ mod tests {
         );
         assert_eq!(format_uptime(90), "1m");
         assert_eq!(format_uptime(90_000), "1d 1h");
+    }
+
+    #[test]
+    fn lifecycle_contract_uses_proc_fixture_backend() {
+        let contract = provider_contract();
+        assert_eq!(contract.id, "system");
+        assert!(contract.test_backend.contains("SystemStatsSnapshot"));
     }
 }

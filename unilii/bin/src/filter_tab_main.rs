@@ -278,10 +278,11 @@ impl FilterTabApp {
     }
 
     fn handle_key_press(&mut self, key: Key, modifiers: Modifiers) -> Task<Message> {
-        if self.state.quick_select_armed
-            && let Some(label) = quick_select_label_from_key(&key, modifiers)
-        {
-            return self.apply_model_input(FilterTabMenuInput::QuickSelect(label));
+        if self.state.quick_select_armed {
+            return match quick_select_label_from_key(&key, modifiers) {
+                Some(label) => self.apply_model_input(FilterTabMenuInput::QuickSelect(label)),
+                None => self.apply_model_input(FilterTabMenuInput::AbortQuickSelect),
+            };
         }
 
         match key {
@@ -888,16 +889,16 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_u_clears_query_and_disarms_quick_select() {
+    fn modified_key_aborts_quick_select_without_running_underlying_action() {
         let options = mock_options(false);
         let (mut app, _) = FilterTabApp::new(options);
         app.state.query = "fire".into();
         app.state.quick_select_armed = true;
         app.state.selected_visible_index = 2;
         let _ = app.handle_key_press(Key::Character("u".into()), Modifiers::CTRL);
-        assert!(app.state.query.is_empty());
+        assert_eq!(app.state.query, "fire");
         assert!(!app.state.quick_select_armed);
-        assert_eq!(app.state.selected_visible_index, 0);
+        assert_eq!(app.state.selected_visible_index, 2);
     }
 
     #[test]

@@ -2,7 +2,9 @@
 
 use std::{ffi::OsString, time::Duration};
 
-use deskhalloumi_core::runtime::{ActionCommand, ActionRunner};
+use deskhalloumi_core::runtime::{
+    ActionCommand, ActionRunner, ProviderContract, ProviderRefreshPolicy,
+};
 use iced::widget::{button, column, row, scrollable, text};
 use iced::{Alignment, Color, Element, Length};
 
@@ -16,6 +18,20 @@ pub struct Wifi {
     show_menu: bool,
     wifi_enabled: bool,
     networks: Vec<NetworkInfo>,
+}
+
+pub fn provider_contract() -> ProviderContract {
+    ProviderContract::new(
+        "network",
+        "Network",
+        ProviderRefreshPolicy {
+            interval: Duration::from_secs(5),
+            timeout: Duration::from_secs(5),
+            stale_after: Duration::from_secs(15),
+            refresh_on_start: true,
+        },
+        "TestProviderBackend<WifiSnapshot>",
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -417,5 +433,12 @@ mod tests {
             networks: Vec::new(),
         });
         assert!(wifi.compact_label().chars().count() <= 21);
+    }
+
+    #[test]
+    fn lifecycle_contract_requires_no_network_manager() {
+        let contract = provider_contract();
+        assert_eq!(contract.id, "network");
+        assert!(contract.test_backend.contains("WifiSnapshot"));
     }
 }

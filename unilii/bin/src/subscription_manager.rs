@@ -1,137 +1,126 @@
-//! Subscription management for coordinating module updates with Iced subscriptions.
+//! Owned module-provider subscription management.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+
+use deskhalloumi_core::{
+    ModuleUpdate,
+    runtime::{ModuleProviderReceiver, ProviderSnapshot, TaskSpawner},
 };
+use iced::{Subscription, futures::SinkExt};
+use tracing::{info, warn};
 
-use deskhalloumi_core::{ModuleUpdate, runtime::TaskSpawner};
-use tracing::{error, info, warn};
-
+use crate::app::Message;
 use crate::module_loader::ModuleSubscription;
 
-type UpdateStorage = Arc<Mutex<Option<ModuleUpdate>>>;
-
-/// Registry of latest module values that Iced subscriptions can poll without
-/// owning the producer workers themselves.
-#[derive(Default)]
-struct ModuleUpdateRegistry {
-    updates: HashMap<String, UpdateStorage>,
+#[derive(Clone)]
+pub struct ManagedModuleProvider {
+    pub name: String,
+    pub instance_generation: u64,
+    pub receiver: ModuleProviderReceiver,
 }
 
-static MODULE_REGISTRY: std::sync::LazyLock<Mutex<ModuleUpdateRegistry>> =
-    std::sync::LazyLock::new(|| Mutex::new(ModuleUpdateRegistry::default()));
+/// Reload acceptance gate for queued Iced messages. Subscription identity also
+/// includes the instance generation, but a message already queued by the old
+/// stream may still arrive after the provider map has been replaced.
+pub fn snapshot_matches_active_provider(
+    active: &ManagedModuleProvider,
+    snapshot: &ProviderSnapshot<ModuleUpdate>,
+) -> bool {
+    snapshot.belongs_to_instance(active.instance_generation)
+}
 
-/// Initialize module subscriptions under the process runtime supervisor.
-pub fn initialize_global_subscriptions(
+#[derive(Clone)]
+struct ModuleWatchSpec {
+    name: String,
+    instance_generation: u64,
+    receiver: ModuleProviderReceiver,
+}
+
+impl Hash for ModuleWatchSpec {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.instance_generation.hash(state);
+    }
+}
+
+fn watch_module_updates(
+    spec: &ModuleWatchSpec,
+) -> impl iced::futures::Stream<Item = Message> + use<> {
+    use iced::stream;
+
+    let name = spec.name.clone();
+    let mut receiver = spec.receiver.clone();
+    stream::channel(8, async move |mut output| {
+        while let Some(snapshot) = receiver.changed().await {
+            if output
+                .send(Message::ModuleProviderState(name.clone(), snapshot))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    })
+}
+
+pub fn iced_subscription(provider: &ManagedModuleProvider) -> Subscription<Message> {
+    Subscription::run_with(
+        ModuleWatchSpec {
+            name: provider.name.clone(),
+            instance_generation: provider.instance_generation,
+            receiver: provider.receiver.clone(),
+        },
+        watch_module_updates,
+    )
+}
+
+/// Register every producer with the process supervisor and return its typed
+/// Tokio watch receiver directly to the Iced adapter. No global registry or
+/// polling mutex is involved.
+pub fn initialize_module_subscriptions(
     module_subscriptions: Vec<ModuleSubscription>,
     spawner: &TaskSpawner,
-) -> Result<(), String> {
-    {
-        let mut registry = registry_guard();
-        for subscription in &module_subscriptions {
-            registry
-                .updates
-                .entry(subscription.name.clone())
-                .or_insert_with(|| Arc::new(Mutex::new(None)));
-        }
-    }
-
+) -> Result<HashMap<String, ManagedModuleProvider>, String> {
     info!(
         modules = module_subscriptions.len(),
-        "registering module subscriptions with runtime supervisor"
+        "registering typed module providers with runtime supervisor"
     );
 
+    let mut providers = HashMap::new();
     for mut module in module_subscriptions {
-        let producer_name = format!("module:{}:producer", module.name);
-        let producer_token = spawner.cancellation_token();
+        let name = module.name.clone();
+        let receiver = module.subscription.receiver();
+        let instance_generation = receiver.instance_generation();
         let producer = module
             .subscription
             .take_worker()
-            .ok_or_else(|| format!("module '{}' subscription has no producer", module.name))?;
+            .ok_or_else(|| format!("module '{name}' subscription has no producer"))?;
+        let producer_name = format!("module:{name}:producer");
+        let producer_token = spawner.cancellation_token();
+        let producer_name_for_log = producer_name.clone();
         spawner
             .try_spawn(producer_name, async move {
                 tokio::select! {
-                    _ = producer_token.cancelled() => {}
-                    _ = producer => {}
-                }
-            })
-            .map_err(|error| format!("failed to supervise module producer: {error}"))?;
-
-        let consumer_name = format!("module:{}:consumer", module.name);
-        let module_name = module.name.clone();
-        let consumer_token = spawner.cancellation_token();
-        spawner
-            .try_spawn(consumer_name, async move {
-                loop {
-                    let update = tokio::select! {
-                        _ = consumer_token.cancelled() => break,
-                        update = module.subscription.recv() => update,
-                    };
-                    let Some(update) = update else {
-                        break;
-                    };
-                    if let Err(error) = store_module_update_safe(&module_name, update) {
-                        warn!(module = %module_name, %error, "failed to store module update");
+                    _ = producer_token.cancelled() => {
+                        info!(module = %name, "module provider cancelled");
+                    }
+                    _ = producer => {
+                        warn!(module = %name, task = %producer_name_for_log, "module provider stopped without process cancellation");
                     }
                 }
-                info!(module = %module_name, "module subscription consumer stopped");
             })
-            .map_err(|error| format!("failed to supervise module consumer: {error}"))?;
+            .map_err(|error| format!("failed to supervise module provider: {error}"))?;
+        providers.insert(
+            module.name.clone(),
+            ManagedModuleProvider {
+                name: module.name,
+                instance_generation,
+                receiver,
+            },
+        );
     }
-
-    Ok(())
-}
-
-fn registry_guard() -> std::sync::MutexGuard<'static, ModuleUpdateRegistry> {
-    match MODULE_REGISTRY.lock() {
-        Ok(registry) => registry,
-        Err(poisoned) => {
-            error!("module registry mutex was poisoned, recovering");
-            poisoned.into_inner()
-        }
-    }
-}
-
-fn storage_for(module_name: &str) -> UpdateStorage {
-    registry_guard()
-        .updates
-        .entry(module_name.to_string())
-        .or_insert_with(|| Arc::new(Mutex::new(None)))
-        .clone()
-}
-
-fn store_module_update_safe(module_name: &str, update: ModuleUpdate) -> Result<(), String> {
-    storage_for(module_name)
-        .lock()
-        .map_err(|error| format!("failed to lock '{module_name}' update storage: {error}"))?
-        .replace(update);
-    Ok(())
-}
-
-#[cfg(test)]
-pub fn store_module_update(module_name: &str, update: ModuleUpdate) {
-    if let Err(error) = store_module_update_safe(module_name, update) {
-        warn!(module = module_name, %error, "failed to store module update");
-    }
-}
-
-pub fn get_latest_module_update(module_name: &str) -> Option<ModuleUpdate> {
-    let storage = registry_guard().updates.get(module_name)?.clone();
-    match storage.lock() {
-        Ok(stored) => stored.clone(),
-        Err(poisoned) => {
-            warn!(
-                module = module_name,
-                "module update storage was poisoned, recovering"
-            );
-            poisoned.into_inner().clone()
-        }
-    }
-}
-
-pub fn has_module_updates(module_name: &str) -> bool {
-    registry_guard().updates.contains_key(module_name)
+    Ok(providers)
 }
 
 #[cfg(test)]

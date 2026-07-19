@@ -45,6 +45,15 @@ deskhalloumi-i3-vis
 It also contains lightweight `unilii-*` compatibility launchers for existing
 pre-1.0 scripts and window-manager configuration.
 
+`deskhalloumi` is the supported interactive desktop runtime. The separate
+`deskhalloumi-bar` command is intentionally a synchronous, headless reference
+runtime for configuration, fixture, scheduler, and reload diagnostics; it is
+not a second graphical panel daemon. Its role can be inspected with:
+
+```sh
+deskhalloumi-bar --runtime-contract
+```
+
 ### Local user installation
 
 Install the commands under `~/.local/bin`:

@@ -4,6 +4,8 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Default)]
 pub struct RuntimeMetrics {
     active_tasks: AtomicUsize,
@@ -27,7 +29,7 @@ pub struct RuntimeMetrics {
     updates_dropped: AtomicU64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeMetricsSnapshot {
     pub active_tasks: usize,
     pub tasks_started: u64,

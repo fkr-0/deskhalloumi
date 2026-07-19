@@ -2664,6 +2664,54 @@ runtime_modernization_2026_07_18:
   - scripts/test_i3_hotkeys.sh
   - runtime supervisor cancellation stress test passed 50 consecutive runs
   remaining:
-  - generation-aware stale-result suppression for live provider reloads
-  - live runtime-metrics query over CLI or action bus
-  - explicit decision for the separate synchronous deskhalloumi-bar scaffold runtime
+  - repeated provider replacement soak tests
+  - provider/action-history live diagnostic expansion beyond aggregate runtime metrics
+
+interaction_provider_menu_contracts_2026_07_19:
+  status: complete
+  scope:
+  - one-shot quick-select action overlays
+  - typed provider lifecycle and generation safety
+  - renderer-neutral menu lifecycle
+  - CLI introspection and typed invocation
+  - visible bounded action history
+  - main.rs action-routing and introspection extraction
+  implementation_evidence:
+  - unilii/core/src/quick_select.rs
+  - unilii/core/src/runtime/provider.rs
+  - unilii/core/src/menu.rs
+  - unilii/core/src/action_history.rs
+  - unilii/bin/src/action_routing.rs
+  - unilii/bin/src/introspection.rs
+  - unilii/bin/src/subscription_manager.rs
+  - docs/runtime-contracts.md
+  verification:
+  - cargo check --workspace --all-targets
+  - focused quick-select/provider/menu/introspection tests
+  - scripts/test_safe.sh
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
+  remaining:
+  - live action-bus query for provider snapshots and action history
+  - further extraction of runtime bootstrap and Iced view/update adapters from main.rs
+  - provider reload soak tests across generation replacement
+
+provider_reload_metrics_runtime_decision_2026_07_19:
+  status: complete
+  scope:
+  - provider-instance generation and stale queued-message suppression
+  - live structured runtime metrics over CLI and action bus
+  - explicit synchronous headless contract for deskhalloumi-bar
+  implementation_evidence:
+  - unilii/core/src/runtime/provider.rs
+  - unilii/core/src/runtime/metrics.rs
+  - unilii/core/src/action_bus.rs
+  - unilii/bin/src/subscription_manager.rs
+  - unilii/bin/src/action_routing.rs
+  - unilii/bin/src/introspection.rs
+  - unilii/bin/src/bar_main.rs
+  - docs/runtime-contracts.md
+  verification:
+  - provider replacement unit test rejects old-instance snapshots
+  - action-bus metrics response round-trip test
+  - deskhalloumi runtime-metrics CLI parsing and client decoding tests
+  - deskhalloumi-bar runtime-contract parsing test

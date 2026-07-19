@@ -2,7 +2,9 @@
 
 use std::{ffi::OsString, time::Duration};
 
-use deskhalloumi_core::runtime::{ActionCommand, ActionRunner};
+use deskhalloumi_core::runtime::{
+    ActionCommand, ActionRunner, ProviderContract, ProviderRefreshPolicy,
+};
 use iced::widget::{button, column, scrollable, text};
 use iced::{Color, Element, Length};
 
@@ -15,6 +17,20 @@ pub struct Audio {
     current_input: String,
     output_devices: Vec<AudioDevice>,
     input_devices: Vec<AudioDevice>,
+}
+
+pub fn provider_contract() -> ProviderContract {
+    ProviderContract::new(
+        "audio",
+        "Audio",
+        ProviderRefreshPolicy {
+            interval: Duration::from_secs(15),
+            timeout: Duration::from_secs(3),
+            stale_after: Duration::from_secs(45),
+            refresh_on_start: true,
+        },
+        "TestProviderBackend<AudioSnapshot>",
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,5 +339,12 @@ mod tests {
         audio.show_menu = true;
         drop(audio.view());
         assert_eq!(audio.update_interval(), None);
+    }
+
+    #[test]
+    fn lifecycle_contract_uses_fixture_backend() {
+        let contract = provider_contract();
+        assert_eq!(contract.id, "audio");
+        assert!(contract.test_backend.contains("AudioSnapshot"));
     }
 }

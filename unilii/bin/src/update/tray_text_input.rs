@@ -17,13 +17,6 @@ pub fn set_text_input_value(
     false
 }
 
-pub fn clear_text_input_value(
-    enhanced_tray_state: &mut Option<EnhancedTrayState>,
-    item_id: &str,
-) -> bool {
-    set_text_input_value(enhanced_tray_state, item_id, "")
-}
-
 fn update_menu_item_value(items: &mut [TrayMenuItem], item_id: &str, value: &str) -> bool {
     for item in items {
         if item.id == item_id {
@@ -39,7 +32,7 @@ fn update_menu_item_value(items: &mut [TrayMenuItem], item_id: &str, value: &str
 
 #[cfg(test)]
 mod tests {
-    use super::{clear_text_input_value, set_text_input_value};
+    use super::set_text_input_value;
     use crate::enhanced_tray::{self, EnhancedTrayState};
 
     fn text_input_item(
@@ -127,16 +120,5 @@ mod tests {
         let state = state.expect("state remains present");
         let input = &state.tree.apps["app"].menu_items[0].submenu[0];
         assert_eq!(input.default_value.as_deref(), Some("new"));
-    }
-
-    #[test]
-    fn clear_text_input_value_resets_nested_item_to_empty_string() {
-        let mut state = state_with_nested_text_input();
-
-        assert!(clear_text_input_value(&mut state, "input"));
-
-        let state = state.expect("state remains present");
-        let input = &state.tree.apps["app"].menu_items[0].submenu[0];
-        assert_eq!(input.default_value.as_deref(), Some(""));
     }
 }

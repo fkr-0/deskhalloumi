@@ -11,9 +11,14 @@ pub mod wifi;
 
 use crate::app::Message;
 use crate::module_loader::LoadedModule;
-use iced::Element;
+use crate::subscription_manager::ManagedModuleProvider;
+use iced::{
+    Element,
+    widget::{row, text},
+};
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::time::SystemTime;
 
 /// Common widget message type
 #[derive(Debug, Clone)]
@@ -51,7 +56,10 @@ pub use video::Video;
 pub use wifi::Wifi;
 
 /// Render modules as widgets in status bar
-pub fn render_modules(modules: &HashMap<String, LoadedModule>) -> Vec<Element<'_, Message>> {
+pub fn render_modules<'a>(
+    modules: &'a HashMap<String, LoadedModule>,
+    providers: &'a HashMap<String, ManagedModuleProvider>,
+) -> Vec<Element<'a, Message>> {
     let mut module_names: Vec<_> = modules.keys().collect();
     module_names.sort();
 
@@ -63,6 +71,35 @@ pub fn render_modules(modules: &HashMap<String, LoadedModule>) -> Vec<Element<'_
                 let name = name.clone();
                 move |update| Message::ModuleUpdate(name.clone(), update)
             });
+            let widget = if let Some(provider) = providers.get(name) {
+                let snapshot = provider.receiver.current();
+                let age = snapshot
+                    .last_update_age(SystemTime::now())
+                    .map(|age| format!("{}s", age.as_secs()))
+                    .unwrap_or_else(|| "—".to_string());
+                let health = snapshot.health().label();
+                row![
+                    widget,
+                    text(format!("{health} {age}"))
+                        .size(9)
+                        .color(match snapshot.health() {
+                            deskhalloumi_core::runtime::ProviderHealth::Fresh => {
+                                iced::Color::from_rgb(0.55, 0.78, 0.60)
+                            }
+                            deskhalloumi_core::runtime::ProviderHealth::Stale => {
+                                iced::Color::from_rgb(0.90, 0.72, 0.35)
+                            }
+                            deskhalloumi_core::runtime::ProviderHealth::Error => {
+                                iced::Color::from_rgb(0.92, 0.42, 0.42)
+                            }
+                            _ => iced::Color::from_rgb(0.62, 0.66, 0.73),
+                        }),
+                ]
+                .spacing(4)
+                .into()
+            } else {
+                widget
+            };
             tracing::info!("Rendering module widget: {}", name);
             widgets.push(widget);
         }

@@ -16,6 +16,7 @@ operators, contributors, and maintainers who need more detail.
 ## Architecture
 
 - [Async runtime and subprocess policy](async-runtime.md)
+- [Quick-select, provider, menu, and typed-action contracts](runtime-contracts.md)
 - [Bar architecture](bar-architecture.md)
 - [Hotkey daemon architecture](hotkeyd-architecture.md)
 - [Shared menu design system](menu-design-system.md)

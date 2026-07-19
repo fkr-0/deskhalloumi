@@ -3,7 +3,6 @@
 
 use deskhalloumi_core::config::{CustomMenuActionConfig, CustomMenuConfig, CustomMenuItemConfig};
 
-use super::common::{FilterableMenu, QuickjumpMenu};
 use super::presentation::{contextual_shell_command, shell_escape, visible_if_matches};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,30 +37,6 @@ impl CustomMenuSnapshot {
             items,
             quickjump_alphabet: config.quickjump_alphabet.clone(),
         }
-    }
-}
-
-impl FilterableMenu for CustomMenuSnapshot {
-    type ItemId = String;
-
-    fn filter_tokens_for(&self, item_id: &Self::ItemId) -> Vec<String> {
-        self.items
-            .iter()
-            .find(|item| &item.id == item_id)
-            .map(|item| item.filter_tokens.clone())
-            .unwrap_or_default()
-    }
-}
-
-impl QuickjumpMenu for CustomMenuSnapshot {
-    type ItemId = String;
-
-    fn quickjump_targets(&self) -> Vec<Self::ItemId> {
-        self.items.iter().map(|item| item.id.clone()).collect()
-    }
-
-    fn quickjump_alphabet(&self) -> String {
-        self.quickjump_alphabet.clone()
     }
 }
 
@@ -119,10 +94,10 @@ fn build_custom_menu_item(item: &CustomMenuItemConfig, show_subtitles: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::{CustomMenuSnapshot, build_action_command};
-    use crate::menus::common::{FilterableMenu, QuickjumpMenu};
     use deskhalloumi_core::config::{
         CustomMenuActionConfig, CustomMenuConfig, CustomMenuIconConfig, CustomMenuItemConfig,
     };
+    use deskhalloumi_core::quick_select::QuickSelectSession;
 
     #[test]
     fn builds_launcher_command() {
@@ -178,11 +153,22 @@ mod tests {
             quickjump_alphabet: "asdf".to_string(),
         };
         let snapshot = CustomMenuSnapshot::from_config(&config);
-        assert_eq!(
-            snapshot.quickjump_bindings(),
-            vec![("a".to_string(), "display.docked".to_string())]
-        );
-        assert!(snapshot.matches_filter_query(&"display.docked".to_string(), "docked xrandr"));
+        let session = QuickSelectSession::new(
+            snapshot
+                .items
+                .iter()
+                .map(|item| (item.title.clone(), item.id.clone())),
+        )
+        .unwrap();
+        assert_eq!(session.options()[0].shortcut, 'a');
+        assert_eq!(session.options()[0].action, "display.docked");
+        let tokens = snapshot.items[0]
+            .filter_tokens
+            .iter()
+            .map(|token| token.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        assert!(tokens.iter().any(|token| token.contains("docked")));
+        assert!(tokens.iter().any(|token| token.contains("xrandr")));
     }
     #[test]
     fn snapshot_applies_visibility_and_row_limit() {

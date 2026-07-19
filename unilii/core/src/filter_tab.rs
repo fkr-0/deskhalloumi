@@ -5,7 +5,9 @@
 //! stable window snapshot, and modifier-release confirms the current selection
 //! exactly like an explicit confirm key.
 
-pub const DEFAULT_QUICK_SELECT_ALPHABET: &str = "asdfhjkl";
+use crate::menu::{MenuAction, MenuItem, MenuLifecycle, MenuModel, MenuSource, MenuWidgetType};
+
+pub const DEFAULT_QUICK_SELECT_ALPHABET: &str = crate::quick_select::QUICK_SELECT_ALPHABET;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowMatchContext {
@@ -103,6 +105,7 @@ pub enum FilterTabMenuInput {
     ModifierRelease,
     ToggleQuickSelect,
     QuickSelect(char),
+    AbortQuickSelect,
     Escape,
     ContextAction(char),
 }
@@ -178,6 +181,53 @@ impl FilterTabMenuState {
             &self.visible_indices(),
             DEFAULT_QUICK_SELECT_ALPHABET,
         )
+    }
+
+    pub fn menu_model(&self) -> MenuModel {
+        let shortcuts = self
+            .quick_select_bindings()
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        let items = self
+            .visible_indices()
+            .into_iter()
+            .filter_map(|index| self.windows.get(index))
+            .map(|window| MenuItem {
+                id: format!("window:{}", window.id),
+                label: window.title.clone(),
+                action: MenuAction::Typed {
+                    kind: "filter_tab.confirm_window".to_string(),
+                    payload: window.id.to_string(),
+                },
+                icon: window.class_name.clone(),
+                submenu: Vec::new(),
+                enabled: true,
+                visible: true,
+                checkable: false,
+                checked: self.selected_window_id() == Some(window.id),
+                shortcut: shortcuts.iter().find_map(|(shortcut, window_id)| {
+                    (*window_id == window.id).then(|| shortcut.to_string())
+                }),
+                is_separator: false,
+                app_id: "filter-tab".to_string(),
+                full_path: format!(
+                    "{} → {}",
+                    self.active_tab()
+                        .map(|tab| tab.label.as_str())
+                        .unwrap_or("All"),
+                    window.title
+                ),
+                widget_type: MenuWidgetType::Button,
+                default_value: None,
+                placeholder: None,
+            })
+            .collect();
+        let mut model =
+            MenuModel::with_items("filter-tab", "Filter tab", MenuSource::FilterTab, 0, items);
+        if !self.visible {
+            model.lifecycle = MenuLifecycle::Closed;
+        }
+        model
     }
 
     pub fn clamp_selection(&mut self) {
@@ -291,6 +341,10 @@ pub fn handle_filter_tab_input(
             FilterTabMenuOutcome::None
         }
         FilterTabMenuInput::QuickSelect(label) => quick_select(state, label),
+        FilterTabMenuInput::AbortQuickSelect => {
+            state.clear_quick_select();
+            FilterTabMenuOutcome::None
+        }
         FilterTabMenuInput::Escape => escape_step(state),
         FilterTabMenuInput::ContextAction(key) => context_action_for_selected(state, key)
             .and_then(|action| command_for_context_action(&action))
@@ -348,6 +402,7 @@ fn quick_select(state: &mut FilterTabMenuState, label: char) -> FilterTabMenuOut
         state.reset_selection();
         FilterTabMenuOutcome::ConfirmWindow(window_id)
     } else {
+        state.clear_quick_select();
         FilterTabMenuOutcome::None
     }
 }
@@ -953,7 +1008,7 @@ mod tests {
     }
 
     #[test]
-    fn quick_select_ignores_unmapped_key_and_stays_armed() {
+    fn quick_select_unmapped_key_aborts_session() {
         let mut state = sample_state();
         handle_filter_tab_input(&mut state, FilterTabMenuInput::Activate);
         handle_filter_tab_input(&mut state, FilterTabMenuInput::SelectTab('t'));
@@ -962,8 +1017,19 @@ mod tests {
         let out = handle_filter_tab_input(&mut state, FilterTabMenuInput::QuickSelect('s'));
         assert_eq!(out, FilterTabMenuOutcome::None);
         assert!(state.visible);
-        assert!(state.quick_select_armed);
+        assert!(!state.quick_select_armed);
         assert_eq!(state.selected_window_id(), Some(10));
+    }
+
+    #[test]
+    fn explicit_quick_select_abort_keeps_menu_open() {
+        let mut state = sample_state();
+        handle_filter_tab_input(&mut state, FilterTabMenuInput::Activate);
+        handle_filter_tab_input(&mut state, FilterTabMenuInput::ToggleQuickSelect);
+        let out = handle_filter_tab_input(&mut state, FilterTabMenuInput::AbortQuickSelect);
+        assert_eq!(out, FilterTabMenuOutcome::None);
+        assert!(state.visible);
+        assert!(!state.quick_select_armed);
     }
 
     #[test]
@@ -984,5 +1050,18 @@ mod tests {
         assert_eq!(state.selected_visible_index, 2);
         handle_filter_tab_input(&mut state, FilterTabMenuInput::PageUp);
         assert_eq!(state.selected_visible_index, 0);
+    }
+    #[test]
+    fn renderer_neutral_menu_model_exposes_typed_window_actions() {
+        let mut state = sample_state();
+        handle_filter_tab_input(&mut state, FilterTabMenuInput::Activate);
+        let model = state.menu_model();
+        assert_eq!(model.source, MenuSource::FilterTab);
+        assert_eq!(model.lifecycle, MenuLifecycle::Fresh);
+        assert!(matches!(
+            model.items[0].action,
+            MenuAction::Typed { ref kind, .. } if kind == "filter_tab.confirm_window"
+        ));
+        assert_eq!(model.items[0].shortcut.as_deref(), Some("a"));
     }
 }

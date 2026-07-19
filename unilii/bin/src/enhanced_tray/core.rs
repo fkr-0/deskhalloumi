@@ -8,8 +8,10 @@
 #![allow(dead_code)]
 // FIXME(T6): Enhanced tray domain model is partially production-wired and heavily unit-tested; unused variants remain planned integration surface.
 
-use crate::menus::common::FilterableMenu;
-use serde::{Deserialize, Serialize};
+pub use deskhalloumi_core::menu::{
+    MenuAction as TrayMenuAction, MenuItem as TrayMenuItem, MenuWidgetType as TrayWidgetType,
+};
+use deskhalloumi_core::menu::{MenuModel, MenuSource};
 use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 
@@ -28,94 +30,6 @@ pub struct TrayIcon {
     pub status: String,
     pub has_menu: bool,
     pub menu_object_path: Option<String>,
-}
-
-/// Actions that can be performed on tray menu items
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TrayMenuAction {
-    Activate,
-    ContextMenu,
-    SecondaryActivate,
-    SpawnCommand(String),
-    DbusMenuAction {
-        item_id: i32,
-        event_id: String,
-    },
-    NavigateToApp(String),
-    ShowAggregated,
-    ShowFavorites,
-    ToggleFavorite(String),
-    NavigateToSubmenu {
-        item_id: String,
-        submenu_path: Vec<String>,
-    },
-    TextInputChanged {
-        value: String,
-    },
-    TextInputFocusGained,
-    TextInputFocusLost,
-    TextInputCleared,
-}
-
-impl std::fmt::Display for TrayMenuAction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TrayMenuAction::Activate => write!(f, "Activate"),
-            TrayMenuAction::ContextMenu => write!(f, "ContextMenu"),
-            TrayMenuAction::SecondaryActivate => write!(f, "SecondaryActivate"),
-            TrayMenuAction::SpawnCommand(cmd) => write!(f, "SpawnCommand({})", cmd),
-            TrayMenuAction::DbusMenuAction { item_id, event_id } => {
-                write!(f, "DbusMenuAction({}, {})", item_id, event_id)
-            }
-            TrayMenuAction::NavigateToApp(app) => write!(f, "NavigateToApp({})", app),
-            TrayMenuAction::ShowAggregated => write!(f, "ShowAggregated"),
-            TrayMenuAction::ShowFavorites => write!(f, "ShowFavorites"),
-            TrayMenuAction::ToggleFavorite(id) => write!(f, "ToggleFavorite({})", id),
-            TrayMenuAction::NavigateToSubmenu {
-                item_id,
-                submenu_path,
-            } => {
-                write!(f, "NavigateToSubmenu({}, {:?})", item_id, submenu_path)
-            }
-            TrayMenuAction::TextInputChanged { value } => {
-                write!(f, "TextInputChanged({})", value)
-            }
-            TrayMenuAction::TextInputFocusGained => write!(f, "TextInputFocusGained"),
-            TrayMenuAction::TextInputFocusLost => write!(f, "TextInputFocusLost"),
-            TrayMenuAction::TextInputCleared => write!(f, "TextInputCleared"),
-        }
-    }
-}
-
-/// Single menu item with hierarchical structure
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrayMenuItem {
-    pub id: String,
-    pub label: String,
-    pub action: TrayMenuAction,
-    pub icon: Option<String>,
-    pub submenu: Vec<TrayMenuItem>,
-    pub enabled: bool,
-    pub visible: bool,
-    pub checkable: bool,
-    pub checked: bool,
-    pub shortcut: Option<String>,
-    pub is_separator: bool,
-    pub app_id: String,
-    pub full_path: String,
-    // Widget type and properties
-    pub widget_type: TrayWidgetType,
-    pub default_value: Option<String>,
-    pub placeholder: Option<String>,
-}
-
-/// Type of widget to display for this menu item
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TrayWidgetType {
-    Button,
-    SubmenuButton,
-    TextInput,
-    Separator,
 }
 
 /// Application with its tray menu
@@ -318,6 +232,16 @@ impl TrayMenuTree {
         items
     }
 
+    pub fn aggregated_menu_model(&self, filter: Option<&str>) -> MenuModel {
+        MenuModel::with_items(
+            "tray:aggregated",
+            "All tray actions",
+            MenuSource::Tray,
+            self.generation(),
+            self.get_aggregated_menu(filter),
+        )
+    }
+
     /// Get favorite menu items
     pub fn get_favorites_menu(&self) -> Vec<TrayMenuItem> {
         let mut favorites = Vec::new();
@@ -330,6 +254,42 @@ impl TrayMenuTree {
 
         favorites.sort_by(|a, b| a.full_path.cmp(&b.full_path));
         favorites
+    }
+
+    pub fn favorites_menu_model(&self) -> MenuModel {
+        MenuModel::with_items(
+            "tray:favorites",
+            "Favorite tray actions",
+            MenuSource::Tray,
+            self.generation(),
+            self.get_favorites_menu(),
+        )
+    }
+
+    pub fn app_menu_model(&self, app_id: &str) -> Option<MenuModel> {
+        let app = self.apps.get(app_id)?;
+        let generation = app
+            .last_updated
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
+        Some(MenuModel::with_items(
+            format!("tray:{app_id}"),
+            app.icon.title.clone(),
+            MenuSource::Tray,
+            generation,
+            app.menu_items.clone(),
+        ))
+    }
+
+    fn generation(&self) -> u64 {
+        self.apps
+            .values()
+            .filter_map(|app| app.last_updated.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+            .max()
+            .unwrap_or(0)
     }
 
     /// Return the stable, application-scoped storage key for a favorite.
@@ -390,35 +350,6 @@ impl TrayMenuTree {
             self.collect_favorites(app_id, subitem, result);
         }
     }
-}
-
-impl FilterableMenu for TrayMenuTree {
-    type ItemId = String;
-
-    fn filter_tokens_for(&self, item_id: &Self::ItemId) -> Vec<String> {
-        for app in self.apps.values() {
-            if let Some(tokens) = filter_tokens_in_tree(&app.menu_items, item_id) {
-                return tokens;
-            }
-        }
-        Vec::new()
-    }
-}
-
-fn filter_tokens_in_tree(items: &[TrayMenuItem], item_id: &str) -> Option<Vec<String>> {
-    for item in items {
-        if item.id == item_id {
-            return Some(vec![
-                item.label.clone(),
-                item.full_path.clone(),
-                item.app_id.clone(),
-            ]);
-        }
-        if let Some(tokens) = filter_tokens_in_tree(&item.submenu, item_id) {
-            return Some(tokens);
-        }
-    }
-    None
 }
 
 impl Default for TrayMenuTree {

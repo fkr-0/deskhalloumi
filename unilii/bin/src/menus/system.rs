@@ -4,9 +4,11 @@
 //! Configurable built-in menubar menu model.
 
 use crate::enhanced_tray::{TrayMenuAction, TrayMenuItem, TrayWidgetType};
+use deskhalloumi_core::action_history::{ActionHistory, ActionStatus};
 use deskhalloumi_core::config::{SystemMenuButtonConfig, SystemMenuConfig};
 use deskhalloumi_core::key_engine::KeyTrigger;
 use deskhalloumi_core::keys::{CommandType, KeyBinding};
+use deskhalloumi_core::menu::{MenuLifecycle, MenuModel, MenuSource};
 
 pub const SYSTEM_MENU_APP_ID: &str = "unilii-system-menu";
 pub const SYSTEM_MENU_KEY: &str = "unilii-system-menu";
@@ -28,6 +30,36 @@ pub struct SystemMenuSnapshot {
     pub root_disk_percent: Option<u8>,
     pub uptime_label: String,
     pub idle_sleep_enabled: bool,
+}
+
+fn action_history_items(history: &ActionHistory) -> Vec<TrayMenuItem> {
+    history
+        .recent(8)
+        .into_iter()
+        .map(|record| {
+            let status = match record.status {
+                ActionStatus::Running => "running",
+                ActionStatus::Succeeded => "ok",
+                ActionStatus::Failed => "failed",
+                ActionStatus::TimedOut => "timeout",
+                ActionStatus::Cancelled => "cancelled",
+            };
+            let duration = record
+                .duration_ms
+                .map(|duration| format!(" · {duration}ms"))
+                .unwrap_or_default();
+            let detail = record
+                .detail
+                .as_deref()
+                .filter(|detail| !detail.trim().is_empty())
+                .map(|detail| format!(" — {detail}"))
+                .unwrap_or_default();
+            label_item(
+                &format!("history-{}", record.sequence),
+                &format!("{} · {status}{duration}{detail}", record.title),
+            )
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,6 +164,7 @@ pub fn build_system_menu(
     snapshot: &SystemMenuSnapshot,
     keybindings: &[KeyBinding],
     runtime: &SystemMenuRuntime,
+    history: &ActionHistory,
 ) -> Vec<TrayMenuItem> {
     if let Some(pending) = &runtime.pending_confirmation {
         return confirmation_items(pending);
@@ -176,6 +209,14 @@ pub fn build_system_menu(
             items.push(item);
         }
     }
+    if history.records().next().is_some() {
+        items.push(submenu(
+            "action-history",
+            "Recent actions",
+            action_history_items(history),
+            "◷",
+        ));
+    }
     if let Some(status) = &runtime.last_status {
         items.push(separator("status-separator"));
         items.push(label_item("status", status));
@@ -184,6 +225,37 @@ pub fn build_system_menu(
         items.push(label_item("busy", &format!("Working: {action}…")));
     }
     items
+}
+
+pub fn build_system_menu_model(
+    config: &SystemMenuConfig,
+    snapshot: &SystemMenuSnapshot,
+    keybindings: &[KeyBinding],
+    runtime: &SystemMenuRuntime,
+    history: &ActionHistory,
+) -> MenuModel {
+    if !config.enabled {
+        return MenuModel::disabled(
+            SYSTEM_MENU_APP_ID,
+            "System actions",
+            MenuSource::System,
+            "disabled by configuration",
+        );
+    }
+    let items = build_system_menu(config, snapshot, keybindings, runtime, history);
+    let mut model = MenuModel::with_items(
+        SYSTEM_MENU_APP_ID,
+        "System actions",
+        MenuSource::System,
+        0,
+        items,
+    );
+    if let Some(action_id) = &runtime.busy_action {
+        model.lifecycle = MenuLifecycle::Busy {
+            action_id: action_id.clone(),
+        };
+    }
+    model
 }
 
 fn wifi_items(_config: &SystemMenuConfig, snapshot: &SystemMenuSnapshot) -> Vec<TrayMenuItem> {
@@ -629,5 +701,31 @@ mod tests {
             shutdown.action,
             TrayMenuAction::SpawnCommand(internal_command("confirm:poweroff"))
         );
+    }
+
+    #[test]
+    fn system_menu_surfaces_action_failure_history() {
+        let mut history = ActionHistory::new(4);
+        history.record(
+            "network-restart",
+            "Restart network",
+            "system-menu",
+            ActionStatus::Failed,
+            std::time::Duration::from_millis(12),
+            Some("permission denied".to_string()),
+        );
+        let items = build_system_menu(
+            &SystemMenuConfig::default(),
+            &SystemMenuSnapshot::default(),
+            &[],
+            &SystemMenuRuntime::default(),
+            &history,
+        );
+        let history = items
+            .iter()
+            .find(|item| item.id == "action-history")
+            .expect("history submenu");
+        assert!(history.submenu[0].label.contains("permission denied"));
+        assert!(history.submenu[0].label.contains("12ms"));
     }
 }

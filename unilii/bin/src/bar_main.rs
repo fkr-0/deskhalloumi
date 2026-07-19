@@ -18,7 +18,37 @@ struct BarCli {
     watch: bool,
     ticks: Option<u64>,
     tick_interval_ms: u64,
+    runtime_contract: bool,
     help: bool,
+}
+
+fn print_runtime_contract() -> Result<(), String> {
+    let contract = serde_json::json!({
+        "binary": "deskhalloumi-bar",
+        "role": "headless_reference_runtime",
+        "execution_model": "synchronous_blocking",
+        "interactive_desktop_runtime": "deskhalloumi",
+        "migrate_to_shared_tokio_runtime": false,
+        "supported_uses": [
+            "config_validation",
+            "fixture_backed_provider_diagnostics",
+            "scheduler_and_reload_reference_tests",
+            "text_render_model_inspection"
+        ],
+        "excluded_uses": [
+            "interactive_panel_ui",
+            "long_lived_desktop_provider_supervision",
+            "global_hotkeys",
+            "tray_or_dbus_ownership"
+        ],
+        "decision": "keep synchronous and headless; add production runtime features to deskhalloumi"
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&contract)
+            .map_err(|error| format!("failed to serialize runtime contract: {error}"))?
+    );
+    Ok(())
 }
 
 impl Default for BarCli {
@@ -30,6 +60,7 @@ impl Default for BarCli {
             watch: false,
             ticks: None,
             tick_interval_ms: 1000,
+            runtime_contract: false,
             help: false,
         }
     }
@@ -39,7 +70,7 @@ fn main() {
     match run(env::args().skip(1)) {
         Ok(()) => {}
         Err(err) => {
-            eprintln!("unilii-bar: {err}");
+            eprintln!("deskhalloumi-bar: {err}");
             process::exit(2);
         }
     }
@@ -54,6 +85,11 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
 
     if cli.print_default_config {
         print!("{}", starter_bar_config_toml());
+        return Ok(());
+    }
+
+    if cli.runtime_contract {
+        print_runtime_contract()?;
         return Ok(());
     }
 
@@ -149,6 +185,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<BarCli, String> 
             "--print-default-config" | "generate-config" => cli.print_default_config = true,
             "--check-config" => cli.check_config = true,
             "--watch" => cli.watch = true,
+            "--runtime-contract" => cli.runtime_contract = true,
             "--ticks" => {
                 let value = args
                     .next()
@@ -195,12 +232,12 @@ fn print_zone(name: &str, models: &[BarModuleViewModel]) {
 
 fn print_help() {
     println!(
-        "unilii-bar\n\nUSAGE:\n  unilii-bar [--config <path>] [--check-config]\n  unilii-bar --print-default-config\n\nOPTIONS:\n  -c, --config <path>       Load a TOML bar config\n      --check-config        Validate config and exit\n      --print-default-config Print starter TOML config\n  -h, --help                Print this help"
+        "deskhalloumi-bar\n\nHeadless synchronous reference runtime for config validation, provider fixtures,\nand scheduler diagnostics. The supported interactive desktop runtime is\n`deskhalloumi`, which owns the supervised Tokio/Iced runtime.\n\nUSAGE:\n  deskhalloumi-bar [--config <path>] [--check-config]\n  deskhalloumi-bar --print-default-config\n  deskhalloumi-bar --runtime-contract\n\nOPTIONS:\n  -c, --config <path>        Load a TOML bar config\n      --check-config         Validate config and exit\n      --print-default-config Print starter TOML config\n      --runtime-contract     Print the machine-readable runtime role decision\n  -h, --help                 Print this help"
     );
 }
 
 fn print_headless_summary(config: &BarConfig) {
-    println!("unilii-bar scaffold");
+    println!("deskhalloumi-bar headless reference runtime");
     println!("height: {}px", config.bar.height);
     println!("position: {:?}", config.bar.position);
     println!("modules: {}", config.modules.len());
@@ -256,5 +293,11 @@ mod tests {
     fn rejects_missing_ticks_argument() {
         let err = parse_args(["--ticks".to_string()]).unwrap_err();
         assert!(err.contains("requires a numeric argument"));
+    }
+
+    #[test]
+    fn parses_runtime_contract_flag() {
+        let cli = parse_args(["--runtime-contract".to_string()]).unwrap();
+        assert!(cli.runtime_contract);
     }
 }
