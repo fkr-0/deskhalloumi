@@ -16,6 +16,7 @@ pub struct RuntimeMetrics {
     actions_started: AtomicU64,
     actions_completed: AtomicU64,
     actions_failed: AtomicU64,
+    actions_rejected: AtomicU64,
     action_timeouts: AtomicU64,
     action_duration_ms_total: AtomicU64,
     action_duration_ms_max: AtomicU64,
@@ -39,6 +40,7 @@ pub struct RuntimeMetricsSnapshot {
     pub actions_started: u64,
     pub actions_completed: u64,
     pub actions_failed: u64,
+    pub actions_rejected: u64,
     pub action_timeouts: u64,
     pub action_duration_ms_total: u64,
     pub action_duration_ms_max: u64,
@@ -67,6 +69,10 @@ impl RuntimeMetrics {
         ActiveTaskGuard {
             metrics: Arc::clone(self),
         }
+    }
+
+    pub fn record_action_rejected(&self) {
+        self.actions_rejected.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_task_completed(&self) {
@@ -149,6 +155,7 @@ impl RuntimeMetrics {
             actions_started: self.actions_started.load(Ordering::Relaxed),
             actions_completed: self.actions_completed.load(Ordering::Relaxed),
             actions_failed: self.actions_failed.load(Ordering::Relaxed),
+            actions_rejected: self.actions_rejected.load(Ordering::Relaxed),
             action_timeouts: self.action_timeouts.load(Ordering::Relaxed),
             action_duration_ms_total: self.action_duration_ms_total.load(Ordering::Relaxed),
             action_duration_ms_max: self.action_duration_ms_max.load(Ordering::Relaxed),
@@ -188,6 +195,7 @@ mod tests {
         metrics.record_task_completed();
         metrics.record_action_started();
         metrics.record_action_finished(Duration::from_millis(17), false, true, 2, 500);
+        metrics.record_action_rejected();
         metrics.record_provider_refresh_started();
         metrics.record_provider_refresh_completed();
         metrics.record_provider_refresh_coalesced();
@@ -202,6 +210,7 @@ mod tests {
         assert_eq!(snapshot.actions_started, 1);
         assert_eq!(snapshot.actions_completed, 1);
         assert_eq!(snapshot.actions_failed, 1);
+        assert_eq!(snapshot.actions_rejected, 1);
         assert_eq!(snapshot.action_timeouts, 1);
         assert_eq!(snapshot.action_duration_ms_total, 17);
         assert_eq!(snapshot.action_duration_ms_max, 17);

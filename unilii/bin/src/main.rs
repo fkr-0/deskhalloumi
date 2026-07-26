@@ -4,6 +4,7 @@
 mod action_routing;
 mod app;
 mod app_config;
+mod bar_control;
 mod cli;
 mod enhanced_tray;
 mod introspection;
@@ -16,7 +17,8 @@ mod update;
 mod widgets;
 
 use app::{MenuQuickSelectAction, Message, UniliiBar};
-use app_config::{AppConfig, load_app_config};
+use app_config::app_config_from_core;
+use bar_control::{apply_live_config, load_reload_candidate};
 use clap::Parser;
 use cli::{Cli, Commands, verbose_to_level};
 use deskhalloumi_core::{
@@ -26,7 +28,7 @@ use deskhalloumi_core::{
     },
     action_history::{ActionHistory, ActionStatus},
     bar::{default_bar_config_path, load_bar_config, starter_bar_config_toml},
-    config::{Config, MenuUiConfig, load_config_with_path},
+    config::{Config, MenuUiConfig, get_config_path, load_config_with_path},
     key_import_sxhkd::import_sxhkd_config,
     keys::{
         BarDaemonAction, CommandType, KeyDryRunEvent, KeybindingDaemon, KeybindingResult,
@@ -106,11 +108,11 @@ use widgets::{
 };
 
 static KEYBINDING_ACTION_RECEIVER: OnceLock<
-    Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<KeybindingResult>>>,
+    Mutex<Option<tokio::sync::mpsc::Receiver<KeybindingResult>>>,
 > = OnceLock::new();
 
 fn install_keybinding_action_receiver(
-    receiver: tokio::sync::mpsc::UnboundedReceiver<KeybindingResult>,
+    receiver: tokio::sync::mpsc::Receiver<KeybindingResult>,
 ) -> Result<(), String> {
     let slot = KEYBINDING_ACTION_RECEIVER.get_or_init(|| Mutex::new(None));
     let mut guard = slot
@@ -152,6 +154,7 @@ fn provider_health_badge<T>(
 
 struct StartupState {
     config: deskhalloumi_core::config::Config,
+    config_path: Option<PathBuf>,
     app_config: app_config::AppConfig,
     run_options: cli::RunOptions,
     modules: HashMap<String, module_loader::LoadedModule>,
@@ -171,7 +174,7 @@ impl Drop for ActionBusSocketGuard {
 }
 
 async fn start_action_bus_server(
-    sender: tokio::sync::mpsc::UnboundedSender<KeybindingResult>,
+    sender: tokio::sync::mpsc::Sender<KeybindingResult>,
     spawner: &TaskSpawner,
 ) -> Result<(), String> {
     let path = default_action_bus_socket_path();
@@ -226,7 +229,7 @@ async fn start_action_bus_server(
 
 async fn handle_action_bus_connection(
     stream: UnixStream,
-    sender: tokio::sync::mpsc::UnboundedSender<KeybindingResult>,
+    sender: tokio::sync::mpsc::Sender<KeybindingResult>,
 ) {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -258,12 +261,21 @@ async fn handle_action_bus_connection(
                     match route {
                         action_routing::ActionBusRoute::Respond(response) => response,
                         action_routing::ActionBusRoute::Queue(result) => {
-                            match sender.send(result) {
+                            match sender.try_send(result) {
                                 Ok(()) => ActionBusResponse::ok(request.request_id, "queued"),
-                                Err(_) => ActionBusResponse::error(
-                                    request.request_id,
-                                    "bar action receiver is no longer available",
-                                ),
+                                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                    global_runtime_metrics().record_action_rejected();
+                                    ActionBusResponse::error(
+                                        request.request_id,
+                                        "bar action queue is full; retry shortly",
+                                    )
+                                }
+                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                    ActionBusResponse::error(
+                                        request.request_id,
+                                        "bar action receiver is no longer available",
+                                    )
+                                }
                             }
                         }
                     }
@@ -283,8 +295,7 @@ async fn write_action_bus_response(mut stream: UnixStream, response: &ActionBusR
     }
 }
 
-fn take_keybinding_action_receiver()
--> Option<tokio::sync::mpsc::UnboundedReceiver<KeybindingResult>> {
+fn take_keybinding_action_receiver() -> Option<tokio::sync::mpsc::Receiver<KeybindingResult>> {
     KEYBINDING_ACTION_RECEIVER
         .get()
         .and_then(|slot| slot.lock().ok()?.take())
@@ -380,6 +391,34 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                 error!(module = %name, %error, "failed to apply provider value");
             }
         }
+        Message::BarConfigReloaded(result) => match *result {
+            Ok(candidate) => {
+                let restart_required = candidate.restart_required;
+                let path = candidate.path;
+                apply_live_config(&mut bar.config, candidate.config);
+                let status = if restart_required.is_empty() {
+                    format!("Reloaded {}", path.display())
+                } else {
+                    format!(
+                        "Reloaded menus; restart for {}",
+                        restart_required.join(", ")
+                    )
+                };
+                info!(
+                    config = %path.display(),
+                    restart_required = ?restart_required,
+                    "bar configuration reloaded"
+                );
+                bar.bar_control.set_status(status);
+                rebuild_system_menu_if_open(bar);
+            }
+            Err(error) => {
+                warn!(%error, "bar configuration reload rejected; retaining last-known-good state");
+                bar.bar_control
+                    .set_status(format!("Reload failed: {error}"));
+            }
+        },
+        Message::DismissBarStatus => bar.bar_control.dismiss_status(),
         Message::WindowKeyboardInput {
             key,
             pressed,
@@ -1240,7 +1279,22 @@ fn view(bar: &UniliiBar, window_id: window::Id) -> Element<'_, Message> {
     }
 
     let mut right_widgets: Vec<Element<'_, Message>> =
-        render_modules(&bar.modules, &bar.module_providers);
+        render_modules(&bar.modules, &bar.module_providers, &bar.bar_control);
+
+    if let Some(status) = bar.bar_control.status() {
+        right_widgets.push(
+            row![
+                text(status.to_string()).size(9),
+                button(text("×").size(10))
+                    .padding([1, 4])
+                    .style(button::text)
+                    .on_press(Message::DismissBarStatus),
+            ]
+            .spacing(3)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+    }
 
     if bar.config.menus.system.enabled {
         let system_snapshot = system_menu_snapshot(bar);
@@ -1397,7 +1451,7 @@ fn subscribe(bar: &UniliiBar) -> Subscription<Message> {
     });
     let tray_subscription = Subscription::run(|| {
         stream::channel(64, async move |mut output| {
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let (tx, mut rx) = tokio::sync::mpsc::channel(8);
             let mut workers = tokio::task::JoinSet::new();
             workers.spawn(async move {
                 tray::run_tray_watcher(tx, 1500).await; // Use default poll interval
@@ -1424,8 +1478,8 @@ fn subscribe(bar: &UniliiBar) -> Subscription<Message> {
             }
         })
     });
-    let tray_animation_subscription =
-        iced::time::every(Duration::from_millis(16)).map(|_| Message::TrayAnimateTick);
+    let tray_animation_subscription = tray_animation_active(bar.enhanced_tray.as_ref())
+        .then(|| iced::time::every(Duration::from_millis(16)).map(|_| Message::TrayAnimateTick));
 
     let legacy_widget_subscriptions: Vec<Subscription<Message>> = vec![
         iced::time::every(Duration::from_millis(
@@ -1456,9 +1510,17 @@ fn subscribe(bar: &UniliiBar) -> Subscription<Message> {
     }
     subscriptions.push(window_key_subscription);
     subscriptions.push(tray_subscription);
-    subscriptions.push(tray_animation_subscription);
+    if let Some(subscription) = tray_animation_subscription {
+        subscriptions.push(subscription);
+    }
     subscriptions.extend(legacy_widget_subscriptions);
     Subscription::batch(subscriptions)
+}
+
+fn tray_animation_active(state: Option<&EnhancedTrayState>) -> bool {
+    state.is_some_and(|state| {
+        (state.animation_progress - state.animation_target).abs() > f32::EPSILON
+    })
 }
 
 fn map_window_key_press(key: Key, _modifiers: Modifiers) -> Option<Message> {
@@ -1679,6 +1741,8 @@ fn main() -> iced::Result {
 
     info!("DeskHalloumi startup: begin");
 
+    let resolved_config_path = cli.config.clone().or_else(get_config_path);
+
     // Run async initialization in a tokio runtime.
     let runtime = tokio::runtime::Runtime::new().map_err(|error| {
         iced::Error::WindowCreationFailed(
@@ -1688,6 +1752,7 @@ fn main() -> iced::Result {
 
     let StartupState {
         config,
+        config_path,
         app_config: loaded_app_config,
         run_options,
         modules,
@@ -1698,7 +1763,7 @@ fn main() -> iced::Result {
         provider_refreshes,
     } = runtime.block_on(async {
         // Load configuration and modules at startup
-        let config = load_config_with_path(cli.config.clone());
+        let config = load_config_with_path(resolved_config_path.clone());
         let scan = deskhalloumi_lib::input::scan_keyboard_device_stats();
         if scan.total_devices == 0 {
             error!(
@@ -1725,7 +1790,7 @@ fn main() -> iced::Result {
         let provider_refreshes = ProviderRefreshRegistry::new(4);
 
         let (action_sender, action_receiver) =
-            tokio::sync::mpsc::unbounded_channel::<KeybindingResult>();
+            tokio::sync::mpsc::channel::<KeybindingResult>(128);
         install_keybinding_action_receiver(action_receiver).map_err(std::io::Error::other)?;
         start_action_bus_server(action_sender.clone(), &runtime_spawner)
             .await
@@ -1767,18 +1832,11 @@ fn main() -> iced::Result {
             );
         }
 
-        // Load application configuration with fallback to defaults
-        let config_path_str = cli.config.as_ref().and_then(|p| p.to_str());
-        let loaded_app_config = match load_app_config(config_path_str) {
-            config if config.modules.is_empty() => {
-                warn!("Loaded configuration has no modules, using defaults");
-                AppConfig::default()
-            }
-            config => {
-                info!("Loaded application configuration with {} module configs", config.modules.len());
-                config
-            }
-        };
+        let loaded_app_config = app_config_from_core(&config).map_err(std::io::Error::other)?;
+        info!(
+            "Loaded canonical application configuration with {} module configs",
+            loaded_app_config.modules.len()
+        );
 
         if let Some(path) = &loaded_app_config.app.xrandr_presets_yaml {
             unsafe {
@@ -1817,6 +1875,7 @@ fn main() -> iced::Result {
 
         Ok(StartupState {
             config,
+            config_path: resolved_config_path.clone(),
             app_config: loaded_app_config,
             run_options,
             modules,
@@ -1852,6 +1911,7 @@ fn main() -> iced::Result {
     let modules = Rc::new(RefCell::new(Some(modules)));
     let module_providers = Rc::new(RefCell::new(Some(module_providers)));
     let config = Rc::new(RefCell::new(Some(config)));
+    let config_path = Rc::new(RefCell::new(Some(config_path)));
     let app_config = Rc::new(RefCell::new(Some(loaded_app_config)));
     let window_settings = Rc::new(RefCell::new(Some(window_settings)));
     let run_options = Rc::new(RefCell::new(Some(run_options)));
@@ -1865,6 +1925,7 @@ fn main() -> iced::Result {
         let modules = modules.borrow_mut().take().unwrap_or_default();
         let module_providers = module_providers.borrow_mut().take().unwrap_or_default();
         let config = config.borrow_mut().take().unwrap_or_default();
+        let config_path = config_path.borrow_mut().take().unwrap_or_default();
         let app_config = app_config.borrow_mut().take().unwrap_or_default();
         let window_settings = window_settings.borrow_mut().take().unwrap_or_default();
         let run_options = run_options.borrow_mut().take().unwrap_or_default();
@@ -1915,7 +1976,9 @@ fn main() -> iced::Result {
                 tray_window_id: None,
                 modules,
                 module_providers,
+                config_path,
                 config,
+                bar_control: bar_control::BarControlState::default(),
                 sysmonitor,
                 wifi,
                 audio,
@@ -1998,6 +2061,20 @@ mod tests {
     fn non_digit_key_returns_none() {
         assert_eq!(key_char_digit("Named(Escape)"), None);
         assert_eq!(key_char_digit("Character(\"a\")"), None);
+    }
+
+    #[test]
+    fn tray_animation_ticks_only_while_progress_is_moving() {
+        assert!(!tray_animation_active(None));
+
+        let mut state = EnhancedTrayState::new();
+        assert!(!tray_animation_active(Some(&state)));
+
+        state.animation_target = 1.0;
+        assert!(tray_animation_active(Some(&state)));
+
+        state.animation_progress = 1.0;
+        assert!(!tray_animation_active(Some(&state)));
     }
     #[test]
     fn submenu_helper_counts_nested_items() {
@@ -2935,7 +3012,7 @@ fn handle_system_shortcut(bar: &mut UniliiBar, index: usize) -> Task<Message> {
             }
         },
         CommandType::Tray => handle_tray_daemon_action(bar, parse_tray_action(&binding.command)),
-        CommandType::Bar => handle_bar_daemon_action(parse_bar_action(&binding.command)),
+        CommandType::Bar => handle_bar_daemon_action(bar, parse_bar_action(&binding.command)),
         CommandType::Widget => {
             bar.system_menu.last_status = Some(format!(
                 "{}: widget actions are not available",
@@ -3210,20 +3287,39 @@ fn handle_tray_daemon_action(bar: &mut UniliiBar, action: TrayDaemonAction) -> T
     }
 }
 
-fn handle_bar_daemon_action(action: BarDaemonAction) -> Task<Message> {
+fn handle_bar_daemon_action(bar: &mut UniliiBar, action: BarDaemonAction) -> Task<Message> {
     match action {
         BarDaemonAction::ReloadConfig => {
-            warn!(
-                "bar reload-config hotkey reached the embedded action bus, but live bar config reload is not implemented; restart the bar"
+            let Some(path) = bar.config_path.clone() else {
+                bar.bar_control
+                    .set_status("Reload unavailable: no configuration path");
+                return Task::none();
+            };
+            let current = bar.config.clone();
+            bar.bar_control
+                .set_status(format!("Reloading {}…", path.display()));
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || load_reload_candidate(&path, &current))
+                        .await
+                        .map_err(|error| format!("reload worker failed: {error}"))?
+                },
+                |result| Message::BarConfigReloaded(Box::new(result)),
             );
         }
         BarDaemonAction::ToggleModule(module) => {
-            warn!(
-                "bar toggle-module action for '{module}' is not implemented by the current module runtime"
-            );
+            let available = bar.modules.keys().cloned().collect();
+            if let Err(error) = bar.bar_control.toggle_module(&available, &module) {
+                warn!(%error, "bar module toggle rejected");
+                bar.bar_control.set_status(error);
+            }
         }
         BarDaemonAction::FocusModule(module) => {
-            warn!("bar focus-module action for '{module}' is not implemented");
+            let available = bar.modules.keys().cloned().collect();
+            if let Err(error) = bar.bar_control.focus_module(&available, &module) {
+                warn!(%error, "bar module focus rejected");
+                bar.bar_control.set_status(error);
+            }
         }
         BarDaemonAction::Raw(command) => {
             warn!("unsupported bar hotkey action: {command}");
@@ -3239,7 +3335,7 @@ fn handle_keybinding_action(bar: &mut UniliiBar, action: KeybindingResult) -> Ta
             handle_tray_daemon_action(bar, parse_tray_action(&command))
         }
         KeybindingResult::BarAction(command) => {
-            handle_bar_daemon_action(parse_bar_action(&command))
+            handle_bar_daemon_action(bar, parse_bar_action(&command))
         }
         KeybindingResult::WidgetAction(command) => {
             let Some((widget, action)) = command.split_once(':') else {

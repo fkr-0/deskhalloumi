@@ -10,6 +10,7 @@ pub mod video;
 pub mod wifi;
 
 use crate::app::Message;
+use crate::bar_control::BarControlState;
 use crate::module_loader::LoadedModule;
 use crate::subscription_manager::ManagedModuleProvider;
 use iced::{
@@ -59,9 +60,18 @@ pub use wifi::Wifi;
 pub fn render_modules<'a>(
     modules: &'a HashMap<String, LoadedModule>,
     providers: &'a HashMap<String, ManagedModuleProvider>,
+    control: &'a BarControlState,
 ) -> Vec<Element<'a, Message>> {
-    let mut module_names: Vec<_> = modules.keys().collect();
-    module_names.sort();
+    let mut module_names: Vec<_> = modules
+        .keys()
+        .filter(|name| !control.is_hidden(name))
+        .collect();
+    module_names.sort_by(|left, right| {
+        control
+            .is_focused(right)
+            .cmp(&control.is_focused(left))
+            .then_with(|| left.cmp(right))
+    });
 
     let mut widgets = Vec::new();
 
@@ -100,12 +110,18 @@ pub fn render_modules<'a>(
             } else {
                 widget
             };
-            tracing::info!("Rendering module widget: {}", name);
-            widgets.push(widget);
+            if control.is_focused(name) {
+                widgets.push(
+                    row![widget, text("focused").size(9)]
+                        .spacing(4)
+                        .align_y(iced::Alignment::Center)
+                        .into(),
+                );
+            } else {
+                widgets.push(widget);
+            }
         }
     }
-
-    tracing::info!("Total module widgets rendered: {}", widgets.len());
     widgets
 }
 

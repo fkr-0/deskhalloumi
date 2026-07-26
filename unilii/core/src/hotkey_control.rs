@@ -5,6 +5,7 @@
 //! records, so control commands are restricted to the current desktop user.
 
 use crate::menu_process::{MenuStatus, default_runtime_dir};
+use crate::runtime::RuntimeMetricsSnapshot;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -37,6 +38,8 @@ pub struct HotkeyRuntimeStatus {
     pub loaded_at_unix_ms: u128,
     pub config_sources: Vec<String>,
     pub last_reload_error: Option<String>,
+    #[serde(default)]
+    pub runtime_metrics: RuntimeMetricsSnapshot,
     pub menus: Vec<MenuStatus>,
 }
 

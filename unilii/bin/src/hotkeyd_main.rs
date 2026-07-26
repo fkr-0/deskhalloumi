@@ -22,8 +22,10 @@ use deskhalloumi_core::menu_process::{
     MenuProcessManager, acquire_process_instance, parse_menu_action, prepare_runtime_dir,
     process_instance_status,
 };
+use deskhalloumi_core::runtime::{ActionCommand, ActionRunner, global_runtime_metrics};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -31,13 +33,23 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::task::JoinHandle;
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::{JoinHandle, JoinSet};
 use tracing::{error, info, warn};
+
+const CONTROL_REQUEST_QUEUE_CAPACITY: usize = 32;
+const MAX_CONTROL_CONNECTIONS: usize = 16;
+const CONTROL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(35);
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum BackendArg {
     Evdev,
     X11,
+}
+
+struct ControlEnvelope {
+    request: HotkeyControlRequest,
+    response: oneshot::Sender<HotkeyControlResponse>,
 }
 
 impl From<BackendArg> for KeyBackend {
@@ -276,7 +288,14 @@ fn handle_i3_export(args: &Args, loaded: &LoadedBindings, report: &HotkeyReport)
         print!("{}", export.config);
     }
     if let Some(path) = &args.write_i3_bindings {
-        write_atomic(path, export.config.as_bytes()).unwrap_or_else(|error| {
+        let write_result = if args.reload_i3 {
+            install_i3_include_transactionally(path, export.config.as_bytes(), || {
+                run_i3_reload(&args.i3_msg)
+            })
+        } else {
+            write_atomic(path, export.config.as_bytes())
+        };
+        write_result.unwrap_or_else(|error| {
             exit_error_value(
                 &format!("failed to write i3 bindings '{}': {error}", path.display()),
                 1,
@@ -289,26 +308,72 @@ fn handle_i3_export(args: &Args, loaded: &LoadedBindings, report: &HotkeyReport)
             export.skipped_count
         );
     }
+}
 
-    if args.reload_i3 {
-        let status = std::process::Command::new(&args.i3_msg)
-            .arg("reload")
-            .status()
-            .unwrap_or_else(|error| {
-                exit_error_value(
-                    &format!(
-                        "failed to execute '{} reload': {error}",
-                        args.i3_msg.display()
-                    ),
-                    1,
-                )
-            });
-        if !status.success() {
-            exit_error(
-                &format!("'{} reload' exited with {status}", args.i3_msg.display()),
-                1,
-            );
+fn install_i3_include_transactionally<F>(
+    path: &Path,
+    content: &[u8],
+    mut reload: F,
+) -> Result<(), String>
+where
+    F: FnMut() -> Result<(), String>,
+{
+    let previous = match fs::read(path) {
+        Ok(content) => Some(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "failed to snapshot existing include '{}': {error}",
+                path.display()
+            ));
         }
+    };
+
+    write_atomic(path, content)?;
+    let Err(candidate_error) = reload() else {
+        return Ok(());
+    };
+
+    let restore_result = match previous {
+        Some(previous) => write_atomic(path, &previous),
+        None => match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!(
+                "failed to remove newly-created include '{}': {error}",
+                path.display()
+            )),
+        },
+    };
+    if let Err(restore_error) = restore_result {
+        return Err(format!(
+            "i3 rejected candidate include ({candidate_error}); rollback failed: {restore_error}"
+        ));
+    }
+
+    match reload() {
+        Ok(()) => Err(format!(
+            "i3 rejected candidate include ({candidate_error}); previous include restored and reloaded"
+        )),
+        Err(rollback_reload_error) => Err(format!(
+            "i3 rejected candidate include ({candidate_error}); previous include restored, but rollback reload failed: {rollback_reload_error}"
+        )),
+    }
+}
+
+fn run_i3_reload(i3_msg: &Path) -> Result<(), String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("failed to create i3 reload runtime: {error}"))?;
+    let runner = ActionRunner::with_timeout("hotkeyd", "i3-reload", Duration::from_secs(5))
+        .with_output_limit(16 * 1024);
+    let outcome = runtime
+        .block_on(runner.run_command(ActionCommand::new(i3_msg, vec![OsString::from("reload")])));
+    match outcome.result {
+        Ok(()) => Ok(()),
+        Err(error) if outcome.stderr.trim().is_empty() => Err(error),
+        Err(error) => Err(format!("{error}: {}", outcome.stderr.trim())),
     }
 }
 
@@ -461,6 +526,7 @@ impl SupervisorState {
             loaded_at_unix_ms: self.loaded_at_unix_ms,
             config_sources: self.config_sources.clone(),
             last_reload_error: self.last_reload_error.clone(),
+            runtime_metrics: global_runtime_metrics().snapshot(),
             menus: menu_manager.known_statuses(),
         }
     }
@@ -652,6 +718,17 @@ fn print_human_status(status: &HotkeyRuntimeStatus) {
         status.shadow,
         status.grab
     );
+    let metrics = status.runtime_metrics;
+    println!(
+        "runtime: active={} actions_started={} completed={} failed={} timed_out={} rejected={} raw_dropped={}",
+        metrics.active_tasks,
+        metrics.actions_started,
+        metrics.actions_completed,
+        metrics.actions_failed,
+        metrics.action_timeouts,
+        metrics.actions_rejected,
+        metrics.updates_dropped,
+    );
     if !status.config_sources.is_empty() {
         println!("sources: {}", status.config_sources.join(", "));
     }
@@ -750,6 +827,9 @@ async fn run_supervisor(
     let mut watch_interval =
         tokio::time::interval(Duration::from_millis(args.watch_interval_ms.max(100)));
     watch_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let (control_sender, mut control_receiver) =
+        mpsc::channel::<ControlEnvelope>(CONTROL_REQUEST_QUEUE_CAPACITY);
+    let mut control_connections = JoinSet::new();
 
     info!(
         "hotkeyd supervisor ready socket='{}' generation=1 bindings={} watch={}",
@@ -771,25 +851,37 @@ async fn run_supervisor(
             }
             accepted = listener.accept() => {
                 let (stream, _) = accepted.map_err(|error| error.to_string())?;
-                match read_control_request(stream).await {
-                    Ok((request, stream)) => {
-                        let mut context = ControlContext {
-                            args: &args,
-                            sources: &sources,
-                            options,
-                            menu_manager: &menu_manager,
-                            state: &mut state,
-                            current_bindings: &mut current_bindings,
-                            daemon_task: &mut daemon_task,
-                        };
-                        let (response, should_shutdown) =
-                            handle_control_request(request, &mut context).await;
-                        write_control_response(stream, &response).await;
-                        shutdown = should_shutdown;
-                    }
-                    Err((error, stream)) => {
-                        write_control_response(stream, &HotkeyControlResponse::error(error)).await;
-                    }
+                if control_connections.len() >= MAX_CONTROL_CONNECTIONS {
+                    warn!("hotkeyd control connection limit reached; rejecting client");
+                    drop(stream);
+                } else {
+                    let sender = control_sender.clone();
+                    control_connections.spawn(async move {
+                        serve_control_connection(stream, sender).await;
+                    });
+                }
+            }
+            envelope = control_receiver.recv() => {
+                let Some(envelope) = envelope else {
+                    return Err("hotkeyd control request queue closed unexpectedly".to_string());
+                };
+                let mut context = ControlContext {
+                    args: &args,
+                    sources: &sources,
+                    options,
+                    menu_manager: &menu_manager,
+                    state: &mut state,
+                    current_bindings: &mut current_bindings,
+                    daemon_task: &mut daemon_task,
+                };
+                let (response, should_shutdown) =
+                    handle_control_request(envelope.request, &mut context).await;
+                let _ = envelope.response.send(response);
+                shutdown = should_shutdown;
+            }
+            connection = control_connections.join_next(), if !control_connections.is_empty() => {
+                if let Some(Err(error)) = connection {
+                    warn!(%error, "hotkeyd control connection task failed");
                 }
             }
             _ = sighup.recv() => {
@@ -834,7 +926,60 @@ async fn run_supervisor(
 
     daemon_task.abort();
     let _ = daemon_task.await;
+    control_connections.abort_all();
+    while control_connections.join_next().await.is_some() {}
     Ok(())
+}
+
+async fn serve_control_connection(stream: UnixStream, sender: mpsc::Sender<ControlEnvelope>) {
+    match read_control_request(stream).await {
+        Ok((request, stream)) => {
+            let (response_sender, response_receiver) = oneshot::channel();
+            let envelope = ControlEnvelope {
+                request,
+                response: response_sender,
+            };
+            match tokio::time::timeout(Duration::from_secs(2), sender.send(envelope)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => {
+                    write_control_response(
+                        stream,
+                        &HotkeyControlResponse::error("control supervisor is unavailable"),
+                    )
+                    .await;
+                    return;
+                }
+                Err(_) => {
+                    write_control_response(
+                        stream,
+                        &HotkeyControlResponse::error("control request queue is busy"),
+                    )
+                    .await;
+                    return;
+                }
+            }
+            match tokio::time::timeout(CONTROL_RESPONSE_TIMEOUT, response_receiver).await {
+                Ok(Ok(response)) => write_control_response(stream, &response).await,
+                Ok(Err(_)) => {
+                    write_control_response(
+                        stream,
+                        &HotkeyControlResponse::error("control supervisor stopped"),
+                    )
+                    .await;
+                }
+                Err(_) => {
+                    write_control_response(
+                        stream,
+                        &HotkeyControlResponse::error("control request timed out"),
+                    )
+                    .await;
+                }
+            }
+        }
+        Err((error, stream)) => {
+            write_control_response(stream, &HotkeyControlResponse::error(error)).await;
+        }
+    }
 }
 
 fn spawn_daemon(
@@ -1533,5 +1678,88 @@ mod tests {
             drop(guard);
             assert!(!socket.exists());
         });
+    }
+
+    #[tokio::test]
+    async fn stalled_control_client_does_not_block_next_request() {
+        let (stalled_server, stalled_client) = UnixStream::pair().unwrap();
+        let (valid_server, mut valid_client) = UnixStream::pair().unwrap();
+        let (sender, mut receiver) = mpsc::channel(4);
+
+        let stalled_task = tokio::spawn(serve_control_connection(stalled_server, sender.clone()));
+        let valid_task = tokio::spawn(serve_control_connection(valid_server, sender));
+
+        let mut payload = serde_json::to_vec(&HotkeyControlRequest::Ping).unwrap();
+        payload.push(b'\n');
+        valid_client.write_all(&payload).await.unwrap();
+
+        let envelope = tokio::time::timeout(Duration::from_millis(250), receiver.recv())
+            .await
+            .expect("valid request must not wait for stalled client")
+            .expect("control request queue should remain open");
+        assert_eq!(envelope.request, HotkeyControlRequest::Ping);
+        envelope
+            .response
+            .send(HotkeyControlResponse::ok("pong"))
+            .unwrap();
+
+        let mut response_line = String::new();
+        tokio::time::timeout(
+            Duration::from_millis(250),
+            BufReader::new(valid_client).read_line(&mut response_line),
+        )
+        .await
+        .expect("valid response must be prompt")
+        .unwrap();
+        let response: HotkeyControlResponse = serde_json::from_str(response_line.trim()).unwrap();
+        assert!(response.ok);
+        assert_eq!(response.message, "pong");
+
+        valid_task.await.unwrap();
+        drop(stalled_client);
+        stalled_task.await.unwrap();
+    }
+
+    #[test]
+    fn rejected_i3_candidate_restores_and_reloads_previous_include() {
+        let temp = tempfile::tempdir().unwrap();
+        let include = temp.path().join("bindings.conf");
+        fs::write(&include, b"old bindings\n").unwrap();
+        let mut reloads = 0;
+
+        let error = install_i3_include_transactionally(&include, b"candidate bindings\n", || {
+            reloads += 1;
+            if reloads == 1 {
+                Err("candidate rejected".to_string())
+            } else {
+                Ok(())
+            }
+        })
+        .expect_err("candidate rejection must be reported");
+
+        assert!(error.contains("previous include restored and reloaded"));
+        assert_eq!(reloads, 2);
+        assert_eq!(fs::read(&include).unwrap(), b"old bindings\n");
+    }
+
+    #[test]
+    fn rejected_new_i3_include_is_removed_on_rollback() {
+        let temp = tempfile::tempdir().unwrap();
+        let include = temp.path().join("new-bindings.conf");
+        let mut reloads = 0;
+
+        let error = install_i3_include_transactionally(&include, b"candidate\n", || {
+            reloads += 1;
+            if reloads == 1 {
+                Err("candidate rejected".to_string())
+            } else {
+                Ok(())
+            }
+        })
+        .expect_err("candidate rejection must be reported");
+
+        assert!(error.contains("previous include restored and reloaded"));
+        assert_eq!(reloads, 2);
+        assert!(!include.exists());
     }
 }

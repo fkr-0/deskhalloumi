@@ -1,6 +1,7 @@
 //! Application state and message handling for unilii
 
 use crate::{
+    bar_control::BarControlState,
     cli::RunOptions,
     enhanced_tray,
     module_loader::LoadedModule,
@@ -20,6 +21,7 @@ use deskhalloumi_core::{
     runtime::{ProviderRefreshRegistry, RuntimeSupervisor, TaskSpawner},
 };
 use iced::window;
+use std::path::PathBuf;
 use std::{collections::HashMap, sync::Arc};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,7 +36,9 @@ pub struct UniliiBar {
     pub tray_window_id: Option<window::Id>,
     pub modules: HashMap<String, LoadedModule>,
     pub module_providers: HashMap<String, ManagedModuleProvider>,
+    pub config_path: Option<PathBuf>,
     pub config: Config,
+    pub bar_control: BarControlState,
     pub sysmonitor: SysMonitor,
     pub wifi: Wifi,
     pub audio: Audio,
@@ -78,6 +82,8 @@ pub enum Message {
         String,
         deskhalloumi_core::runtime::ProviderSnapshot<ModuleUpdate>,
     ),
+    BarConfigReloaded(Box<Result<crate::bar_control::ReloadCandidate, String>>),
+    DismissBarStatus,
     WindowKeyboardInput {
         key: String,
         pressed: bool,

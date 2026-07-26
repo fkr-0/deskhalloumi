@@ -2,7 +2,7 @@
 // is currently disabled for runtime debugging
 #![allow(dead_code)]
 
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 use tokio::time::{Duration, sleep};
 use tracing::warn;
 use zbus::{Connection, Proxy, zvariant::OwnedObjectPath};
@@ -78,7 +78,7 @@ pub struct KnownNetwork {
     pub autoconnect: bool,
 }
 
-pub async fn run_tray_watcher(output: UnboundedSender<TrayEvent>, poll_ms: u64) {
+pub async fn run_tray_watcher(output: Sender<TrayEvent>, poll_ms: u64) {
     loop {
         match Connection::session().await {
             Ok(connection) => {
@@ -88,7 +88,7 @@ pub async fn run_tray_watcher(output: UnboundedSender<TrayEvent>, poll_ms: u64) 
                 loop {
                     let icons = read_tray_icons(&connection).await;
                     if icons != previous_icons {
-                        if output.send(TrayEvent::Icons(icons.clone())).is_err() {
+                        if output.send(TrayEvent::Icons(icons.clone())).await.is_err() {
                             return;
                         }
                         previous_icons = icons;

@@ -1,5 +1,6 @@
-use super::{AppConfig, load_app_config, save_app_config};
+use super::{AppConfig, app_config_from_core, load_app_config, save_app_config};
 use deskhalloumi_core::ModulePosition;
+use deskhalloumi_core::config::Config;
 use tempfile::NamedTempFile;
 
 #[test]
@@ -27,6 +28,20 @@ fn test_default_app_config() {
     assert!(!config.app.verbose);
     assert_eq!(config.app.xrandr_presets_yaml, None);
     assert_eq!(config.app.theme.font_size, Some(14));
+}
+
+#[test]
+fn canonical_core_modules_drive_runtime_modules() {
+    let mut core = Config::default();
+    core.modules[0].position = "left".to_string();
+    core.modules[0].update_interval_ms = Some(2500);
+    core.modules[1].enabled = false;
+
+    let app = app_config_from_core(&core).expect("canonical config should convert");
+    assert_eq!(app.modules.len(), 2);
+    assert!(matches!(app.modules["clock"].position, ModulePosition::Left));
+    assert_eq!(app.modules["clock"].update_interval_ms, Some(2500));
+    assert!(!app.modules["battery"].enabled);
 }
 
 #[test]

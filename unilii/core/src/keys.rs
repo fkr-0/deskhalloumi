@@ -6,14 +6,22 @@ use crate::action_bus::{
 };
 use crate::key_engine::{EngineBinding, KeyEngine, KeyEngineTraceReason, KeyTrigger};
 use crate::menu_process::{MenuProcessManager, acquire_process_instance, parse_menu_action};
+use crate::runtime::{ActionCommand, ActionRunner, RuntimeMetrics, global_runtime_metrics};
 use crate::x11_hotkeys::X11HotkeyListener;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::Mutex;
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
+use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, error, info, warn};
+
+const HOTKEY_EXECUTION_QUEUE_CAPACITY: usize = 64;
+const HOTKEY_EXECUTION_CONCURRENCY: usize = 4;
+const HOTKEY_ACTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Command type for keybinding execution.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
@@ -191,10 +199,22 @@ impl KeybindingDaemonOptions {
 pub struct KeybindingDaemon {
     bindings: Vec<ParsedBinding>,
     engine: Mutex<KeyEngine>,
-    action_sender: Option<tokio::sync::mpsc::UnboundedSender<KeybindingResult>>,
+    action_sender: Option<mpsc::Sender<KeybindingResult>>,
     options: KeybindingDaemonOptions,
     menu_manager: MenuProcessManager,
     action_bus_socket: PathBuf,
+    metrics: Arc<RuntimeMetrics>,
+}
+
+struct ExecutionDispatcher {
+    sender: mpsc::Sender<usize>,
+    task: JoinHandle<()>,
+}
+
+impl Drop for ExecutionDispatcher {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 impl KeybindingDaemon {
@@ -215,16 +235,18 @@ impl KeybindingDaemon {
             options,
             menu_manager: MenuProcessManager::default(),
             action_bus_socket: default_action_bus_socket_path(),
+            metrics: global_runtime_metrics(),
         }
     }
 
     /// Set a sender for internal actions (bar/tray actions).
     /// This allows the daemon to communicate internal actions back to the application.
-    pub fn set_action_sender(
-        &mut self,
-        sender: tokio::sync::mpsc::UnboundedSender<KeybindingResult>,
-    ) {
+    pub fn set_action_sender(&mut self, sender: mpsc::Sender<KeybindingResult>) {
         self.action_sender = Some(sender);
+    }
+
+    pub fn set_metrics(&mut self, metrics: Arc<RuntimeMetrics>) {
+        self.metrics = metrics;
     }
 
     /// Override the managed-menu runtime, primarily for integration tests.
@@ -323,9 +345,15 @@ impl KeybindingDaemon {
         };
 
         let mut stream = listener;
+        let dispatcher = self.start_execution_dispatcher();
         while let Some(event) = stream.next().await {
             let key_name = format!("{:?}", event.code);
-            self.process_key_event(&key_name, event.value, Instant::now())?;
+            self.process_key_event_with_dispatcher(
+                &key_name,
+                event.value,
+                Instant::now(),
+                Some(&dispatcher.sender),
+            )?;
         }
 
         Ok(())
@@ -372,24 +400,47 @@ impl KeybindingDaemon {
             let _ = sender.send(Ok(()));
         }
         let mut events = listener.into_event_stream();
+        let dispatcher = self.start_execution_dispatcher();
         while let Some(event) = events.recv().await {
             let event = event
                 .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { error.into() })?;
-            self.process_key_event(&event.code, event.value, Instant::now())?;
+            self.process_key_event_with_dispatcher(
+                &event.code,
+                event.value,
+                Instant::now(),
+                Some(&dispatcher.sender),
+            )?;
         }
         Err("X11 hotkey event stream ended unexpectedly".into())
     }
 
+    #[cfg(test)]
     fn process_key_event(&self, key_name: &str, value: i32, now: Instant) -> Result<()> {
+        self.process_key_event_with_dispatcher(key_name, value, now, None)
+    }
+
+    fn process_key_event_with_dispatcher(
+        &self,
+        key_name: &str,
+        value: i32,
+        now: Instant,
+        execution_sender: Option<&mpsc::Sender<usize>>,
+    ) -> Result<()> {
         if let Some(sender) = &self.action_sender
-            && sender
-                .send(KeybindingResult::RawKeyEvent {
-                    code: key_name.to_string(),
-                    value,
-                })
-                .is_err()
+            && let Err(error) = sender.try_send(KeybindingResult::RawKeyEvent {
+                code: key_name.to_string(),
+                value,
+            })
         {
-            debug!("hotkeys: embedding action receiver closed; raw key event not forwarded");
+            match error {
+                mpsc::error::TrySendError::Full(_) => {
+                    self.metrics.record_update_dropped();
+                    debug!("hotkeys: raw event dropped because embedding queue is full");
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    debug!("hotkeys: embedding action receiver closed; raw event not forwarded");
+                }
+            }
         }
 
         let output = {
@@ -413,9 +464,12 @@ impl KeybindingDaemon {
         }
 
         for index in output.triggered {
-            if let Err(error) = self.execute_binding(index) {
+            let Some(sender) = execution_sender else {
+                return Err("hotkeys: execution dispatcher unavailable".into());
+            };
+            if let Err(error) = try_enqueue_binding(sender, index, &self.metrics) {
                 error!(
-                    "hotkeys: binding execution failed index={} error={}",
+                    "hotkeys: binding queue rejected index={} error={}",
                     index, error
                 );
             }
@@ -423,97 +477,172 @@ impl KeybindingDaemon {
         Ok(())
     }
 
-    fn execute_binding(&self, index: usize) -> Result<()> {
-        let binding = &self.bindings[index].binding;
-        let command = binding.command.trim();
-        if command.is_empty() {
-            return Ok(());
-        }
-
-        if !self.options.execute {
-            info!(
-                "hotkeys: shadow match binding='{}' keysym='{}' type={:?} command='{}'",
-                binding.name, binding.keysym, binding.command_type, command
-            );
-            return Ok(());
-        }
-
-        match &binding.command_type {
-            CommandType::Shell => {
-                let mut child = std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(command)
-                    .spawn()
-                    .map_err(|error| {
-                        error!(
-                            "hotkeys: failed to execute binding '{}' command='{}': {}",
-                            binding.name, command, error
-                        );
-                        Box::new(error) as Box<dyn std::error::Error + Send + Sync>
-                    })?;
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
-
-                info!(
-                    "hotkeys: executed shell binding '{}' keysym='{}'",
-                    binding.name, binding.keysym
-                );
-            }
-            CommandType::Menu => {
-                let action = parse_menu_action(command).map_err(|error| {
-                    format!("invalid managed-menu binding '{}': {error}", binding.name)
-                })?;
-                let outcome = self.menu_manager.execute(&action).map_err(|error| {
-                    format!("managed-menu binding '{}' failed: {error}", binding.name)
-                })?;
-                info!(
-                    "hotkeys: executed managed-menu binding '{}' action='{}' outcome={:?}",
-                    binding.name, command, outcome
-                );
-            }
-            CommandType::Bar | CommandType::Tray | CommandType::Widget => {
-                let result = match &binding.command_type {
-                    CommandType::Bar => KeybindingResult::BarAction(command.to_string()),
-                    CommandType::Tray => KeybindingResult::TrayAction(command.to_string()),
-                    CommandType::Widget => KeybindingResult::WidgetAction(command.to_string()),
-                    _ => KeybindingResult::Unknown,
+    fn start_execution_dispatcher(&self) -> ExecutionDispatcher {
+        let (sender, mut receiver) = mpsc::channel(HOTKEY_EXECUTION_QUEUE_CAPACITY);
+        let bindings = Arc::new(
+            self.bindings
+                .iter()
+                .map(|parsed| parsed.binding.clone())
+                .collect::<Vec<_>>(),
+        );
+        let action_sender = self.action_sender.clone();
+        let menu_manager = self.menu_manager.clone();
+        let action_bus_socket = self.action_bus_socket.clone();
+        let execute = self.options.execute;
+        let metrics = Arc::clone(&self.metrics);
+        let task = tokio::spawn(async move {
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(HOTKEY_EXECUTION_CONCURRENCY));
+            let mut jobs = JoinSet::new();
+            while let Some(index) = receiver.recv().await {
+                let Some(binding) = bindings.get(index).cloned() else {
+                    warn!(index, "hotkeys: queued binding index no longer exists");
+                    continue;
                 };
-
-                if let Some(sender) = &self.action_sender {
-                    sender.send(result).map_err(|_| {
-                        format!("hotkeys: failed to send internal action '{}'", command)
-                    })?;
-                } else {
-                    let action = match binding.command_type {
-                        CommandType::Bar => DesktopAction::Bar(command.to_string()),
-                        CommandType::Tray => DesktopAction::Tray(command.to_string()),
-                        CommandType::Widget => DesktopAction::Widget(command.to_string()),
-                        _ => unreachable!(),
-                    };
-                    let request = ActionBusRequest::new(
-                        format!("{}-{}", std::process::id(), binding.name),
-                        action,
-                    );
-                    let response = send_action_request(&self.action_bus_socket, &request)?;
-                    if !response.ok {
-                        return Err(format!(
-                            "desktop action receiver rejected '{}': {}",
-                            binding.name, response.message
-                        )
-                        .into());
+                let permit = match Arc::clone(&semaphore).acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(_) => break,
+                };
+                let action_sender = action_sender.clone();
+                let menu_manager = menu_manager.clone();
+                let action_bus_socket = action_bus_socket.clone();
+                let metrics = Arc::clone(&metrics);
+                jobs.spawn(async move {
+                    let _permit = permit;
+                    if let Err(error) = execute_binding_async(
+                        binding,
+                        execute,
+                        action_sender,
+                        menu_manager,
+                        action_bus_socket,
+                        metrics,
+                    )
+                    .await
+                    {
+                        error!(%error, "hotkeys: asynchronous binding execution failed");
                     }
+                });
+                while jobs.len() >= HOTKEY_EXECUTION_CONCURRENCY {
+                    let _ = jobs.join_next().await;
                 }
-
-                info!(
-                    "hotkeys: executed internal binding '{}' type={:?} command='{}'",
-                    binding.name, binding.command_type, command
-                );
             }
-        }
-
-        Ok(())
+            while jobs.join_next().await.is_some() {}
+        });
+        ExecutionDispatcher { sender, task }
     }
+}
+
+fn try_enqueue_binding(
+    sender: &mpsc::Sender<usize>,
+    index: usize,
+    metrics: &RuntimeMetrics,
+) -> std::result::Result<(), String> {
+    sender.try_send(index).map_err(|error| match error {
+        mpsc::error::TrySendError::Full(_) => {
+            metrics.record_action_rejected();
+            "execution queue is full".to_string()
+        }
+        mpsc::error::TrySendError::Closed(_) => "execution queue is closed".to_string(),
+    })
+}
+
+async fn execute_binding_async(
+    binding: KeyBinding,
+    execute: bool,
+    action_sender: Option<mpsc::Sender<KeybindingResult>>,
+    menu_manager: MenuProcessManager,
+    action_bus_socket: PathBuf,
+    metrics: Arc<RuntimeMetrics>,
+) -> std::result::Result<(), String> {
+    let command = binding.command.trim().to_string();
+    if command.is_empty() {
+        return Ok(());
+    }
+    if !execute {
+        info!(
+            "hotkeys: shadow match binding='{}' keysym='{}' type={:?} command='{}'",
+            binding.name, binding.keysym, binding.command_type, command
+        );
+        return Ok(());
+    }
+
+    let runner = ActionRunner::with_timeout("hotkeyd", binding.name.clone(), HOTKEY_ACTION_TIMEOUT)
+        .with_metrics(metrics);
+    let command_type = binding.command_type.clone();
+    match &command_type {
+        CommandType::Shell => {
+            let outcome = runner
+                .run_command(ActionCommand::new(
+                    "sh",
+                    vec![OsString::from("-c"), OsString::from(command.clone())],
+                ))
+                .await;
+            outcome.result?;
+        }
+        CommandType::Menu => {
+            let action = parse_menu_action(&command).map_err(|error| {
+                format!("invalid managed-menu binding '{}': {error}", binding.name)
+            })?;
+            let outcome = runner
+                .run(async move {
+                    tokio::task::spawn_blocking(move || menu_manager.execute(&action))
+                        .await
+                        .map_err(|error| format!("managed-menu worker failed: {error}"))?
+                        .map_err(|error| error.to_string())
+                })
+                .await;
+            outcome.result?;
+        }
+        CommandType::Bar | CommandType::Tray | CommandType::Widget => {
+            let result = match &command_type {
+                CommandType::Bar => KeybindingResult::BarAction(command.clone()),
+                CommandType::Tray => KeybindingResult::TrayAction(command.clone()),
+                CommandType::Widget => KeybindingResult::WidgetAction(command.clone()),
+                _ => unreachable!(),
+            };
+            let outcome = if let Some(sender) = action_sender {
+                runner
+                    .run(async move {
+                        sender
+                            .send(result)
+                            .await
+                            .map_err(|_| "embedding action receiver closed".to_string())
+                    })
+                    .await
+            } else {
+                let desktop_action = match &command_type {
+                    CommandType::Bar => DesktopAction::Bar(command.clone()),
+                    CommandType::Tray => DesktopAction::Tray(command.clone()),
+                    CommandType::Widget => DesktopAction::Widget(command.clone()),
+                    _ => unreachable!(),
+                };
+                let request = ActionBusRequest::new(
+                    format!("{}-{}", std::process::id(), binding.name),
+                    desktop_action,
+                );
+                runner
+                    .run(async move {
+                        let response = tokio::task::spawn_blocking(move || {
+                            send_action_request(action_bus_socket, &request)
+                        })
+                        .await
+                        .map_err(|error| format!("action bus worker failed: {error}"))??;
+                        if response.ok {
+                            Ok(())
+                        } else {
+                            Err(response.message)
+                        }
+                    })
+                    .await
+            };
+            outcome.result?;
+        }
+    }
+
+    info!(
+        "hotkeys: executed binding '{}' type={:?} command='{}'",
+        binding.name, command_type, command
+    );
+    Ok(())
 }
 
 pub fn dry_run_bindings(
@@ -831,7 +960,7 @@ mod tests {
     }
     #[test]
     fn embedded_action_channel_receives_raw_key_events() {
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
         let mut daemon = super::KeybindingDaemon::with_options(
             Vec::new(),
             super::KeybindingDaemonOptions {
@@ -853,5 +982,14 @@ mod tests {
             }
             other => panic!("expected raw key event, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn saturated_execution_queue_is_rejected_and_counted() {
+        let metrics = super::RuntimeMetrics::default();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+        super::try_enqueue_binding(&sender, 0, &metrics).unwrap();
+        assert!(super::try_enqueue_binding(&sender, 1, &metrics).is_err());
+        assert_eq!(metrics.snapshot().actions_rejected, 1);
     }
 }

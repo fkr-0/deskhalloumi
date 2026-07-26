@@ -1,7 +1,7 @@
 //! Configuration loader for unilii status bar.
 
 use crate::branding::{config_dir as deskhalloumi_config_dir, legacy_config_dir};
-use crate::keys::KeyBinding;
+use crate::keys::{KeyBinding, validate_binding};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -1086,6 +1086,92 @@ pub fn load_config() -> Config {
     load_config_with_path(None)
 }
 
+/// Load and validate a configuration without mutating the filesystem or
+/// replacing invalid sections with defaults.
+///
+/// This is the production-safe loader for live reload and validation commands:
+/// callers can retain their last-known-good configuration when this returns an
+/// error.
+pub fn load_config_strict(config_path: &Path) -> Result<Config, String> {
+    let contents = fs::read_to_string(config_path)
+        .map_err(|error| format!("failed to read config '{}': {error}", config_path.display()))?;
+    let mut config = toml::from_str::<Config>(&contents).map_err(|error| {
+        format!(
+            "failed to parse config '{}': {error}",
+            config_path.display()
+        )
+    })?;
+    resolve_custom_menu_includes(config_path, &mut config.menus.custom);
+    validate_config(&config)?;
+    Ok(config)
+}
+
+/// Validate all release-relevant configuration domains as one transaction.
+pub fn validate_config(config: &Config) -> Result<(), String> {
+    if config.panels.is_empty() {
+        return Err("at least one [[panels]] entry is required".to_string());
+    }
+    let mut panel_names = HashSet::new();
+    for panel in &config.panels {
+        if panel.width == 0 || panel.height == 0 {
+            return Err(format!(
+                "panel '{}' must have non-zero width and height",
+                panel.name
+            ));
+        }
+        if !panel.name.trim().is_empty()
+            && !panel_names.insert(panel.name.trim().to_ascii_lowercase())
+        {
+            return Err(format!("duplicate panel name '{}'", panel.name));
+        }
+    }
+
+    let mut module_names = HashSet::new();
+    for module in &config.modules {
+        let name = module.name.trim();
+        if name.is_empty() {
+            return Err("module names must not be empty".to_string());
+        }
+        if !module_names.insert(name.to_ascii_lowercase()) {
+            return Err(format!("duplicate module name '{}'", module.name));
+        }
+        if !matches!(
+            module.position.trim().to_ascii_lowercase().as_str(),
+            "left" | "center" | "right"
+        ) {
+            return Err(format!(
+                "module '{}' has invalid position '{}'; use left, center, or right",
+                module.name, module.position
+            ));
+        }
+        if let Some(interval) = module.update_interval_ms
+            && !(1..=3_600_000).contains(&interval)
+        {
+            return Err(format!(
+                "module '{}' update_interval_ms must be between 1 and 3600000",
+                module.name
+            ));
+        }
+    }
+
+    let mut binding_names = HashSet::new();
+    for binding in &config.keybindings {
+        if !binding_names.insert(binding.name.trim().to_ascii_lowercase()) {
+            return Err(format!("duplicate keybinding name '{}'", binding.name));
+        }
+        validate_binding(binding)
+            .map_err(|error| format!("invalid keybinding '{}': {error}", binding.name))?;
+    }
+
+    validate_menu_ui_config(&config.menus.ui)?;
+    validate_wifi_menu_config(&config.menus.wifi)?;
+    validate_mount_menu_config(&config.menus.mount)?;
+    validate_calendar_menu_config(&config.menus.calendar)?;
+    validate_custom_menu_config(&config.menus.custom)?;
+    validate_system_menu_config(&config.menus.system)?;
+    Ok(())
+}
+
 /// Load configuration from a specific path, or create default if it doesn't exist.
 pub fn load_config_with_path(config_path_override: Option<PathBuf>) -> Config {
     let config_path = config_path_override.or_else(get_config_path);
@@ -1690,5 +1776,28 @@ section = "extra"
         assert_eq!(config.menus.mount.sshfs_profiles.len(), 1);
         assert_eq!(config.menus.custom.items.len(), 1);
         assert_eq!(config.keybindings.len(), 3);
+    }
+
+    #[test]
+    fn strict_loader_rejects_invalid_config_without_creating_defaults() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("unilii-strict-config-{unique}"));
+        std::fs::create_dir_all(&base).expect("create temp base");
+        let root = base.join("deskhalloumi.toml");
+        std::fs::write(
+            &root,
+            r#"
+panels = [{ name = "top", width = 0, height = 24, position_x = 0, position_y = 0 }]
+modules = []
+"#,
+        )
+        .expect("write invalid config");
+
+        let error = load_config_strict(&root).expect_err("strict load must reject width zero");
+        assert!(error.contains("non-zero width and height"));
+        assert!(root.exists(), "strict validation must not replace the file");
     }
 }

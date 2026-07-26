@@ -14,27 +14,41 @@ for command in "${required[@]}"; do
 done
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-BIN="$ROOT/target/debug/deskhalloumi-hotkeyd"
+TARGET_DIR=${CARGO_TARGET_DIR:-"$ROOT/target"}
+BIN="$TARGET_DIR/debug/deskhalloumi-hotkeyd"
 cargo build -q -p deskhalloumi-bin --bin deskhalloumi-hotkeyd
 
 TMP=$(mktemp -d)
 DISPLAY_FILE="$TMP/display"
 cleanup() {
+  status=$?
   set +e
+  if [[ $status -ne 0 ]]; then
+    echo "i3/X11 integration diagnostics:" >&2
+    for diagnostic in "$TMP/xvfb.log" "$TMP/i3.log" "$TMP/hotkey.log" \
+      "$TMP/xev.log" "$TMP/i3-rollback.err" "${INCLUDE:-}"; do
+      if [[ -f "$diagnostic" ]]; then
+        echo "--- $diagnostic" >&2
+        tail -n 120 "$diagnostic" >&2
+      fi
+    done
+  fi
   [[ -n "${HOTKEY_PID:-}" ]] && kill "$HOTKEY_PID" 2>/dev/null
   [[ -n "${XEV_PID:-}" ]] && kill "$XEV_PID" 2>/dev/null
   [[ -n "${I3_PID:-}" ]] && kill "$I3_PID" 2>/dev/null
   [[ -n "${XVFB_PID:-}" ]] && kill "$XVFB_PID" 2>/dev/null
   wait 2>/dev/null
   rm -rf "$TMP"
+  return "$status"
 }
 trap cleanup EXIT
 
 exec 3>"$DISPLAY_FILE"
 Xvfb -displayfd 3 -screen 0 1024x768x24 -nolisten tcp >"$TMP/xvfb.log" 2>&1 &
 XVFB_PID=$!
-for _ in $(seq 1 100); do
+for _ in $(seq 1 250); do
   [[ -s "$DISPLAY_FILE" ]] && break
+  ! kill -0 "$XVFB_PID" 2>/dev/null && break
   sleep 0.02
 done
 [[ -s "$DISPLAY_FILE" ]] || { echo "Xvfb did not publish a display" >&2; exit 1; }
@@ -43,10 +57,12 @@ export HOME="$TMP/home"
 export XDG_CONFIG_HOME="$HOME/.config"
 export XDG_RUNTIME_DIR="$TMP/runtime"
 export DESKHALLOUMI_RUNTIME_DIR="$XDG_RUNTIME_DIR/deskhalloumi"
+unset I3SOCK SWAYSOCK
 mkdir -p "$XDG_CONFIG_HOME/deskhalloumi" "$DESKHALLOUMI_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR" "$DESKHALLOUMI_RUNTIME_DIR"
 
 RESULT="$TMP/i3-actions.log"
+touch "$RESULT"
 SOURCE="$TMP/i3-hotkeys.toml"
 INCLUDE="$XDG_CONFIG_HOME/deskhalloumi/i3-bindings.conf"
 cat >"$SOURCE" <<EOF
@@ -62,6 +78,40 @@ command = "echo release >> '$RESULT'"
 trigger = "release"
 EOF
 "$BIN" --config "$SOURCE" --write-i3-bindings "$INCLUDE" --strict
+
+# A failed live reload must restore the exact previous include and reload that
+# restored state once. The fake command rejects the candidate and accepts the
+# rollback so this remains isolated from the real i3 instance below.
+INITIAL_HASH=$(sha256sum "$INCLUDE" | cut -d' ' -f1)
+cp "$SOURCE" "$TMP/i3-hotkeys.before-rollback.toml"
+cat >"$SOURCE" <<EOF
+[[keybindings]]
+name = "candidate-only"
+keysym = "Super+q"
+command = "true"
+EOF
+FAKE_I3_MSG="$TMP/fake-i3-msg"
+FAKE_I3_COUNT="$TMP/fake-i3-count"
+cat >"$FAKE_I3_MSG" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+count=0
+[[ -f "$FAKE_I3_COUNT" ]] && count=\$(cat "$FAKE_I3_COUNT")
+count=\$((count + 1))
+printf '%s\n' "\$count" >"$FAKE_I3_COUNT"
+[[ "\$count" -gt 1 ]]
+EOF
+chmod +x "$FAKE_I3_MSG"
+set +e
+"$BIN" --config "$SOURCE" --write-i3-bindings "$INCLUDE" --reload-i3 \
+  --i3-msg "$FAKE_I3_MSG" >"$TMP/i3-rollback.out" 2>"$TMP/i3-rollback.err"
+ROLLBACK_STATUS=$?
+set -e
+mv "$TMP/i3-hotkeys.before-rollback.toml" "$SOURCE"
+[[ $ROLLBACK_STATUS -ne 0 ]]
+[[ $(cat "$FAKE_I3_COUNT") -eq 2 ]]
+[[ $(sha256sum "$INCLUDE" | cut -d' ' -f1) == "$INITIAL_HASH" ]]
+grep -q 'previous include restored and reloaded' "$TMP/i3-rollback.err"
 
 I3_CONFIG="$XDG_CONFIG_HOME/i3/config"
 mkdir -p "$(dirname "$I3_CONFIG")"

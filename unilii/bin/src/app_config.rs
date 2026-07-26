@@ -1,6 +1,6 @@
 //! Configuration structure for modules and application settings.
 
-use deskhalloumi_core::{ModuleConfig, ModulePosition, ThemeOverrides};
+use deskhalloumi_core::{ModuleConfig, ModulePosition, ThemeOverrides, config::Config};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -12,6 +12,57 @@ pub struct AppConfig {
 
     /// Application-level settings.
     pub app: ApplicationSettings,
+}
+
+/// Build the runtime module configuration from the canonical DeskHalloumi
+/// configuration schema.
+///
+/// This keeps the GUI module loader aligned with documented `[[modules]]`
+/// entries instead of attempting to deserialize the same file through a second
+/// incompatible schema.
+pub fn app_config_from_core(config: &Config) -> Result<AppConfig, String> {
+    let mut modules = HashMap::new();
+    for entry in &config.modules {
+        let position = match entry.position.trim().to_ascii_lowercase().as_str() {
+            "left" => ModulePosition::Left,
+            "center" => ModulePosition::Center,
+            "right" => ModulePosition::Right,
+            other => {
+                return Err(format!(
+                    "module '{}' has unsupported position '{other}'",
+                    entry.name
+                ));
+            }
+        };
+        let name = entry.name.trim();
+        if name.is_empty() {
+            return Err("module names must not be empty".to_string());
+        }
+        if modules
+            .insert(
+                name.to_string(),
+                ModuleConfig {
+                    enabled: entry.enabled,
+                    position,
+                    update_interval_ms: entry.update_interval_ms,
+                    theme_overrides: None,
+                },
+            )
+            .is_some()
+        {
+            return Err(format!("duplicate module name '{name}'"));
+        }
+    }
+
+    let app_config = AppConfig {
+        modules,
+        app: ApplicationSettings {
+            xrandr_presets_yaml: config.menus.system.xrandr_presets_yaml.clone(),
+            ..ApplicationSettings::default()
+        },
+    };
+    validate_app_config(&app_config)?;
+    Ok(app_config)
 }
 
 /// Application-level settings.
@@ -102,6 +153,7 @@ impl Default for ThemeSettings {
 }
 
 /// Load configuration from file or return default with enhanced error handling.
+#[allow(dead_code)]
 pub fn load_app_config(path: Option<&str>) -> AppConfig {
     if let Some(path) = path {
         match std::fs::read_to_string(path) {
@@ -141,7 +193,7 @@ pub fn load_app_config(path: Option<&str>) -> AppConfig {
 }
 
 /// Validate the application configuration for common issues.
-fn validate_app_config(config: &AppConfig) -> Result<(), String> {
+pub fn validate_app_config(config: &AppConfig) -> Result<(), String> {
     // Check for reasonable refresh rate
     if config.app.refresh_rate_ms == 0 {
         return Err("Refresh rate cannot be zero".to_string());
