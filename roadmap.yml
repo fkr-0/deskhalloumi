@@ -6,6 +6,7 @@ project:
   slug: deskhalloumi
   repository: https://github.com/fkr-0/deskhalloumi
   current_version: 0.3.0
+  current_candidate: 0.3.1
   supported_session: i3/X11
   compatibility_boundary:
   - unilii command aliases remain available during 0.x
@@ -59,6 +60,20 @@ release_targets:
   - action execution has one typed policy for timeout, cwd, environment, output, and cancellation.
   - provider refreshes use bounded concurrency and explicit stale/error states.
   - runtime metrics expose task failures, command timeouts, and dropped/coalesced updates.
+- version: 0.3.1
+  theme: production hardening for hotkeys, bar runtime, and i3 integration
+  status: candidate
+  scope:
+  - bounded hotkey execution and action admission
+  - bounded bar, tray, and embedded action channels
+  - live bar reload, module visibility, and module focus controls
+  - reduced idle animation and render-log overhead
+  - concurrent control clients with serialized supervisor mutation
+  - transactional i3 include rollback after failed reload
+  exit_criteria:
+  - formatting, safe tests, isolated i3/X11 tests, strict Clippy, and candidate metadata validation pass.
+  - deterministic Linux archive and checksum are produced locally before tagging.
+  - no tag, push, or publication occurs without explicit maintainer authorization.
 - version: 0.4.0
   theme: provider hardening and target expansion
   foundation_status:

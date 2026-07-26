@@ -4,13 +4,36 @@ All notable user-visible changes to the active DeskHalloumi workspace are
 recorded in this file. The project follows Semantic Versioning as described in
 [`docs/versioning.md`](docs/versioning.md).
 
-Version `0.3.0` is identified by the annotated `v0.3.0` release tag. Changes
-after that tag belong under `[Unreleased]`.
+Version `0.3.0` is the latest published release and is identified by the
+annotated `v0.3.0` tag. Version `0.3.1` is prepared below as a local release
+candidate; no tag or publication is implied until the maintainer performs those
+steps explicitly.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-26
+
+### Added
+
+- Runtime bar controls for reloading menu configuration, hiding or showing
+  modules, and focusing a module with visible status feedback.
+- Strict last-known-good configuration reload validation and runtime status
+  metrics for rejected hotkey actions and dropped updates.
+- Regression coverage for saturated hotkey queues, stalled control clients,
+  conditional tray animation ticks, strict configuration conversion, and i3
+  reload rollback.
+
 ### Changed
 
+- Hotkey execution now uses a bounded queue, bounded concurrency, supervised
+  Tokio processes, timeouts, process-group cleanup, and bounded output instead
+  of spawning one unmanaged thread per command.
+- Bar, tray, and embedded hotkey channels are bounded and report overload rather
+  than growing without limit.
+- Hotkey control connections are served concurrently while state-changing
+  requests remain serialized through the supervisor.
+- Tray animation ticks run only while an animation is active, and module render
+  paths no longer emit per-frame info logs.
 - Reconciled the provider, menu, and runtime documentation with the contracts
   already shipped in 0.3.0, making provider-specific and tray-specific types
   explicit migration adapters rather than parallel canonical models.
@@ -18,6 +41,13 @@ after that tag belong under `[Unreleased]`.
   Linux AArch64 release gates, a non-promissory musl investigation, menu/action
   convergence, input semantics, packaging maturity, and experimental
   Sway/Wayland portability.
+
+### Fixed
+
+- A failed live i3 reload now restores the previous generated include and
+  reloads the restored configuration once, avoiding a half-applied binding set.
+- Invalid live bar configuration no longer replaces working state with defaults.
+- Slow or incomplete control-socket clients no longer block hotkey supervision.
 
 ## [0.3.0] - 2026-07-19
 
@@ -187,6 +217,7 @@ after that tag belong under `[Unreleased]`.
 - sxhkd Cartesian brace expansion is capped at 4096 generated values to prevent
   accidental configuration blow-ups during migration.
 
-[Unreleased]: https://github.com/fkr-0/deskhalloumi/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/fkr-0/deskhalloumi/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/fkr-0/deskhalloumi/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/fkr-0/deskhalloumi/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/fkr-0/deskhalloumi/tree/v0.2.0

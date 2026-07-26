@@ -2,10 +2,10 @@
 
 ## Current state
 
-The active Cargo workspace declares a shared version of `0.3.0` in the root
-`Cargo.toml`, and the main crates inherit it with `version.workspace = true`.
-The released commit includes a dated changelog section, automated
-release-metadata checks, and the annotated `v0.3.0` tag. The canonical remote is
+The active Cargo workspace declares a shared candidate version of `0.3.1` in
+the root `Cargo.toml`, and the main crates inherit it with
+`version.workspace = true`. Version `0.3.0` remains the latest published release
+and is identified by the annotated `v0.3.0` tag. The canonical remote is
 `https://github.com/fkr-0/deskhalloumi`.
 
 This document defines the contract; a version heading alone does not claim that
@@ -172,11 +172,10 @@ publication remains an explicit maintainer action.
 - Documentation may link to the stable tag tree and to the comparison from that
   tag to `HEAD`.
 
-## Current release
+## Current release state
 
-Version `0.3.0` adds the supervised asynchronous runtime, typed generation-safe
-providers, renderer-neutral menus and quick-select, action history, CLI
-introspection, and live runtime metrics while retaining the compatibility-first
-command, configuration-path, and application-ID contracts from `0.2.0`. New
-work must return to the `[Unreleased]` changelog section and select a later
-SemVer version before the next annotated tag is created.
+Version `0.3.0` remains the latest published release. Candidate `0.3.1` hardens
+the hotkey daemon, action queues, bar runtime controls, idle rendering behavior,
+configuration reload, and transactional i3 integration without changing the
+published compatibility contracts. The planned `0.4.0` milestone remains
+provider hardening and target expansion.

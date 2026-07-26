@@ -27,6 +27,15 @@ The next releases therefore focus on completing migration, proving behavior
 under churn, improving operational visibility, and removing transitional
 adapters. They do not reimplement these foundations.
 
+## 0.3.1 — Production hardening candidate
+
+This patch candidate completes behavior already exposed by the 0.3 runtime and
+action contracts. It bounds hotkey and bar queues, supervises shell execution,
+implements the routed bar reload/toggle/focus actions, removes permanent idle
+animation ticks and render-loop info logging, serves control clients without
+blocking supervision, and rolls generated i3 includes back when live reload
+fails. It does not consume or redefine the planned 0.4.0 provider milestone.
+
 ## 0.4.0 — Provider hardening and target expansion
 
 ### Provider lifecycle completion

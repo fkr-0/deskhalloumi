@@ -118,6 +118,27 @@ resolved:
   evidence:
   - unilii/lib/src/input.rs
   - generation-based stale-event suppression and duplicate-path tests
+- id: HK-HARDEN-021
+  status: complete
+  summary: Bound and supervise hotkey action execution and expose overload metrics.
+  evidence:
+  - unilii/core/src/keys.rs
+  - unilii/core/src/runtime/metrics.rs
+  - unilii/core/src/hotkey_control.rs
+- id: BAR-HARDEN-022
+  status: complete
+  summary: Implement live bar reload, module visibility, module focus, bounded action channels, and conditional animation ticks.
+  evidence:
+  - unilii/bin/src/bar_control.rs
+  - unilii/bin/src/main.rs
+  - unilii/bin/src/widgets/mod.rs
+  - unilii/bin/src/tray.rs
+- id: HK-I3-023
+  status: complete
+  summary: Restore and reload the previous generated i3 include when candidate reload fails.
+  evidence:
+  - unilii/bin/src/hotkeyd_main.rs
+  - scripts/test_i3_hotkeys.sh
 remaining:
 - id: SXHKD-011
   status: pending

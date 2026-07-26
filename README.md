@@ -11,15 +11,17 @@ commands and config fallbacks remain available during the pre-1.0 migration.
 
 Canonical repository: <https://github.com/fkr-0/deskhalloumi>
 
-## Release 0.3.0
+## Release 0.3.1
 
-`v0.3.0`, released on July 19, 2026, introduces the supervised asynchronous
-runtime, generation-safe typed provider state, renderer-neutral menus and
-quick-select, live runtime diagnostics, CLI introspection, and bounded visible
-action history. The existing i3/X11, configuration-path, application-ID, and
-`unilii-*` compatibility contracts remain available.
+`0.3.1` is prepared as a local release candidate focused on production
+hardening: bounded hotkey and bar queues, supervised command execution,
+working runtime bar controls, lower idle rendering overhead, strict
+last-known-good reloads, and transactional i3 rollback. The existing i3/X11,
+configuration-path, application-ID, and `unilii-*` compatibility contracts
+remain available. No `v0.3.1` tag or publication is implied until explicitly
+created by the maintainer.
 
-- [Release notes](docs/releases/0.3.0.md)
+- [Release notes](docs/releases/0.3.1.md)
 - [Complete changelog](CHANGELOG.md)
 - [Roadmap for 0.4.0–0.8.0](docs/roadmap.md)
 - [Versioning and release policy](docs/versioning.md)

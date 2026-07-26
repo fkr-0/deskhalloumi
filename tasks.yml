@@ -2744,3 +2744,36 @@ documentation_and_release_roadmap_2026_07_19:
   - native AArch64 installation and runtime smoke infrastructure
   - musl feasibility ADR
   - 0.5.0 completion of menu adapters and main.rs decomposition
+
+production_hardening_0_3_1_2026_07_26:
+  status: candidate
+  scope:
+  - bounded hotkey execution queue and concurrency
+  - supervised shell, menu, and action-bus execution
+  - bounded embedded bar, tray, and hotkey channels
+  - live bar reload with last-known-good retention
+  - module visibility and focus actions with operator feedback
+  - conditional tray animation subscription and removal of render-loop info logs
+  - concurrent control clients with serialized supervisor mutations
+  - transactional i3 include rollback and rollback reload
+  implementation_evidence:
+  - unilii/core/src/keys.rs
+  - unilii/core/src/config.rs
+  - unilii/core/src/hotkey_control.rs
+  - unilii/core/src/runtime/metrics.rs
+  - unilii/bin/src/bar_control.rs
+  - unilii/bin/src/main.rs
+  - unilii/bin/src/hotkeyd_main.rs
+  - unilii/bin/src/widgets/mod.rs
+  - scripts/test_i3_hotkeys.sh
+  verification:
+  - cargo fmt --all -- --check
+  - cargo check --workspace
+  - scripts/test_safe.sh
+  - scripts/test_i3_hotkeys.sh
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
+  - python3 scripts/check_release_metadata.py --candidate
+  remaining_before_publication:
+  - commit and require-clean candidate validation
+  - deterministic release archive, checksum, extraction, and command smoke tests
+  - explicit maintainer authorization for tag, push, and publication
