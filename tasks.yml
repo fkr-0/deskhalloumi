@@ -2746,7 +2746,8 @@ documentation_and_release_roadmap_2026_07_19:
   - 0.5.0 completion of menu adapters and main.rs decomposition
 
 production_hardening_0_3_1_2026_07_26:
-  status: candidate
+  status: superseded_before_publication
+  superseded_by: 0.3.2
   scope:
   - bounded hotkey execution queue and concurrency
   - supervised shell, menu, and action-bus execution
@@ -2776,4 +2777,43 @@ production_hardening_0_3_1_2026_07_26:
   remaining_before_publication:
   - commit and require-clean candidate validation
   - deterministic release archive, checksum, extraction, and command smoke tests
+  - explicit maintainer authorization for tag, push, and publication
+
+production_hardening_0_3_2_2026_07_27:
+  status: candidate
+  supersedes_unpublished_candidate: 0.3.1
+  scope:
+  - enforce action-bus and hotkey-control frame limits during reads and writes
+  - cap simultaneous action-bus clients and preserve control-socket timeouts
+  - generation-check concurrent live bar reload results
+  - restore documented space-separated module actions and orderly quit
+  - add module-visibility and focus recovery actions
+  - expose cancellation-safe active and queued action gauges
+  - bound selective X11 event delivery with ordered backpressure
+  - strengthen hotkey source fingerprints for atomic same-length replacements
+  - make generated i3 writes unique, durable, permission-preserving, and cleanup-safe
+  - fail early when the release filesystem lacks sufficient working space
+  implementation_evidence:
+  - unilii/core/src/ipc_frame.rs
+  - unilii/core/src/action_bus.rs
+  - unilii/core/src/hotkey_control.rs
+  - unilii/core/src/runtime/action.rs
+  - unilii/core/src/runtime/metrics.rs
+  - unilii/core/src/x11_hotkeys.rs
+  - unilii/core/src/keys.rs
+  - unilii/bin/src/bar_control.rs
+  - unilii/bin/src/main.rs
+  - unilii/bin/src/hotkeyd_main.rs
+  - scripts/check_build_space.py
+  verification:
+  - bounded IPC client and server adversarial tests
+  - cancellation and queue-gauge regression tests
+  - same-size atomic replacement and durable write tests
+  - complete core and binary crate suites
+  - cargo check --workspace
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
+  - scripts/test_i3_hotkeys.sh
+  remaining_before_publication:
+  - complete clean release train after filesystem cleanup
+  - deterministic archive, checksum, extraction, and command smoke tests
   - explicit maintainer authorization for tag, push, and publication

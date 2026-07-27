@@ -139,6 +139,46 @@ resolved:
   evidence:
   - unilii/bin/src/hotkeyd_main.rs
   - scripts/test_i3_hotkeys.sh
+- id: IPC-HARDEN-024
+  status: complete
+  summary: Enforce bounded action and control IPC frames, clients, and read/write phases at admission time.
+  evidence:
+  - unilii/core/src/ipc_frame.rs
+  - unilii/core/src/action_bus.rs
+  - unilii/core/src/hotkey_control.rs
+  - unilii/bin/src/main.rs
+  - unilii/bin/src/hotkeyd_main.rs
+- id: BAR-RELOAD-025
+  status: complete
+  summary: Reject stale concurrent reload results and add presentation recovery actions.
+  evidence:
+  - unilii/bin/src/bar_control.rs
+  - unilii/bin/src/app.rs
+  - unilii/bin/src/main.rs
+- id: HK-X11-026
+  status: complete
+  summary: Replace the remaining unbounded X11 event channel with ordered bounded backpressure.
+  evidence:
+  - unilii/core/src/x11_hotkeys.rs
+- id: HK-WATCH-027
+  status: complete
+  summary: Detect same-length atomic source replacement and durably replace generated i3 includes.
+  evidence:
+  - unilii/bin/src/hotkeyd_main.rs
+- id: BAR-COMPAT-028
+  status: complete
+  summary: Restore documented space-separated module actions and orderly quit semantics.
+  evidence:
+  - unilii/core/src/keys.rs
+  - KEYBINDINGS.md
+  - CONFIGURATION.md
+- id: REL-SPACE-029
+  status: complete
+  summary: Fail the release train before compilation when insufficient filesystem space is available.
+  evidence:
+  - scripts/check_build_space.py
+  - .github/workflows/release.yml
+  - bridge.yml
 remaining:
 - id: SXHKD-011
   status: pending
@@ -175,6 +215,7 @@ remaining:
   - Action failure volume cannot create unbounded logs or child processes.
 release_gate:
   required_commands:
+  - python3 scripts/check_build_space.py
   - cargo fmt --all -- --check
   - python3 scripts/check_release_metadata.py --candidate
   - scripts/test_safe.sh

@@ -1,12 +1,12 @@
 schema_version: 2
 kind: internal_maintainer_roadmap
-updated_at: '2026-07-19'
+updated_at: '2026-07-27'
 project:
   name: DeskHalloumi
   slug: deskhalloumi
   repository: https://github.com/fkr-0/deskhalloumi
   current_version: 0.3.0
-  current_candidate: 0.3.1
+  current_candidate: 0.3.2
   supported_session: i3/X11
   compatibility_boundary:
   - unilii command aliases remain available during 0.x
@@ -60,9 +60,10 @@ release_targets:
   - action execution has one typed policy for timeout, cwd, environment, output, and cancellation.
   - provider refreshes use bounded concurrency and explicit stale/error states.
   - runtime metrics expose task failures, command timeouts, and dropped/coalesced updates.
-- version: 0.3.1
+- version: 0.3.2
   theme: production hardening for hotkeys, bar runtime, and i3 integration
   status: candidate
+  supersedes_unpublished_candidate: 0.3.1
   scope:
   - bounded hotkey execution and action admission
   - bounded bar, tray, and embedded action channels
@@ -70,6 +71,13 @@ release_targets:
   - reduced idle animation and render-log overhead
   - concurrent control clients with serialized supervisor mutation
   - transactional i3 include rollback after failed reload
+  - admission-time bounded action and control IPC
+  - generation-safe concurrent bar reload results
+  - durable atomic generated-file replacement and stronger source fingerprints
+  - bounded selective X11 event delivery
+  - cancellation-safe active and queued action diagnostics
+  - presentation recovery and documented compatibility actions
+  - release filesystem-space preflight
   exit_criteria:
   - formatting, safe tests, isolated i3/X11 tests, strict Clippy, and candidate metadata validation pass.
   - deterministic Linux archive and checksum are produced locally before tagging.

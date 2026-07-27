@@ -9,7 +9,7 @@ on:
       release_ref:
         description: Annotated release tag to validate and package
         required: true
-        default: v0.3.1
+        default: v0.3.2
 
 permissions:
   contents: write
@@ -54,6 +54,9 @@ jobs:
 
       - name: Validate release metadata and annotated tag
         run: python3 scripts/check_release_metadata.py --release --require-clean
+
+      - name: Check release build space
+        run: python3 scripts/check_build_space.py
 
       - name: Check formatting
         run: cargo fmt --all -- --check

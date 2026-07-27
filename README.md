@@ -11,17 +11,18 @@ commands and config fallbacks remain available during the pre-1.0 migration.
 
 Canonical repository: <https://github.com/fkr-0/deskhalloumi>
 
-## Release 0.3.1
+## Release 0.3.2
 
-`0.3.1` is prepared as a local release candidate focused on production
-hardening: bounded hotkey and bar queues, supervised command execution,
-working runtime bar controls, lower idle rendering overhead, strict
-last-known-good reloads, and transactional i3 rollback. The existing i3/X11,
-configuration-path, application-ID, and `unilii-*` compatibility contracts
-remain available. No `v0.3.1` tag or publication is implied until explicitly
-created by the maintainer.
+`0.3.2` supersedes the untagged 0.3.1 candidate and is prepared as a local
+production-hardening release candidate. It adds admission-time bounded IPC,
+generation-safe bar reloads, bounded X11 event delivery, durable atomic i3
+writes, cancellation-safe action diagnostics, presentation recovery actions,
+and an early release-space check. The existing i3/X11, configuration-path,
+application-ID, and `unilii-*` compatibility contracts remain available. No
+`v0.3.2` tag or publication is implied until explicitly created by the
+maintainer.
 
-- [Release notes](docs/releases/0.3.1.md)
+- [Release notes](docs/releases/0.3.2.md)
 - [Complete changelog](CHANGELOG.md)
 - [Roadmap for 0.4.0–0.8.0](docs/roadmap.md)
 - [Versioning and release policy](docs/versioning.md)

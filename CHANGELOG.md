@@ -5,13 +5,13 @@ recorded in this file. The project follows Semantic Versioning as described in
 [`docs/versioning.md`](docs/versioning.md).
 
 Version `0.3.0` is the latest published release and is identified by the
-annotated `v0.3.0` tag. Version `0.3.1` is prepared below as a local release
+annotated `v0.3.0` tag. Version `0.3.2` is prepared below as a local release
 candidate; no tag or publication is implied until the maintainer performs those
 steps explicitly.
 
 ## [Unreleased]
 
-## [0.3.1] - 2026-07-26
+## [0.3.2] - 2026-07-27
 
 ### Added
 
@@ -22,6 +22,11 @@ steps explicitly.
 - Regression coverage for saturated hotkey queues, stalled control clients,
   conditional tray animation ticks, strict configuration conversion, and i3
   reload rollback.
+- Recovery bar actions for restoring all hidden modules, clearing module focus,
+  and orderly application exit, including the documented space-separated
+  module-action aliases.
+- A release-space preflight that fails early with a non-destructive diagnostic
+  before a full Rust/Iced build exhausts the filesystem.
 
 ### Changed
 
@@ -34,6 +39,13 @@ steps explicitly.
   requests remain serialized through the supervisor.
 - Tray animation ticks run only while an animation is active, and module render
   paths no longer emit per-frame info logs.
+- Action-bus, hotkey-control, and selective X11 event paths now enforce bounded
+  frames, connection counts, queues, and read/write timeouts at the point of
+  admission instead of checking after unbounded allocation.
+- Runtime diagnostics now expose active, queued, completed, failed, cancelled,
+  timed-out, and rejected actions with cancellation-safe gauges.
+- Generated i3 includes are written with unique temporary files, retained
+  permissions, file and directory synchronization, and cleanup on failure.
 - Reconciled the provider, menu, and runtime documentation with the contracts
   already shipped in 0.3.0, making provider-specific and tray-specific types
   explicit migration adapters rather than parallel canonical models.
@@ -48,6 +60,14 @@ steps explicitly.
   reloads the restored configuration once, avoiding a half-applied binding set.
 - Invalid live bar configuration no longer replaces working state with defaults.
 - Slow or incomplete control-socket clients no longer block hotkey supervision.
+- Concurrent bar reload results are generation-checked, so a slow older reload
+  cannot overwrite a newer accepted configuration.
+- Same-length atomic hotkey-config replacements are detected through inode,
+  device, modification-time, and change-time fingerprints.
+- Oversized or unterminated IPC requests and responses are rejected while being
+  read, preventing memory growth before the 64 KiB protocol limit is applied.
+- Restored compatibility for documented `toggle-module <name>`,
+  `focus-module <name>`, and `quit` bar commands.
 
 ## [0.3.0] - 2026-07-19
 
@@ -217,7 +237,7 @@ steps explicitly.
 - sxhkd Cartesian brace expansion is capped at 4096 generated values to prevent
   accidental configuration blow-ups during migration.
 
-[Unreleased]: https://github.com/fkr-0/deskhalloumi/compare/v0.3.1...HEAD
-[0.3.1]: https://github.com/fkr-0/deskhalloumi/compare/v0.3.0...v0.3.1
+[Unreleased]: https://github.com/fkr-0/deskhalloumi/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/fkr-0/deskhalloumi/compare/v0.3.0...v0.3.2
 [0.3.0]: https://github.com/fkr-0/deskhalloumi/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/fkr-0/deskhalloumi/tree/v0.2.0

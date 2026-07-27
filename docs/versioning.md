@@ -2,7 +2,7 @@
 
 ## Current state
 
-The active Cargo workspace declares a shared candidate version of `0.3.1` in
+The active Cargo workspace declares a shared candidate version of `0.3.2` in
 the root `Cargo.toml`, and the main crates inherit it with
 `version.workspace = true`. Version `0.3.0` remains the latest published release
 and is identified by the annotated `v0.3.0` tag. The canonical remote is
@@ -89,12 +89,17 @@ targets may conclude with an architecture decision not to publish an artifact.
 5. Run:
 
    ```sh
+   python3 scripts/check_build_space.py
    cargo fmt --all -- --check
    python3 scripts/check_release_metadata.py --candidate
    scripts/test_safe.sh
    scripts/test_i3_hotkeys.sh
    CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
    ```
+
+   The space preflight defaults to 16 GiB free and can be adjusted with
+   `DESKHALLOUMI_MIN_FREE_GIB`. It never deletes build artifacts; its failure
+   message suggests `cargo clean` or a larger `CARGO_TARGET_DIR`.
 
 6. Confirm the changelog describes all user-visible changes and migrations.
 7. Commit the complete release candidate and verify the worktree is clean:
@@ -174,8 +179,9 @@ publication remains an explicit maintainer action.
 
 ## Current release state
 
-Version `0.3.0` remains the latest published release. Candidate `0.3.1` hardens
-the hotkey daemon, action queues, bar runtime controls, idle rendering behavior,
-configuration reload, and transactional i3 integration without changing the
-published compatibility contracts. The planned `0.4.0` milestone remains
-provider hardening and target expansion.
+Version `0.3.0` remains the latest published release. Candidate `0.3.2`
+supersedes the untagged 0.3.1 candidate and hardens bounded IPC, action and X11
+queues, reload ordering, durable generated-file replacement, runtime recovery
+controls, cancellation diagnostics, and release preflight behavior without
+changing the published compatibility contracts. The planned `0.4.0` milestone
+remains provider hardening and target expansion.
