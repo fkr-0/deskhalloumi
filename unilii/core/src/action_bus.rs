@@ -1,8 +1,9 @@
 //! Versioned cross-process action protocol shared by hotkeys and the bar.
 
+use crate::ipc_frame::read_utf8_line_bounded;
 use crate::menu_process::default_runtime_dir;
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -142,22 +143,18 @@ pub fn send_action_request(
         .set_write_timeout(timeout)
         .map_err(|error| error.to_string())?;
     let mut payload = serde_json::to_vec(request).map_err(|error| error.to_string())?;
+    payload.push(b'\n');
     if payload.len() > ACTION_BUS_MAX_FRAME_BYTES {
         return Err("action request exceeds 64 KiB".to_string());
     }
-    payload.push(b'\n');
     stream
         .write_all(&payload)
         .map_err(|error| format!("failed to write desktop action request: {error}"))?;
     stream.flush().map_err(|error| error.to_string())?;
 
-    let mut line = String::new();
-    BufReader::new(stream)
-        .read_line(&mut line)
+    let mut reader = BufReader::new(stream);
+    let line = read_utf8_line_bounded(&mut reader, ACTION_BUS_MAX_FRAME_BYTES)
         .map_err(|error| format!("failed to read desktop action response: {error}"))?;
-    if line.trim().is_empty() {
-        return Err("desktop action receiver returned an empty response".to_string());
-    }
     let response: ActionBusResponse = serde_json::from_str(line.trim())
         .map_err(|error| format!("invalid desktop action response: {error}"))?;
     if response.protocol_version != ACTION_BUS_PROTOCOL_VERSION {
@@ -175,6 +172,7 @@ pub fn send_action_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::BufRead;
     use std::os::unix::net::UnixListener;
     use std::thread;
 
@@ -232,5 +230,27 @@ mod tests {
         let encoded = serde_json::to_string(&response).unwrap();
         let decoded: ActionBusResponse = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.data.unwrap()["active_tasks"], 3);
+    }
+
+    #[test]
+    fn action_client_rejects_oversized_unterminated_response() {
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("action.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            let mut writer = stream;
+            writer
+                .write_all(&vec![b'x'; ACTION_BUS_MAX_FRAME_BYTES + 1])
+                .unwrap();
+        });
+        let request = ActionBusRequest::new("oversize", DesktopAction::Bar("reload".into()));
+        let error = send_action_request(&socket, &request).unwrap_err();
+        assert!(error.contains("exceeds"));
+        server.join().unwrap();
     }
 }

@@ -142,6 +142,9 @@ command = "xscreensaver-command -lock"
 Internal bar actions:
 
 - `toggle-module <name>`: Toggle a module on/off
+- `focus-module <name>`: Reveal and visually prioritize a module
+- `show-all-modules`: Restore every hidden module
+- `clear-module-focus`: Return to normal module ordering
 - `reload-config`: Reload the configuration file
 - `quit`: Quit the application
 

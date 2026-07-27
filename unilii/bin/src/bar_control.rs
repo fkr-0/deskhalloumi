@@ -9,6 +9,7 @@ pub struct BarControlState {
     hidden_modules: HashSet<String>,
     focused_module: Option<String>,
     status: Option<String>,
+    reload_generation: u64,
 }
 
 impl BarControlState {
@@ -30,6 +31,15 @@ impl BarControlState {
 
     pub fn set_status(&mut self, message: impl Into<String>) {
         self.status = Some(message.into());
+    }
+
+    pub fn begin_reload(&mut self) -> u64 {
+        self.reload_generation = self.reload_generation.wrapping_add(1).max(1);
+        self.reload_generation
+    }
+
+    pub fn is_current_reload(&self, generation: u64) -> bool {
+        generation == self.reload_generation
     }
 
     pub fn toggle_module(
@@ -65,6 +75,27 @@ impl BarControlState {
         self.focused_module = Some(module.clone());
         self.status = Some(format!("Focused {module}"));
         Ok(module)
+    }
+
+    pub fn show_all_modules(&mut self) -> usize {
+        let shown = self.hidden_modules.len();
+        self.hidden_modules.clear();
+        self.status = Some(if shown == 0 {
+            "All modules are already visible".to_string()
+        } else {
+            format!("Shown {shown} hidden module(s)")
+        });
+        shown
+    }
+
+    pub fn clear_module_focus(&mut self) -> bool {
+        let cleared = self.focused_module.take().is_some();
+        self.status = Some(if cleared {
+            "Cleared module focus".to_string()
+        } else {
+            "No module is focused".to_string()
+        });
+        cleared
     }
 }
 
@@ -154,5 +185,25 @@ mod tests {
         apply_live_config(&mut current, candidate);
         assert_eq!(current.panels[0].width, 800);
         assert_eq!(current.menus.ui.max_visible_rows, 24);
+    }
+
+    #[test]
+    fn newer_reload_generation_supersedes_older_result() {
+        let mut state = BarControlState::default();
+        let first = state.begin_reload();
+        let second = state.begin_reload();
+        assert!(!state.is_current_reload(first));
+        assert!(state.is_current_reload(second));
+    }
+
+    #[test]
+    fn recovery_actions_restore_visibility_and_focus() {
+        let mut state = BarControlState::default();
+        state.toggle_module(&modules(), "clock").unwrap();
+        state.focus_module(&modules(), "battery").unwrap();
+        assert_eq!(state.show_all_modules(), 1);
+        assert!(!state.is_hidden("clock"));
+        assert!(state.clear_module_focus());
+        assert!(!state.is_focused("battery"));
     }
 }

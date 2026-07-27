@@ -7,11 +7,12 @@
 use clap::{Parser, ValueEnum};
 use deskhalloumi_core::action_bus::default_action_bus_socket_path;
 use deskhalloumi_core::hotkey_control::{
-    HOTKEY_CONTROL_PROTOCOL_VERSION, HotkeyControlRequest, HotkeyControlResponse,
-    HotkeyRuntimeStatus, default_control_socket_path, send_control_request,
+    HOTKEY_CONTROL_MAX_FRAME_BYTES, HOTKEY_CONTROL_PROTOCOL_VERSION, HotkeyControlRequest,
+    HotkeyControlResponse, HotkeyRuntimeStatus, default_control_socket_path, send_control_request,
 };
 use deskhalloumi_core::i3_config::{I3ConfigAudit, audit_i3_config};
 use deskhalloumi_core::i3_keybindings::{I3ExportOptions, render_i3_bindings};
+use deskhalloumi_core::ipc_frame::read_utf8_line_bounded_async;
 use deskhalloumi_core::key_engine::KeyTrigger;
 use deskhalloumi_core::key_import_sxhkd::{ImportWarning, import_sxhkd_config};
 use deskhalloumi_core::keys::{
@@ -26,11 +27,13 @@ use deskhalloumi_core::runtime::{ActionCommand, ActionRunner, global_runtime_met
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::fs::{self, OpenOptions};
+use std::io::Write as _;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{mpsc, oneshot};
@@ -40,6 +43,8 @@ use tracing::{error, info, warn};
 const CONTROL_REQUEST_QUEUE_CAPACITY: usize = 32;
 const MAX_CONTROL_CONNECTIONS: usize = 16;
 const CONTROL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(35);
+const CONTROL_IO_TIMEOUT: Duration = Duration::from_secs(2);
+static ATOMIC_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum BackendArg {
@@ -384,24 +389,55 @@ fn write_atomic(path: &Path, content: &[u8]) -> Result<(), String> {
         .unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)
         .map_err(|error| format!("failed to create '{}': {error}", parent.display()))?;
+    let sequence = ATOMIC_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temporary = parent.join(format!(
-        ".{}.tmp-{}",
+        ".{}.tmp-{}-{sequence}",
         path.file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("i3-bindings"),
         std::process::id()
     ));
-    fs::write(&temporary, content)
-        .map_err(|error| format!("failed to write '{}': {error}", temporary.display()))?;
-    fs::rename(&temporary, path).map_err(|error| {
+    let mode = fs::metadata(path)
+        .map(|metadata| metadata.permissions().mode() & 0o7777)
+        .unwrap_or(0o644);
+
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&temporary)
+            .map_err(|error| format!("failed to create '{}': {error}", temporary.display()))?;
+        file.set_permissions(fs::Permissions::from_mode(mode))
+            .map_err(|error| {
+                format!(
+                    "failed to set permissions on '{}': {error}",
+                    temporary.display()
+                )
+            })?;
+        file.write_all(content)
+            .map_err(|error| format!("failed to write '{}': {error}", temporary.display()))?;
+        file.flush()
+            .map_err(|error| format!("failed to flush '{}': {error}", temporary.display()))?;
+        file.sync_all()
+            .map_err(|error| format!("failed to sync '{}': {error}", temporary.display()))?;
+        drop(file);
+        fs::rename(&temporary, path).map_err(|error| {
+            format!(
+                "failed to replace '{}' with '{}': {error}",
+                path.display(),
+                temporary.display()
+            )
+        })?;
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("failed to sync directory '{}': {error}", parent.display()))?;
+        Ok(())
+    })();
+    if result.is_err() {
         let _ = fs::remove_file(&temporary);
-        format!(
-            "failed to replace '{}' with '{}': {error}",
-            path.display(),
-            temporary.display()
-        )
-    })?;
-    Ok(())
+    }
+    result
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -450,7 +486,19 @@ impl BindingSources {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SourceFingerprint(Vec<(PathBuf, Option<u128>, Option<u64>)>);
+struct SourcePathFingerprint {
+    path: PathBuf,
+    len: Option<u64>,
+    device: Option<u64>,
+    inode: Option<u64>,
+    modified_seconds: Option<i64>,
+    modified_nanoseconds: Option<i64>,
+    changed_seconds: Option<i64>,
+    changed_nanoseconds: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceFingerprint(Vec<SourcePathFingerprint>);
 
 impl SourceFingerprint {
     fn capture(sources: &BindingSources) -> Self {
@@ -459,13 +507,16 @@ impl SourceFingerprint {
             .into_iter()
             .map(|path| {
                 let metadata = fs::metadata(&path).ok();
-                let modified = metadata
-                    .as_ref()
-                    .and_then(|value| value.modified().ok())
-                    .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-                    .map(|value| value.as_nanos());
-                let len = metadata.map(|value| value.len());
-                (path, modified, len)
+                SourcePathFingerprint {
+                    path,
+                    len: metadata.as_ref().map(|value| value.len()),
+                    device: metadata.as_ref().map(MetadataExt::dev),
+                    inode: metadata.as_ref().map(MetadataExt::ino),
+                    modified_seconds: metadata.as_ref().map(MetadataExt::mtime),
+                    modified_nanoseconds: metadata.as_ref().map(MetadataExt::mtime_nsec),
+                    changed_seconds: metadata.as_ref().map(MetadataExt::ctime),
+                    changed_nanoseconds: metadata.as_ref().map(MetadataExt::ctime_nsec),
+                }
             })
             .collect();
         Self(entries)
@@ -720,11 +771,14 @@ fn print_human_status(status: &HotkeyRuntimeStatus) {
     );
     let metrics = status.runtime_metrics;
     println!(
-        "runtime: active={} actions_started={} completed={} failed={} timed_out={} rejected={} raw_dropped={}",
+        "runtime: tasks_active={} actions_active={} queued={} actions_started={} completed={} failed={} cancelled={} timed_out={} rejected={} raw_dropped={}",
         metrics.active_tasks,
+        metrics.active_actions,
+        metrics.queued_actions,
         metrics.actions_started,
         metrics.actions_completed,
         metrics.actions_failed,
+        metrics.actions_cancelled,
         metrics.action_timeouts,
         metrics.actions_rejected,
         metrics.updates_dropped,
@@ -1183,22 +1237,18 @@ async fn read_control_request(
     stream: UnixStream,
 ) -> Result<(HotkeyControlRequest, UnixStream), (String, UnixStream)> {
     let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    let read = tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut line)).await;
+    let read = tokio::time::timeout(
+        CONTROL_IO_TIMEOUT,
+        read_utf8_line_bounded_async(&mut reader, HOTKEY_CONTROL_MAX_FRAME_BYTES),
+    )
+    .await;
     match read {
         Err(_) => {
             let stream = reader.into_inner();
             Err(("timed out reading control request".to_string(), stream))
         }
-        Ok(Ok(0)) => {
+        Ok(Ok(line)) => {
             let stream = reader.into_inner();
-            Err(("empty control request".to_string(), stream))
-        }
-        Ok(Ok(_)) => {
-            let stream = reader.into_inner();
-            if line.len() > 65_536 {
-                return Err(("control request exceeds 64 KiB".to_string(), stream));
-            }
             match serde_json::from_str(line.trim()) {
                 Ok(request) => Ok((request, stream)),
                 Err(error) => Err((format!("invalid control request: {error}"), stream)),
@@ -1206,17 +1256,32 @@ async fn read_control_request(
         }
         Ok(Err(error)) => {
             let stream = reader.into_inner();
-            Err((format!("failed to read control request: {error}"), stream))
+            Err((error, stream))
         }
     }
 }
 
 async fn write_control_response(mut stream: UnixStream, response: &HotkeyControlResponse) {
-    match serde_json::to_vec(response) {
+    let mut response = response.clone();
+    match serde_json::to_vec(&response) {
         Ok(mut payload) => {
             payload.push(b'\n');
-            let _ = stream.write_all(&payload).await;
-            let _ = stream.shutdown().await;
+            if payload.len() > HOTKEY_CONTROL_MAX_FRAME_BYTES {
+                response = HotkeyControlResponse::error("control response exceeds 64 KiB");
+                payload = match serde_json::to_vec(&response) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        error!("failed to encode bounded control response: {error}");
+                        return;
+                    }
+                };
+                payload.push(b'\n');
+            }
+            let _ = tokio::time::timeout(CONTROL_IO_TIMEOUT, async {
+                stream.write_all(&payload).await?;
+                stream.shutdown().await
+            })
+            .await;
         }
         Err(error) => error!("failed to encode control response: {error}"),
     }
@@ -1560,6 +1625,7 @@ fn exit_error_value<T>(message: &str, code: i32) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncBufReadExt;
 
     #[test]
     fn menu_defaults_use_managed_toggle_actions() {
@@ -1666,6 +1732,45 @@ mod tests {
         let after = SourceFingerprint::capture(&sources);
         assert_ne!(before, after);
     }
+
+    #[test]
+    fn source_fingerprint_detects_same_length_atomic_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("hotkeys.toml");
+        fs::write(&config, "one1").unwrap();
+        let sources = BindingSources {
+            config: Some(config.clone()),
+            sxhkd: None,
+            menu_defaults: false,
+        };
+        let before = SourceFingerprint::capture(&sources);
+        let replacement = temp.path().join("replacement.toml");
+        fs::write(&replacement, "two2").unwrap();
+        fs::rename(replacement, &config).unwrap();
+        let after = SourceFingerprint::capture(&sources);
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn atomic_write_preserves_permissions_and_leaves_no_temporary_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("bindings.conf");
+        fs::write(&path, "old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        write_atomic(&path, b"new bindings\n").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new bindings\n");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let prefix = format!(".{}.tmp-", path.file_name().unwrap().to_string_lossy());
+        assert!(
+            fs::read_dir(temp.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|entry| !entry.file_name().to_string_lossy().starts_with(&prefix))
+        );
+    }
     #[test]
     fn control_socket_rejects_second_owner_and_cleans_up() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -1718,6 +1823,30 @@ mod tests {
         valid_task.await.unwrap();
         drop(stalled_client);
         stalled_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn oversized_control_request_is_rejected_without_queueing() {
+        let (server, mut client) = UnixStream::pair().unwrap();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let task = tokio::spawn(serve_control_connection(server, sender));
+        client
+            .write_all(&vec![b'x'; HOTKEY_CONTROL_MAX_FRAME_BYTES + 1])
+            .await
+            .unwrap();
+        let mut response = String::new();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            BufReader::new(client).read_line(&mut response),
+        )
+        .await
+        .expect("server should reject oversized frame promptly")
+        .unwrap();
+        let response: HotkeyControlResponse = serde_json::from_str(response.trim()).unwrap();
+        assert!(!response.ok);
+        assert!(response.message.contains("exceeds"));
+        assert!(receiver.try_recv().is_err());
+        task.await.unwrap();
     }
 
     #[test]

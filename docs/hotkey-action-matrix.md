@@ -154,8 +154,9 @@ Unknown tray commands are represented as `Raw` and logged as unsupported.
 
 ## `bar`
 
-The action channel, protocol, and parser are wired, but the current module runtime cannot
-safely mutate loaded modules or reconstruct the complete bar in place.
+The action channel, protocol, parser, and runtime controls are wired. Loaded
+providers remain owned by the runtime while visibility and presentation state
+can be changed without recreating them.
 
 Recognized commands:
 
@@ -169,14 +170,31 @@ bar:toggle:<name>
 
 focus-module:<name>
 bar:focus:<name>
+
+show-all-modules
+modules:show-all
+bar:show-all
+
+clear-module-focus
+modules:clear-focus
+bar:clear-focus
+
+quit
+bar:quit
 ```
 
-Current behavior is an explicit warning describing the unavailable operation.
-Do not depend on these actions for production workflows yet. Use process/service
-restart for configuration reload and normal module configuration for visibility.
+For compatibility with the original examples, `toggle-module <name>` and
+`focus-module <name>` with a space separator remain accepted as aliases for the
+colon forms.
 
-The commands cross process boundaries correctly; unsupported mutable runtime
-operations still return explicit diagnostics.
+`reload-config` strictly validates a candidate and retains the last-known-good
+configuration on failure. Runtime-safe menu settings apply immediately; panel
+geometry, module topology, and embedded-hotkey changes are reported as requiring
+a restart. `toggle-module` changes rendering visibility without terminating the
+provider. `focus-module` reveals and prioritizes the selected module.
+`show-all-modules` and `clear-module-focus` restore the normal presentation, and
+`quit` requests an orderly bar shutdown. Unknown operations remain explicit
+diagnostics rather than silent no-ops.
 
 ## `widget`
 

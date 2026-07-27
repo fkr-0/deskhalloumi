@@ -86,6 +86,11 @@ commands:
     category: lint
     run: ["python3", "scripts/check_release_metadata.py"]
 
+  check-build-space:
+    description: Verify enough filesystem space exists for the full Rust/Iced release train
+    category: lint
+    run: ["python3", "scripts/check_build_space.py"]
+
 
   test-safe:
     description: Run live-session command audit and full Rust workspace tests

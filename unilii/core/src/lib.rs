@@ -11,6 +11,7 @@ pub mod hotkey_control;
 pub mod i3_config;
 pub mod i3_keybindings;
 pub mod i3_vis;
+pub mod ipc_frame;
 pub mod key_engine;
 pub mod key_import_sxhkd;
 pub mod keys;

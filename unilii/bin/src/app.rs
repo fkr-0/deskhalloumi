@@ -82,7 +82,10 @@ pub enum Message {
         String,
         deskhalloumi_core::runtime::ProviderSnapshot<ModuleUpdate>,
     ),
-    BarConfigReloaded(Box<Result<crate::bar_control::ReloadCandidate, String>>),
+    BarConfigReloaded {
+        generation: u64,
+        result: Box<Result<crate::bar_control::ReloadCandidate, String>>,
+    },
     DismissBarStatus,
     WindowKeyboardInput {
         key: String,

@@ -96,7 +96,7 @@ impl ActionRunner {
         E: ToString,
     {
         let started_at = Instant::now();
-        self.metrics.record_action_started();
+        let action_guard = self.metrics.action_guard();
         let (result, error_class) = match time::timeout(self.timeout, work).await {
             Ok(result) => {
                 let result = result.map_err(|error| error.to_string());
@@ -114,6 +114,7 @@ impl ActionRunner {
 
         let duration = started_at.elapsed();
         self.record_completion(duration, result.is_ok(), error_class.as_deref(), 0, 0);
+        action_guard.finish();
         ActionOutcome {
             menu: self.menu.clone(),
             action: self.action.clone(),
@@ -132,7 +133,7 @@ impl ActionRunner {
 
     pub async fn run_command(&self, command: ActionCommand) -> ActionOutcome<()> {
         let started_at = Instant::now();
-        self.metrics.record_action_started();
+        let action_guard = self.metrics.action_guard();
         let raw = self.execute_command(command).await;
         let duration = started_at.elapsed();
         let stdout = String::from_utf8_lossy(&raw.stdout.bytes).into_owned();
@@ -150,6 +151,7 @@ impl ActionRunner {
             truncated_streams,
             discarded_bytes,
         );
+        action_guard.finish();
         ActionOutcome {
             menu: self.menu.clone(),
             action: self.action.clone(),
@@ -168,7 +170,7 @@ impl ActionRunner {
 
     pub async fn run_command_bytes(&self, command: ActionCommand) -> BinaryActionOutcome {
         let started_at = Instant::now();
-        self.metrics.record_action_started();
+        let action_guard = self.metrics.action_guard();
         let raw = self.execute_command(command).await;
         let duration = started_at.elapsed();
         let stderr = String::from_utf8_lossy(&raw.stderr.bytes).into_owned();
@@ -185,6 +187,7 @@ impl ActionRunner {
             truncated_streams,
             discarded_bytes,
         );
+        action_guard.finish();
         BinaryActionOutcome {
             menu: self.menu.clone(),
             action: self.action.clone(),
@@ -515,6 +518,34 @@ mod tests {
             })
             .await;
         assert_eq!(outcome.error_class.as_deref(), Some("timeout"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_action_releases_active_metric() {
+        let metrics = Arc::new(RuntimeMetrics::default());
+        let runner =
+            ActionRunner::with_timeout("menu-cancel", "cancelled-work", Duration::from_secs(30))
+                .with_metrics(Arc::clone(&metrics));
+        let task = tokio::spawn(async move {
+            runner
+                .run(async {
+                    std::future::pending::<()>().await;
+                    Ok::<_, io::Error>(())
+                })
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while metrics.snapshot().active_actions == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("action should become active");
+        task.abort();
+        let _ = task.await;
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.active_actions, 0);
+        assert_eq!(snapshot.actions_cancelled, 1);
     }
 
     #[tokio::test]

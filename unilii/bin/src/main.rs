@@ -29,6 +29,7 @@ use deskhalloumi_core::{
     action_history::{ActionHistory, ActionStatus},
     bar::{default_bar_config_path, load_bar_config, starter_bar_config_toml},
     config::{Config, MenuUiConfig, get_config_path, load_config_with_path},
+    ipc_frame::read_utf8_line_bounded_async,
     key_import_sxhkd::import_sxhkd_config,
     keys::{
         BarDaemonAction, CommandType, KeyDryRunEvent, KeybindingDaemon, KeybindingResult,
@@ -59,9 +60,13 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
+
+const ACTION_BUS_MAX_CONNECTIONS: usize = 32;
+const ACTION_BUS_IO_TIMEOUT: Duration = Duration::from_secs(2);
 
 use enhanced_tray::{EnhancedTrayState, TrayViewState};
 use menus::presentation::{
@@ -123,6 +128,18 @@ fn install_keybinding_action_receiver(
     }
     *guard = Some(receiver);
     Ok(())
+}
+
+fn begin_runtime_shutdown(bar: &mut UniliiBar) -> Task<Message> {
+    bar.audio_provider.shutdown();
+    bar.network_provider.shutdown();
+    bar.system_provider.shutdown();
+    bar.runtime_spawner.cancellation_token().cancel();
+    let supervisor = Arc::clone(&bar.runtime_supervisor);
+    Task::perform(
+        async move { supervisor.shutdown(Duration::from_secs(2)).await },
+        Message::RuntimeShutdownComplete,
+    )
 }
 
 fn provider_health_badge<T>(
@@ -199,6 +216,7 @@ async fn start_action_bus_server(
 
     let server_spawner = spawner.clone();
     let cancellation = server_spawner.cancellation_token();
+    let connection_slots = Arc::new(Semaphore::new(ACTION_BUS_MAX_CONNECTIONS));
     spawner
         .spawn("action-bus:listener", async move {
             let _guard = ActionBusSocketGuard(path);
@@ -214,8 +232,21 @@ async fn start_action_bus_server(
                         break;
                     }
                 };
+                let permit = match Arc::clone(&connection_slots).try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        global_runtime_metrics().record_action_rejected();
+                        warn!(
+                            limit = ACTION_BUS_MAX_CONNECTIONS,
+                            "action bus connection limit reached; rejecting client"
+                        );
+                        drop(stream);
+                        continue;
+                    }
+                };
                 let connection_sender = sender.clone();
                 if let Err(error) = server_spawner.try_spawn("action-bus:connection", async move {
+                    let _permit = permit;
                     handle_action_bus_connection(stream, connection_sender).await;
                 }) {
                     warn!(%error, "action bus connection was rejected by runtime supervisor");
@@ -232,17 +263,15 @@ async fn handle_action_bus_connection(
     sender: tokio::sync::mpsc::Sender<KeybindingResult>,
 ) {
     let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    let response = match tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut line))
-        .await
+    let response = match tokio::time::timeout(
+        ACTION_BUS_IO_TIMEOUT,
+        read_utf8_line_bounded_async(&mut reader, ACTION_BUS_MAX_FRAME_BYTES),
+    )
+    .await
     {
         Err(_) => ActionBusResponse::error("unknown", "timed out reading action request"),
-        Ok(Err(error)) => ActionBusResponse::error("unknown", format!("read failed: {error}")),
-        Ok(Ok(0)) => ActionBusResponse::error("unknown", "empty action request"),
-        Ok(Ok(_)) if line.len() > ACTION_BUS_MAX_FRAME_BYTES => {
-            ActionBusResponse::error("unknown", "action request exceeds 64 KiB")
-        }
-        Ok(Ok(_)) => match serde_json::from_str::<ActionBusRequest>(line.trim()) {
+        Ok(Err(error)) => ActionBusResponse::error("unknown", error),
+        Ok(Ok(line)) => match serde_json::from_str::<ActionBusRequest>(line.trim()) {
             Err(error) => ActionBusResponse::error("unknown", format!("invalid request: {error}")),
             Ok(request) => match request.validate() {
                 Err(error) => ActionBusResponse::error(request.request_id, error),
@@ -288,10 +317,25 @@ async fn handle_action_bus_connection(
 }
 
 async fn write_action_bus_response(mut stream: UnixStream, response: &ActionBusResponse) {
-    if let Ok(mut payload) = serde_json::to_vec(response) {
+    let mut response = response.clone();
+    if let Ok(mut payload) = serde_json::to_vec(&response) {
         payload.push(b'\n');
-        let _ = stream.write_all(&payload).await;
-        let _ = stream.shutdown().await;
+        if payload.len() > ACTION_BUS_MAX_FRAME_BYTES {
+            response = ActionBusResponse::error(
+                response.request_id,
+                "desktop action response exceeds 64 KiB",
+            );
+            payload = match serde_json::to_vec(&response) {
+                Ok(payload) => payload,
+                Err(_) => return,
+            };
+            payload.push(b'\n');
+        }
+        let _ = tokio::time::timeout(ACTION_BUS_IO_TIMEOUT, async {
+            stream.write_all(&payload).await?;
+            stream.shutdown().await
+        })
+        .await;
     }
 }
 
@@ -309,15 +353,7 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
         Message::WindowClosed(id) => {
             info!(?id, "WindowClosed message received (single panel mode)");
             if Some(id) == bar.main_window_id {
-                bar.audio_provider.shutdown();
-                bar.network_provider.shutdown();
-                bar.system_provider.shutdown();
-                bar.runtime_spawner.cancellation_token().cancel();
-                let supervisor = Arc::clone(&bar.runtime_supervisor);
-                return Task::perform(
-                    async move { supervisor.shutdown(Duration::from_secs(2)).await },
-                    Message::RuntimeShutdownComplete,
-                );
+                return begin_runtime_shutdown(bar);
             }
         }
         Message::RuntimeShutdownComplete(result) => {
@@ -391,33 +427,43 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                 error!(module = %name, %error, "failed to apply provider value");
             }
         }
-        Message::BarConfigReloaded(result) => match *result {
-            Ok(candidate) => {
-                let restart_required = candidate.restart_required;
-                let path = candidate.path;
-                apply_live_config(&mut bar.config, candidate.config);
-                let status = if restart_required.is_empty() {
-                    format!("Reloaded {}", path.display())
-                } else {
-                    format!(
-                        "Reloaded menus; restart for {}",
-                        restart_required.join(", ")
-                    )
-                };
+        Message::BarConfigReloaded { generation, result } => {
+            if !bar.bar_control.is_current_reload(generation) {
+                global_runtime_metrics().record_update_coalesced();
                 info!(
-                    config = %path.display(),
-                    restart_required = ?restart_required,
-                    "bar configuration reloaded"
+                    generation,
+                    "discarding stale bar configuration reload result"
                 );
-                bar.bar_control.set_status(status);
-                rebuild_system_menu_if_open(bar);
+                return Task::none();
             }
-            Err(error) => {
-                warn!(%error, "bar configuration reload rejected; retaining last-known-good state");
-                bar.bar_control
-                    .set_status(format!("Reload failed: {error}"));
+            match *result {
+                Ok(candidate) => {
+                    let restart_required = candidate.restart_required;
+                    let path = candidate.path;
+                    apply_live_config(&mut bar.config, candidate.config);
+                    let status = if restart_required.is_empty() {
+                        format!("Reloaded {}", path.display())
+                    } else {
+                        format!(
+                            "Reloaded menus; restart for {}",
+                            restart_required.join(", ")
+                        )
+                    };
+                    info!(
+                        config = %path.display(),
+                        restart_required = ?restart_required,
+                        "bar configuration reloaded"
+                    );
+                    bar.bar_control.set_status(status);
+                    rebuild_system_menu_if_open(bar);
+                }
+                Err(error) => {
+                    warn!(%error, "bar configuration reload rejected; retaining last-known-good state");
+                    bar.bar_control
+                        .set_status(format!("Reload failed: {error}"));
+                }
             }
-        },
+        }
         Message::DismissBarStatus => bar.bar_control.dismiss_status(),
         Message::WindowKeyboardInput {
             key,
@@ -2022,6 +2068,7 @@ fn main() -> iced::Result {
 mod tests {
     use super::widgets::key_char_digit;
     use super::*;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
     #[test]
     fn parses_key_dry_run_events_with_implicit_timestamps() {
@@ -2075,6 +2122,30 @@ mod tests {
 
         state.animation_progress = 1.0;
         assert!(!tray_animation_active(Some(&state)));
+    }
+
+    #[tokio::test]
+    async fn action_bus_rejects_oversized_unterminated_request_without_queueing() {
+        let (server, mut client) = UnixStream::pair().unwrap();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let task = tokio::spawn(handle_action_bus_connection(server, sender));
+        client
+            .write_all(&vec![b'x'; ACTION_BUS_MAX_FRAME_BYTES + 1])
+            .await
+            .unwrap();
+        let mut response = String::new();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            BufReader::new(client).read_line(&mut response),
+        )
+        .await
+        .expect("server should reject oversized frame promptly")
+        .unwrap();
+        let response: ActionBusResponse = serde_json::from_str(response.trim()).unwrap();
+        assert!(!response.ok);
+        assert!(response.message.contains("exceeds"));
+        assert!(receiver.try_recv().is_err());
+        task.await.unwrap();
     }
     #[test]
     fn submenu_helper_counts_nested_items() {
@@ -3296,6 +3367,7 @@ fn handle_bar_daemon_action(bar: &mut UniliiBar, action: BarDaemonAction) -> Tas
                 return Task::none();
             };
             let current = bar.config.clone();
+            let generation = bar.bar_control.begin_reload();
             bar.bar_control
                 .set_status(format!("Reloading {}…", path.display()));
             return Task::perform(
@@ -3304,7 +3376,10 @@ fn handle_bar_daemon_action(bar: &mut UniliiBar, action: BarDaemonAction) -> Tas
                         .await
                         .map_err(|error| format!("reload worker failed: {error}"))?
                 },
-                |result| Message::BarConfigReloaded(Box::new(result)),
+                move |result| Message::BarConfigReloaded {
+                    generation,
+                    result: Box::new(result),
+                },
             );
         }
         BarDaemonAction::ToggleModule(module) => {
@@ -3321,6 +3396,13 @@ fn handle_bar_daemon_action(bar: &mut UniliiBar, action: BarDaemonAction) -> Tas
                 bar.bar_control.set_status(error);
             }
         }
+        BarDaemonAction::ShowAllModules => {
+            bar.bar_control.show_all_modules();
+        }
+        BarDaemonAction::ClearModuleFocus => {
+            bar.bar_control.clear_module_focus();
+        }
+        BarDaemonAction::Quit => return begin_runtime_shutdown(bar),
         BarDaemonAction::Raw(command) => {
             warn!("unsupported bar hotkey action: {command}");
         }

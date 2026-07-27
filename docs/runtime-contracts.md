@@ -84,7 +84,7 @@ deskhalloumi runtime-metrics [--json] [--socket PATH]
 
 Typed bar, tray, and widget invocations travel through the versioned local action bus. Shell and managed-menu execution remain owned by `deskhalloumi-hotkeyd` and are rejected by the bar action router.
 
-`runtime-metrics` is a synchronous diagnostic action-bus request. The running daemon answers in the same bounded response frame with structured counters; it is not queued as a UI action. This exposes active tasks, task outcomes, action timing and timeouts, truncation, provider refresh pressure, and dropped/coalesced updates without stopping the bar.
+`runtime-metrics` is a synchronous diagnostic action-bus request. The running daemon answers in the same bounded response frame with structured counters; it is not queued as a UI action. This exposes active tasks, active and queued actions, completed/failed/cancelled/rejected action totals, action timing and timeouts, truncation, provider refresh pressure, and dropped/coalesced updates without stopping the bar. Active and queued gauges are guard-owned, so cancellation or queue teardown cannot leave stale non-zero values.
 
 The bounded action history records sequence, action id, source, running/succeeded/failed/timed-out/cancelled status, duration, and failure detail. The system menu renders recent failures visibly.
 

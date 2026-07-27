@@ -6,6 +6,7 @@ use crate::action_bus::{
 };
 use crate::key_engine::{EngineBinding, KeyEngine, KeyEngineTraceReason, KeyTrigger};
 use crate::menu_process::{MenuProcessManager, acquire_process_instance, parse_menu_action};
+use crate::runtime::metrics::QueuedActionGuard;
 use crate::runtime::{ActionCommand, ActionRunner, RuntimeMetrics, global_runtime_metrics};
 use crate::x11_hotkeys::X11HotkeyListener;
 use futures::StreamExt;
@@ -109,6 +110,9 @@ pub enum BarDaemonAction {
     ReloadConfig,
     ToggleModule(String),
     FocusModule(String),
+    ShowAllModules,
+    ClearModuleFocus,
+    Quit,
     Raw(String),
 }
 
@@ -207,8 +211,13 @@ pub struct KeybindingDaemon {
 }
 
 struct ExecutionDispatcher {
-    sender: mpsc::Sender<usize>,
+    sender: mpsc::Sender<QueuedBinding>,
     task: JoinHandle<()>,
+}
+
+struct QueuedBinding {
+    index: usize,
+    _queue_guard: QueuedActionGuard,
 }
 
 impl Drop for ExecutionDispatcher {
@@ -424,7 +433,7 @@ impl KeybindingDaemon {
         key_name: &str,
         value: i32,
         now: Instant,
-        execution_sender: Option<&mpsc::Sender<usize>>,
+        execution_sender: Option<&mpsc::Sender<QueuedBinding>>,
     ) -> Result<()> {
         if let Some(sender) = &self.action_sender
             && let Err(error) = sender.try_send(KeybindingResult::RawKeyEvent {
@@ -478,7 +487,8 @@ impl KeybindingDaemon {
     }
 
     fn start_execution_dispatcher(&self) -> ExecutionDispatcher {
-        let (sender, mut receiver) = mpsc::channel(HOTKEY_EXECUTION_QUEUE_CAPACITY);
+        let (sender, mut receiver) =
+            mpsc::channel::<QueuedBinding>(HOTKEY_EXECUTION_QUEUE_CAPACITY);
         let bindings = Arc::new(
             self.bindings
                 .iter()
@@ -493,7 +503,8 @@ impl KeybindingDaemon {
         let task = tokio::spawn(async move {
             let semaphore = Arc::new(tokio::sync::Semaphore::new(HOTKEY_EXECUTION_CONCURRENCY));
             let mut jobs = JoinSet::new();
-            while let Some(index) = receiver.recv().await {
+            while let Some(queued) = receiver.recv().await {
+                let index = queued.index;
                 let Some(binding) = bindings.get(index).cloned() else {
                     warn!(index, "hotkeys: queued binding index no longer exists");
                     continue;
@@ -502,6 +513,7 @@ impl KeybindingDaemon {
                     Ok(permit) => permit,
                     Err(_) => break,
                 };
+                drop(queued);
                 let action_sender = action_sender.clone();
                 let menu_manager = menu_manager.clone();
                 let action_bus_socket = action_bus_socket.clone();
@@ -532,11 +544,15 @@ impl KeybindingDaemon {
 }
 
 fn try_enqueue_binding(
-    sender: &mpsc::Sender<usize>,
+    sender: &mpsc::Sender<QueuedBinding>,
     index: usize,
-    metrics: &RuntimeMetrics,
+    metrics: &Arc<RuntimeMetrics>,
 ) -> std::result::Result<(), String> {
-    sender.try_send(index).map_err(|error| match error {
+    let queued = QueuedBinding {
+        index,
+        _queue_guard: metrics.queued_action_guard(),
+    };
+    sender.try_send(queued).map_err(|error| match error {
         mpsc::error::TrySendError::Full(_) => {
             metrics.record_action_rejected();
             "execution queue is full".to_string()
@@ -731,8 +747,27 @@ pub fn parse_bar_action(command: &str) -> BarDaemonAction {
         return BarDaemonAction::ReloadConfig;
     }
 
+    if matches!(
+        lower.as_str(),
+        "show-all-modules" | "modules:show-all" | "bar:show-all"
+    ) {
+        return BarDaemonAction::ShowAllModules;
+    }
+
+    if matches!(
+        lower.as_str(),
+        "clear-module-focus" | "modules:clear-focus" | "bar:clear-focus"
+    ) {
+        return BarDaemonAction::ClearModuleFocus;
+    }
+
+    if matches!(lower.as_str(), "quit" | "bar:quit") {
+        return BarDaemonAction::Quit;
+    }
+
     if let Some(module) = trimmed
         .strip_prefix("toggle-module:")
+        .or_else(|| trimmed.strip_prefix("toggle-module "))
         .or_else(|| trimmed.strip_prefix("bar:toggle:"))
     {
         return BarDaemonAction::ToggleModule(module.trim().to_string());
@@ -740,6 +775,7 @@ pub fn parse_bar_action(command: &str) -> BarDaemonAction {
 
     if let Some(module) = trimmed
         .strip_prefix("focus-module:")
+        .or_else(|| trimmed.strip_prefix("focus-module "))
         .or_else(|| trimmed.strip_prefix("bar:focus:"))
     {
         return BarDaemonAction::FocusModule(module.trim().to_string());
@@ -938,6 +974,23 @@ mod tests {
             parse_bar_action("bar:focus:wifi"),
             BarDaemonAction::FocusModule("wifi".to_string())
         );
+        assert_eq!(
+            parse_bar_action("show-all-modules"),
+            BarDaemonAction::ShowAllModules
+        );
+        assert_eq!(
+            parse_bar_action("bar:clear-focus"),
+            BarDaemonAction::ClearModuleFocus
+        );
+        assert_eq!(
+            parse_bar_action("toggle-module clock"),
+            BarDaemonAction::ToggleModule("clock".to_string())
+        );
+        assert_eq!(
+            parse_bar_action("focus-module battery"),
+            BarDaemonAction::FocusModule("battery".to_string())
+        );
+        assert_eq!(parse_bar_action("quit"), BarDaemonAction::Quit);
     }
     #[test]
     fn unsafe_grab_reports_readiness_failure_before_device_access() {
@@ -986,10 +1039,14 @@ mod tests {
 
     #[test]
     fn saturated_execution_queue_is_rejected_and_counted() {
-        let metrics = super::RuntimeMetrics::default();
-        let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+        let metrics = std::sync::Arc::new(super::RuntimeMetrics::default());
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
         super::try_enqueue_binding(&sender, 0, &metrics).unwrap();
         assert!(super::try_enqueue_binding(&sender, 1, &metrics).is_err());
-        assert_eq!(metrics.snapshot().actions_rejected, 1);
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.actions_rejected, 1);
+        assert_eq!(snapshot.queued_actions, 1);
+        drop(receiver);
+        assert_eq!(metrics.snapshot().queued_actions, 0);
     }
 }

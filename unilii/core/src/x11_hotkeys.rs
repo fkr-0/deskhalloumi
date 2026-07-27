@@ -14,6 +14,8 @@ use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{ConnectionExt, GrabMode, KeyButMask, Keycode, ModMask, Window};
 use x11rb::rust_connection::RustConnection;
 
+const X11_EVENT_QUEUE_CAPACITY: usize = 256;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct X11KeyEvent {
     pub code: String,
@@ -159,8 +161,8 @@ impl X11HotkeyListener {
         &self.diagnostics
     }
 
-    pub fn into_event_stream(self) -> mpsc::UnboundedReceiver<Result<X11KeyEvent, String>> {
-        let (sender, receiver) = mpsc::unbounded_channel();
+    pub fn into_event_stream(self) -> mpsc::Receiver<Result<X11KeyEvent, String>> {
+        let (sender, receiver) = mpsc::channel(X11_EVENT_QUEUE_CAPACITY);
         thread::Builder::new()
             .name("deskhalloumi-x11-hotkeys".to_string())
             .spawn(move || {
@@ -177,7 +179,8 @@ impl X11HotkeyListener {
                             continue;
                         }
                         Err(error) => {
-                            let _ = sender.send(Err(format!("X11 event loop failed: {error}")));
+                            let _ = sender
+                                .blocking_send(Err(format!("X11 event loop failed: {error}")));
                             break;
                         }
                     };
@@ -199,7 +202,7 @@ impl X11HotkeyListener {
                         let modifiers = modifier_events(state, &code);
                         for modifier in &modifiers {
                             if sender
-                                .send(Ok(X11KeyEvent {
+                                .blocking_send(Ok(X11KeyEvent {
                                     code: modifier.clone(),
                                     value: 1,
                                 }))
@@ -210,7 +213,10 @@ impl X11HotkeyListener {
                         }
                         synthetic_modifiers.insert(keycode, modifiers);
                     }
-                    if sender.send(Ok(X11KeyEvent { code, value })).is_err() {
+                    if sender
+                        .blocking_send(Ok(X11KeyEvent { code, value }))
+                        .is_err()
+                    {
                         break;
                     }
                     if value == 0
@@ -218,7 +224,7 @@ impl X11HotkeyListener {
                     {
                         for modifier in modifiers.into_iter().rev() {
                             if sender
-                                .send(Ok(X11KeyEvent {
+                                .blocking_send(Ok(X11KeyEvent {
                                     code: modifier,
                                     value: 0,
                                 }))

@@ -81,6 +81,9 @@ command = "toggle-module clock"
 **Available bar commands:**
 
 - `toggle-module <name>` - Toggle visibility of a module (e.g., "clock", "battery")
+- `focus-module <name>` - Reveal and visually prioritize a module
+- `show-all-modules` - Restore every hidden module
+- `clear-module-focus` - Return to normal module ordering
 - `reload-config` - Reload configuration from file
 - `quit` - Quit unilii application
 

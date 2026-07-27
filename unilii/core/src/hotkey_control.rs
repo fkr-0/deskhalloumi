@@ -4,15 +4,17 @@
 //! lives below the same private runtime directory used by menu and singleton
 //! records, so control commands are restricted to the current desktop user.
 
+use crate::ipc_frame::read_utf8_line_bounded;
 use crate::menu_process::{MenuStatus, default_runtime_dir};
 use crate::runtime::RuntimeMetricsSnapshot;
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const HOTKEY_CONTROL_PROTOCOL_VERSION: u16 = 1;
+pub const HOTKEY_CONTROL_MAX_FRAME_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
@@ -99,6 +101,9 @@ pub fn send_control_request(
 
     let mut payload = serde_json::to_vec(request).map_err(|error| error.to_string())?;
     payload.push(b'\n');
+    if payload.len() > HOTKEY_CONTROL_MAX_FRAME_BYTES {
+        return Err("hotkeyd control request exceeds 64 KiB".to_string());
+    }
     stream.write_all(&payload).map_err(|error| {
         format!(
             "failed to write hotkeyd request to '{}': {error}",
@@ -107,13 +112,9 @@ pub fn send_control_request(
     })?;
     stream.flush().map_err(|error| error.to_string())?;
 
-    let mut line = String::new();
-    BufReader::new(stream)
-        .read_line(&mut line)
+    let mut reader = BufReader::new(stream);
+    let line = read_utf8_line_bounded(&mut reader, HOTKEY_CONTROL_MAX_FRAME_BYTES)
         .map_err(|error| format!("failed to read hotkeyd response: {error}"))?;
-    if line.trim().is_empty() {
-        return Err("hotkeyd returned an empty control response".to_string());
-    }
     serde_json::from_str(line.trim())
         .map_err(|error| format!("invalid hotkeyd control response: {error}"))
 }
@@ -121,6 +122,7 @@ pub fn send_control_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, Write};
     use std::os::unix::net::UnixListener;
     use std::thread;
 
@@ -144,6 +146,27 @@ mod tests {
         let response = send_control_request(&socket, &HotkeyControlRequest::Ping).unwrap();
         assert!(response.ok);
         assert_eq!(response.message, "pong");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn control_client_rejects_oversized_unterminated_response() {
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("control.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            let mut writer = stream;
+            writer
+                .write_all(&vec![b'x'; HOTKEY_CONTROL_MAX_FRAME_BYTES + 1])
+                .unwrap();
+        });
+        let error = send_control_request(&socket, &HotkeyControlRequest::Ping).unwrap_err();
+        assert!(error.contains("exceeds"));
         server.join().unwrap();
     }
 }

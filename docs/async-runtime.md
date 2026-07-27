@@ -149,9 +149,11 @@ Choose channel semantics from the data:
 - `broadcast`: events for multiple independent subscribers, with lag handling;
 - oneshot: one request/response or readiness signal.
 
-Unbounded channels are acceptable only when the producer is intrinsically
-bounded and documented. Provider refresh requests and action execution must not
-create unlimited queued work.
+Production hotkey, action, bar, tray, provider, and X11 event paths use bounded
+channels. A dedicated blocking producer such as the X11 event thread applies
+backpressure with `blocking_send` rather than dropping press/release state or
+growing memory without limit. Any future unbounded channel requires an
+intrinsically bounded producer and an explicit design note.
 
 The runtime implements two concrete pressure policies:
 

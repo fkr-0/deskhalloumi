@@ -80,6 +80,9 @@ mod tests {
             panic!("runtime metrics must be answered synchronously");
         };
         assert!(response.ok);
-        assert!(response.data.unwrap().get("active_tasks").is_some());
+        let data = response.data.unwrap();
+        assert!(data.get("active_tasks").is_some());
+        assert!(data.get("active_actions").is_some());
+        assert!(data.get("queued_actions").is_some());
     }
 }

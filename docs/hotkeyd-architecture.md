@@ -15,6 +15,12 @@ The architecture preserves these invariants:
 5. control and action IPC are user-scoped, versioned, and bounded;
 6. unmatched input is untouched by the selective X11 backend.
 
+The control and action sockets enforce their 64 KiB limits during reading, not
+after an unbounded string allocation. Read and write phases are timeout-bounded,
+and the bar limits simultaneously active action-bus clients. The selective X11
+thread publishes through a 256-entry bounded channel and blocks under pressure
+to preserve press/release ordering.
+
 ## Component map
 
 ```text
