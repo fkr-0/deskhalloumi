@@ -1055,7 +1055,6 @@ dependencies = [
  "async-trait",
  "deskhalloumi-core",
  "deskhalloumi-lib",
- "futures",
  "iced",
  "tokio",
  "tracing",
