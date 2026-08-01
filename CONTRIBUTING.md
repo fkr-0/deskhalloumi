@@ -81,13 +81,14 @@ temporary harmless scripts rather than live desktop tools.
 ## Updating task state
 
 `roadmap.yml` defines release horizons and architecture direction. `todo.yml`
-tracks focused known gaps, and `tasks.yml` records detailed implementation
-evidence. When completing a slice:
+tracks focused known gaps, `tasks.yml` records concise active release work, and
+`docs/history/` preserves detailed closed implementation ledgers. When completing
+a slice:
 
 1. Add or update focused tests first.
 2. Run the focused gate.
 3. Run `scripts/test_safe.sh` when production code, scripts, docs, or test policy changes.
-4. Update `tasks.yml` with implementation evidence, limitations, and any emerging follow-up tasks.
+4. Update `tasks.yml` with concise implementation evidence, limitations, and emerging follow-up work; archive closed detailed ledgers under `docs/history/`.
 
 Documentation-only corrections made after a release tag belong under
 `[Unreleased]`; never move or replace an already published annotated tag.

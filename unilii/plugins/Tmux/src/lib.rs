@@ -1,6 +1,10 @@
 //! Tmux pane switching widget with release-to-confirm support.
 
-use std::{ffi::OsString, time::Duration};
+use std::{
+    ffi::OsString,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use deskhalloumi_core::{
     Module, ModuleConfig, ModuleUpdate, Result,
@@ -17,7 +21,7 @@ use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 /// Represents a tmux pane.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TmuxPane {
     pub id: usize,
     pub session_name: String,
@@ -36,7 +40,7 @@ pub fn provider_contract() -> ProviderContract {
             stale_after: Duration::from_secs(8),
             refresh_on_start: true,
         },
-        "TestProviderBackend<Vec<TmuxPane>>",
+        "FixedTmuxSource",
     )
 }
 
@@ -55,20 +59,18 @@ fn parse_tmux_pane_line(line: &str) -> Option<TmuxPane> {
     })
 }
 
-#[derive(Debug)]
-enum TmuxCommand {
-    Refresh,
-    Select(TmuxPane),
+#[async_trait::async_trait]
+pub trait TmuxSource: Send + Sync {
+    async fn list_panes(&self) -> std::result::Result<Vec<TmuxPane>, String>;
+    async fn select_pane(&self, pane: &TmuxPane) -> std::result::Result<(), String>;
 }
 
-pub struct Tmux {
-    panes: Vec<TmuxPane>,
-    selected_index: Option<usize>,
-    control_tx: Option<mpsc::Sender<TmuxCommand>>,
-}
+#[derive(Debug, Default)]
+pub struct SystemTmuxSource;
 
-impl Tmux {
-    async fn list_panes() -> Result<Vec<TmuxPane>> {
+#[async_trait::async_trait]
+impl TmuxSource for SystemTmuxSource {
+    async fn list_panes(&self) -> std::result::Result<Vec<TmuxPane>, String> {
         let outcome = ActionRunner::with_timeout("tmux", "list-panes", Duration::from_secs(3))
             .run_command(ActionCommand::new(
                 "tmux",
@@ -83,17 +85,14 @@ impl Tmux {
                 .collect(),
             ))
             .await;
-
         if let Err(error) = outcome.result {
             let detail = outcome.stderr.trim();
             return Err(if detail.is_empty() {
                 error
             } else {
                 detail.to_string()
-            }
-            .into());
+            });
         }
-
         Ok(outcome
             .stdout
             .lines()
@@ -101,7 +100,7 @@ impl Tmux {
             .collect())
     }
 
-    async fn switch_to_pane(pane: &TmuxPane) -> Result<()> {
+    async fn select_pane(&self, pane: &TmuxPane) -> std::result::Result<(), String> {
         let target = format!("%{}", pane.id);
         let outcome = ActionRunner::with_timeout("tmux", "select-pane", Duration::from_secs(3))
             .run_command(ActionCommand::new(
@@ -112,17 +111,14 @@ impl Tmux {
                     .collect(),
             ))
             .await;
-
         if let Err(error) = outcome.result {
             let detail = outcome.stderr.trim();
             return Err(if detail.is_empty() {
                 error
             } else {
                 detail.to_string()
-            }
-            .into());
+            });
         }
-
         info!(
             pane_id = pane.id,
             session = %pane.session_name,
@@ -131,6 +127,68 @@ impl Tmux {
             "switched tmux pane"
         );
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FixedTmuxSource {
+    panes: Vec<TmuxPane>,
+    selected: Arc<Mutex<Vec<usize>>>,
+}
+
+impl FixedTmuxSource {
+    pub fn new(panes: Vec<TmuxPane>) -> Self {
+        Self {
+            panes,
+            selected: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn selected_panes(&self) -> Vec<usize> {
+        self.selected
+            .lock()
+            .map(|selected| selected.clone())
+            .unwrap_or_default()
+    }
+}
+
+#[async_trait::async_trait]
+impl TmuxSource for FixedTmuxSource {
+    async fn list_panes(&self) -> std::result::Result<Vec<TmuxPane>, String> {
+        Ok(self.panes.clone())
+    }
+
+    async fn select_pane(&self, pane: &TmuxPane) -> std::result::Result<(), String> {
+        self.selected
+            .lock()
+            .map_err(|error| format!("fixed tmux source lock poisoned: {error}"))?
+            .push(pane.id);
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+enum TmuxCommand {
+    Refresh,
+    Select(TmuxPane),
+}
+
+pub struct Tmux {
+    panes: Vec<TmuxPane>,
+    selected_index: Option<usize>,
+    control_tx: Option<mpsc::Sender<TmuxCommand>>,
+    source: Arc<dyn TmuxSource>,
+}
+
+impl Tmux {
+    pub async fn with_source(source: Arc<dyn TmuxSource>) -> Result<Self> {
+        let panes = source.list_panes().await.unwrap_or_default();
+        Ok(Self {
+            panes,
+            selected_index: None,
+            control_tx: None,
+            source,
+        })
     }
 
     fn queue_command(&self, command: TmuxCommand, coalescible: bool) {
@@ -154,12 +212,7 @@ impl Tmux {
 #[async_trait::async_trait]
 impl Module for Tmux {
     async fn new(_config: &ModuleConfig) -> Result<Self> {
-        let panes = Self::list_panes().await.unwrap_or_default();
-        Ok(Self {
-            panes,
-            selected_index: None,
-            control_tx: None,
-        })
+        Self::with_source(Arc::new(SystemTmuxSource)).await
     }
 
     fn name(&self) -> &str {
@@ -271,6 +324,7 @@ impl Module for Tmux {
     async fn subscribe(&mut self) -> Result<Option<ModuleSubscription>> {
         let (control_tx, mut control_rx) = mpsc::channel(8);
         self.control_tx = Some(control_tx);
+        let source = Arc::clone(&self.source);
 
         Ok(Some(ModuleSubscription::with_contract(
             provider_contract(),
@@ -289,13 +343,13 @@ impl Module for Tmux {
                     match command {
                         TmuxCommand::Refresh => {}
                         TmuxCommand::Select(pane) => {
-                            if let Err(error) = Self::switch_to_pane(&pane).await {
+                            if let Err(error) = source.select_pane(&pane).await {
                                 error!(%error, "failed to switch tmux pane");
                             }
                         }
                     }
 
-                    match Self::list_panes().await {
+                    match source.list_panes().await {
                         Ok(panes) => {
                             let json = serde_json::json!({
                                 "action": "update_panes",
@@ -334,10 +388,25 @@ mod tests {
         assert!(parse_tmux_pane_line("%17 missing fields").is_none());
     }
 
+    #[tokio::test]
+    async fn fixed_source_lists_and_selects_without_tmux_server() {
+        let pane = TmuxPane {
+            id: 17,
+            session_name: "work".to_string(),
+            window_index: 2,
+            pane_index: 1,
+            current: true,
+        };
+        let source = FixedTmuxSource::new(vec![pane.clone()]);
+        assert_eq!(source.list_panes().await.unwrap(), vec![pane.clone()]);
+        source.select_pane(&pane).await.unwrap();
+        assert_eq!(source.selected_panes(), vec![17]);
+    }
+
     #[test]
-    fn lifecycle_contract_has_session_free_test_backend() {
+    fn lifecycle_contract_names_executable_fixture_source() {
         let contract = provider_contract();
         assert_eq!(contract.id, "tmux");
-        assert!(contract.test_backend.contains("TestProviderBackend"));
+        assert_eq!(contract.test_backend, "FixedTmuxSource");
     }
 }

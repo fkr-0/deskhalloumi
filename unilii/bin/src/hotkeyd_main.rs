@@ -334,22 +334,25 @@ where
         }
     };
 
-    write_atomic(path, content)?;
+    if let Err(error) = write_atomic_detailed(path, content) {
+        if error.destination_replaced() {
+            let restore_result = restore_i3_include(path, previous.as_deref());
+            return match restore_result {
+                Ok(()) => Err(format!(
+                    "candidate include replaced the destination, but durability could not be confirmed ({error}); previous include restored"
+                )),
+                Err(restore_error) => Err(format!(
+                    "candidate include replaced the destination, but durability could not be confirmed ({error}); rollback failed: {restore_error}"
+                )),
+            };
+        }
+        return Err(error.to_string());
+    }
     let Err(candidate_error) = reload() else {
         return Ok(());
     };
 
-    let restore_result = match previous {
-        Some(previous) => write_atomic(path, &previous),
-        None => match fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(format!(
-                "failed to remove newly-created include '{}': {error}",
-                path.display()
-            )),
-        },
-    };
+    let restore_result = restore_i3_include(path, previous.as_deref());
     if let Err(restore_error) = restore_result {
         return Err(format!(
             "i3 rejected candidate include ({candidate_error}); rollback failed: {restore_error}"
@@ -382,13 +385,105 @@ fn run_i3_reload(i3_msg: &Path) -> Result<(), String> {
     }
 }
 
-fn write_atomic(path: &Path, content: &[u8]) -> Result<(), String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AtomicWriteFailurePhase {
+    BeforeReplace,
+    AfterReplaceBeforeDirectorySync,
+}
+
+#[derive(Debug)]
+struct AtomicWriteError {
+    phase: AtomicWriteFailurePhase,
+    message: String,
+}
+
+impl AtomicWriteError {
+    fn before_replace(message: impl Into<String>) -> Self {
+        Self {
+            phase: AtomicWriteFailurePhase::BeforeReplace,
+            message: message.into(),
+        }
+    }
+
+    fn after_replace(message: impl Into<String>) -> Self {
+        Self {
+            phase: AtomicWriteFailurePhase::AfterReplaceBeforeDirectorySync,
+            message: message.into(),
+        }
+    }
+
+    fn destination_replaced(&self) -> bool {
+        self.phase == AtomicWriteFailurePhase::AfterReplaceBeforeDirectorySync
+    }
+}
+
+impl std::fmt::Display for AtomicWriteError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.phase {
+            AtomicWriteFailurePhase::BeforeReplace => formatter.write_str(&self.message),
+            AtomicWriteFailurePhase::AfterReplaceBeforeDirectorySync => write!(
+                formatter,
+                "{}; destination content was replaced, but directory durability is uncertain",
+                self.message
+            ),
+        }
+    }
+}
+
+fn restore_i3_include(path: &Path, previous: Option<&[u8]>) -> Result<(), String> {
+    match previous {
+        Some(previous) => write_atomic(path, previous),
+        None => match fs::remove_file(path) {
+            Ok(()) => sync_parent_directory(path).map_err(|error| {
+                format!(
+                    "removed newly-created include '{}', but failed to sync its directory: {error}",
+                    path.display()
+                )
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!(
+                "failed to remove newly-created include '{}': {error}",
+                path.display()
+            )),
+        },
+    }
+}
+
+fn sync_parent_directory(path: &Path) -> std::io::Result<()> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("failed to create '{}': {error}", parent.display()))?;
+    fs::File::open(parent)?.sync_all()
+}
+
+fn write_atomic(path: &Path, content: &[u8]) -> Result<(), String> {
+    write_atomic_with_parent_sync(path, content, sync_parent_directory)
+        .map_err(|error| error.to_string())
+}
+
+fn write_atomic_detailed(path: &Path, content: &[u8]) -> Result<(), AtomicWriteError> {
+    write_atomic_with_parent_sync(path, content, sync_parent_directory)
+}
+
+fn write_atomic_with_parent_sync<F>(
+    path: &Path,
+    content: &[u8],
+    sync_parent: F,
+) -> Result<(), AtomicWriteError>
+where
+    F: FnOnce(&Path) -> std::io::Result<()>,
+{
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|error| {
+        AtomicWriteError::before_replace(format!(
+            "failed to create '{}': {error}",
+            parent.display()
+        ))
+    })?;
     let sequence = ATOMIC_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temporary = parent.join(format!(
         ".{}.tmp-{}-{sequence}",
@@ -407,31 +502,51 @@ fn write_atomic(path: &Path, content: &[u8]) -> Result<(), String> {
             .create_new(true)
             .mode(mode)
             .open(&temporary)
-            .map_err(|error| format!("failed to create '{}': {error}", temporary.display()))?;
+            .map_err(|error| {
+                AtomicWriteError::before_replace(format!(
+                    "failed to create '{}': {error}",
+                    temporary.display()
+                ))
+            })?;
         file.set_permissions(fs::Permissions::from_mode(mode))
             .map_err(|error| {
-                format!(
+                AtomicWriteError::before_replace(format!(
                     "failed to set permissions on '{}': {error}",
                     temporary.display()
-                )
+                ))
             })?;
-        file.write_all(content)
-            .map_err(|error| format!("failed to write '{}': {error}", temporary.display()))?;
-        file.flush()
-            .map_err(|error| format!("failed to flush '{}': {error}", temporary.display()))?;
-        file.sync_all()
-            .map_err(|error| format!("failed to sync '{}': {error}", temporary.display()))?;
+        file.write_all(content).map_err(|error| {
+            AtomicWriteError::before_replace(format!(
+                "failed to write '{}': {error}",
+                temporary.display()
+            ))
+        })?;
+        file.flush().map_err(|error| {
+            AtomicWriteError::before_replace(format!(
+                "failed to flush '{}': {error}",
+                temporary.display()
+            ))
+        })?;
+        file.sync_all().map_err(|error| {
+            AtomicWriteError::before_replace(format!(
+                "failed to sync '{}': {error}",
+                temporary.display()
+            ))
+        })?;
         drop(file);
         fs::rename(&temporary, path).map_err(|error| {
-            format!(
+            AtomicWriteError::before_replace(format!(
                 "failed to replace '{}' with '{}': {error}",
                 path.display(),
                 temporary.display()
-            )
+            ))
         })?;
-        fs::File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| format!("failed to sync directory '{}': {error}", parent.display()))?;
+        sync_parent(path).map_err(|error| {
+            AtomicWriteError::after_replace(format!(
+                "failed to sync directory '{}': {error}",
+                parent.display()
+            ))
+        })?;
         Ok(())
     })();
     if result.is_err() {
@@ -1763,9 +1878,34 @@ mod tests {
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+        assert_no_atomic_temporary_file(temp.path(), &path);
+    }
+
+    #[test]
+    fn atomic_write_distinguishes_post_replace_directory_sync_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("bindings.conf");
+        fs::write(&path, "old").unwrap();
+
+        let error = write_atomic_with_parent_sync(&path, b"new bindings\n", |_| {
+            Err(std::io::Error::other("injected directory sync failure"))
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            error.phase,
+            AtomicWriteFailurePhase::AfterReplaceBeforeDirectorySync
+        );
+        assert!(error.destination_replaced());
+        assert!(error.to_string().contains("durability is uncertain"));
+        assert_eq!(fs::read(&path).unwrap(), b"new bindings\n");
+        assert_no_atomic_temporary_file(temp.path(), &path);
+    }
+
+    fn assert_no_atomic_temporary_file(parent: &Path, path: &Path) {
         let prefix = format!(".{}.tmp-", path.file_name().unwrap().to_string_lossy());
         assert!(
-            fs::read_dir(temp.path())
+            fs::read_dir(parent)
                 .unwrap()
                 .filter_map(Result::ok)
                 .all(|entry| !entry.file_name().to_string_lossy().starts_with(&prefix))

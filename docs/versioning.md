@@ -2,11 +2,11 @@
 
 ## Current state
 
-The active Cargo workspace declares the coordinated version `0.3.2` in the root
+The active Cargo workspace declares the coordinated version `0.3.3` in the root
 `Cargo.toml`, and all seven first-party packages inherit it with
-`version.workspace = true`. A local annotated `v0.3.2` tag points to the reviewed
-release commit. Version `0.3.0` remains the latest remotely published release;
-the `v0.3.2` tag and branch have not been pushed. The canonical remote is
+`version.workspace = true`. A local `0.3.3` release candidate follows the reviewed annotated `v0.3.2`
+tag. Version `0.3.0` remains the latest remotely published release; later tags
+and the branch have not been pushed. The canonical remote is
 `https://github.com/fkr-0/deskhalloumi`.
 
 This document defines the contract; a local version or tag alone does not claim
@@ -180,13 +180,11 @@ publication remains an explicit maintainer action.
 
 ## Current release state
 
-Version `0.3.0` remains the latest remotely published release. Version `0.3.2`
-supersedes the untagged 0.3.1 candidate and is represented locally by annotated
-tag `v0.3.2` at commit `84e9ca856a25a7988373d3622d4be9cb51646974`.
-It hardens bounded IPC, action and X11 queues, reload ordering, durable generated-
-file replacement, runtime recovery controls, cancellation diagnostics, and
-release preflight behavior without changing the published compatibility
-contracts. No branch push, GitHub Release, asset upload, or crates.io publication
-has been performed. The next patch target is 0.3.3 regression closure; the next
-minor remains 0.4.0 provider hardening and target expansion. The stable-major
-requirements are defined in the monorepo roadmap and implementation-state review.
+Version `0.3.0` remains the latest remotely published release. Annotated local
+tag `v0.3.2` identifies the prior hardening baseline. Version `0.3.3` is the
+current coordinated patch candidate and adds release archive installation and
+removal verification, exact IPC boundary tests, explicit durable-write failure
+semantics, executable plugin fixtures, active/history task separation, and
+repository cleanup without changing public compatibility contracts. No branch
+push, GitHub Release, asset upload, or crates.io publication has been performed.
+The next minor remains 0.4.0 provider lifecycle completion.

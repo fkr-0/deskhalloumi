@@ -5,19 +5,48 @@ recorded in this file. The project follows Semantic Versioning as described in
 [`docs/versioning.md`](docs/versioning.md).
 
 Version `0.3.0` is the latest remotely published release and is identified by
-the annotated `v0.3.0` tag. Version `0.3.2` is represented locally by annotated
-tag `v0.3.2`, but neither the tag nor branch has been pushed and no remote asset
-or crate publication is implied.
+the annotated `v0.3.0` tag. Versions through `0.3.2` are represented by local
+annotated tags, but no later tag or branch push, remote asset upload, or crate
+publication is implied.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-08-02
+
+### Added
+
+- A source-tree-independent release archive smoke test covering checksum
+  verification, safe extraction, temporary-prefix installation, all twelve
+  primary and compatibility command help paths, the headless runtime contract,
+  and clean removal.
+- Exact protocol-boundary regressions for IPC frames at the 64 KiB limit and one
+  byte over it in synchronous and asynchronous readers.
+- Executable fixture sources for clock, battery, and Tmux module tests.
+- A documented generated-file durability contract distinguishing failures before
+  destination replacement from failures after rename but before directory sync.
+- A package-by-package implementation-state review and coordinated patch, minor,
+  intermediate, and stable-major roadmap.
+
 ### Changed
 
-- Added a package-by-package 0.3.2 implementation-state review and a coordinated
-  roadmap for the next patch (`0.3.3`), next minor (`0.4.0`), intermediate
-  convergence milestones, and the stable-major (`1.0.0`) contract.
-- Clarified the distinction between a local annotated tag, branch push, GitHub
-  Release publication, binary assets, and crates.io publication.
+- Transactional i3 include installation restores the previous include when the
+  candidate destination was replaced but parent-directory durability could not
+  be confirmed.
+- Active release work now lives in a concise root `tasks.yml`; the detailed
+  implementation ledger through 0.3.2 is archived under `docs/history/`.
+- The tag, branch, GitHub Release, binary asset, and crates.io publication states
+  are documented separately.
+
+### Removed
+
+- Tracked archival `battery.rs.bak` and `main.rs.bak` source files.
+
+### Fixed
+
+- Durable generated-file errors no longer imply that the old destination remains
+  visible when rename succeeded but parent-directory synchronization failed.
+- Battery and Tmux tests no longer require live hardware or a tmux server, and
+  clock tests can control the reported time.
 
 ## [0.3.2] - 2026-07-27
 

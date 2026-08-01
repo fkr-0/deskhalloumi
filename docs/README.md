@@ -16,6 +16,7 @@ operators, contributors, and maintainers who need more detail.
 ## Architecture
 
 - [Async runtime and subprocess policy](async-runtime.md)
+- [Atomic generated-file replacement](atomic-file-replacement.md)
 - [Quick-select, provider, menu, and typed-action contracts](runtime-contracts.md)
 - [Bar architecture](bar-architecture.md)
 - [Hotkey daemon architecture](hotkeyd-architecture.md)
@@ -32,12 +33,15 @@ operators, contributors, and maintainers who need more detail.
 ## Releases and maintenance
 
 - [Human-readable release roadmap](roadmap.md)
+- [DeskHalloumi 0.3.3 release notes](releases/0.3.3.md)
+- [DeskHalloumi 0.3.2 release notes](releases/0.3.2.md)
 - [DeskHalloumi 0.3.0 release notes](releases/0.3.0.md)
 - [DeskHalloumi 0.2.0 release notes](releases/0.2.0.md)
 - [Versioning and release policy](versioning.md)
 - [`roadmap.yml`](../roadmap.yml), the internal maintainer roadmap
 - [`todo.yml`](../todo.yml), focused known gaps
-- [`tasks.yml`](../tasks.yml), implementation evidence and review state
+- [`tasks.yml`](../tasks.yml), concise active release tasks
+- [`history/tasks-through-0.3.2.yml`](history/tasks-through-0.3.2.yml), detailed historical implementation evidence through 0.3.2
 
 ## Support boundary
 

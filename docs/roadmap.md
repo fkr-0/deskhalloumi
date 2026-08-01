@@ -4,7 +4,7 @@ This is the human-readable release plan for the coordinated Cargo workspace.
 The machine-oriented source of truth is [`roadmap.yml`](../roadmap.yml), and the
 0.3.2 implementation assessment is
 [`implementation-state-0.3.2.md`](implementation-state-0.3.2.md).
-Detailed historical implementation evidence remains in [`tasks.yml`](../tasks.yml).
+Active work is tracked in [`tasks.yml`](../tasks.yml); detailed implementation evidence through 0.3.2 is archived in [`history/tasks-through-0.3.2.yml`](history/tasks-through-0.3.2.yml).
 
 The roadmap defines acceptance boundaries, not dates. A capability belongs to a
 release only after its exit criteria pass. Every first-party crate inherits one

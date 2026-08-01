@@ -6,9 +6,9 @@ project:
   slug: deskhalloumi
   repository: https://github.com/fkr-0/deskhalloumi
   current_version: 0.3.2
-  current_candidate: null
+  current_candidate: 0.3.3
   current_tag: v0.3.2
-  release_state: locally_tagged_unpublished
+  release_state: patch_candidate
   supported_session: i3/X11
   compatibility_boundary:
   - unilii command aliases remain available during 0.x
@@ -130,7 +130,7 @@ release_targets:
   - branch push and remote publication remain explicit maintainer actions and were not performed.
 - version: 0.3.3
   theme: release follow-up and regression closure
-  status: planned
+  status: candidate
   primary_work:
   - Reconcile active documentation with the locally tagged but unpublished 0.3.2 state.
   - Verify the assembled archive through checksum, extraction, temporary-prefix installation, command smoke, and clean removal.

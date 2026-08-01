@@ -56,12 +56,51 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
+    fn synchronous_reader_accepts_frame_exactly_at_limit() {
+        let mut input = vec![b'x'; 15];
+        input.push(b'\n');
+        let mut reader = Cursor::new(input);
+        assert_eq!(
+            read_utf8_line_bounded(&mut reader, 16).unwrap(),
+            "x".repeat(15)
+        );
+    }
+
+    #[test]
+    fn synchronous_reader_rejects_frame_one_byte_over_limit() {
+        let mut input = vec![b'x'; 16];
+        input.push(b'\n');
+        let mut reader = Cursor::new(input);
+        let error = read_utf8_line_bounded(&mut reader, 16).unwrap_err();
+        assert!(error.contains("exceeds 16 bytes"));
+        assert_eq!(reader.position(), 17);
+    }
+
+    #[test]
     fn synchronous_reader_rejects_oversize_without_consuming_unbounded_input() {
         let input = vec![b'x'; 128 * 1024];
         let mut reader = Cursor::new(input);
         let error = read_utf8_line_bounded(&mut reader, 64 * 1024).unwrap_err();
         assert!(error.contains("exceeds"));
         assert!(reader.position() <= (64 * 1024 + 1) as u64);
+    }
+
+    #[tokio::test]
+    async fn asynchronous_reader_accepts_frame_exactly_at_limit() {
+        let mut reader = tokio::io::BufReader::new(&b"123456789012345\n"[..]);
+        assert_eq!(
+            read_utf8_line_bounded_async(&mut reader, 16).await.unwrap(),
+            "123456789012345"
+        );
+    }
+
+    #[tokio::test]
+    async fn asynchronous_reader_rejects_frame_one_byte_over_limit() {
+        let mut reader = tokio::io::BufReader::new(&b"1234567890123456\n"[..]);
+        let error = read_utf8_line_bounded_async(&mut reader, 16)
+            .await
+            .unwrap_err();
+        assert!(error.contains("exceeds 16 bytes"));
     }
 
     #[tokio::test]

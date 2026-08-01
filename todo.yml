@@ -191,7 +191,7 @@ resolved:
   - python3 scripts/check_release_metadata.py --release --require-clean
 remaining:
 - id: PATCH-033
-  status: pending
+  status: in_progress
   target_release: 0.3.3
   priority: P0
   gap: The tagged release needs narrow follow-up verification and repository-state cleanup without consuming 0.4.0 feature scope.

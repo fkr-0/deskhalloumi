@@ -9,7 +9,7 @@ on:
       release_ref:
         description: Annotated release tag to validate and package
         required: true
-        default: v0.3.2
+        default: v0.3.3
 
 permissions:
   contents: write
@@ -125,6 +125,16 @@ jobs:
             cd dist
             sha256sum "${package}.tar.gz" > "${package}.tar.gz.sha256"
           )
+
+      - name: Smoke installed release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_REF#v}"
+          archive="dist/deskhalloumi-${version}-x86_64-unknown-linux-gnu.tar.gz"
+          python3 scripts/smoke_release_archive.py \
+            "$archive" \
+            --checksum "${archive}.sha256"
 
       - name: Upload release archive
         uses: actions/upload-artifact@v6

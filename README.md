@@ -11,21 +11,22 @@ commands and config fallbacks remain available during the pre-1.0 migration.
 
 Canonical repository: <https://github.com/fkr-0/deskhalloumi>
 
-## Release 0.3.2
+## Release 0.3.3
 
-`0.3.2` supersedes the untagged 0.3.1 candidate and is now represented by the
-local annotated tag `v0.3.2`. It adds admission-time bounded IPC,
-generation-safe bar reloads, bounded X11 event delivery, durable atomic i3
-writes, cancellation-safe action diagnostics, presentation recovery actions,
-and an early release-space check. The existing i3/X11, configuration-path,
-application-ID, and `unilii-*` compatibility contracts remain available. The
-tag and branch have not been pushed, and no remote release or crates.io
-publication is implied.
+`0.3.3` is a backwards-compatible regression and repository-hygiene release.
+It adds source-tree-independent archive installation/removal smoke tests, exact
+IPC frame-limit coverage, explicit durable-write failure phases, and executable
+Clock, Battery, and Tmux fixture sources. It also separates active tasks from
+the detailed historical ledger and removes tracked backup sources. Existing
+i3/X11, CLI, configuration, IPC, path, application-ID, service, and `unilii-*`
+compatibility contracts remain unchanged. No tag push, remote release, asset
+upload, or crates.io publication is implied.
 
-- [Release notes](docs/releases/0.3.2.md)
+- [Release notes](docs/releases/0.3.3.md)
 - [Complete changelog](CHANGELOG.md)
+- [Atomic file replacement contract](docs/atomic-file-replacement.md)
 - [Implementation state at 0.3.2](docs/implementation-state-0.3.2.md)
-- [Roadmap for 0.3.3, 0.4.0, and 1.0.0](docs/roadmap.md)
+- [Roadmap for 0.4.0 and 1.0.0](docs/roadmap.md)
 - [Versioning and release policy](docs/versioning.md)
 - [Binary release and source tag `v0.3.0`](https://github.com/fkr-0/deskhalloumi/releases/tag/v0.3.0)
 - [Installation and upgrade guide](docs/installation.md)
@@ -53,7 +54,7 @@ not published automatically.
 ├── CHANGELOG.md                # user-visible unreleased and released changes
 ├── roadmap.yml                 # internal maintainer roadmap and release horizons
 ├── todo.yml                    # focused remaining hotkey/rename/release work
-├── tasks.yml                   # current review/implementation task state
+├── tasks.yml                   # concise active release task state
 └── unilii/
     ├── Cargo.toml              # small top-level library package
     ├── bin/                    # Iced status bar binary and app wiring
@@ -149,7 +150,7 @@ DeskHalloumi does not present X11 hotkey behavior as Sway parity. A separately
 tested Wayland adapter is required before global shortcut support can be called
 portable.
 
-Some architecture is still intentionally transitional. In particular, `unilii/bin/src/main.rs` still owns too much wiring and is being split into tested modules under tasks tracked in `tasks.yml`.
+Some architecture is still intentionally transitional. In particular, `unilii/bin/src/main.rs` still owns too much wiring and is being split into tested modules under active tasks in `tasks.yml`; the detailed pre-0.3.3 ledger is archived under `docs/history/`.
 
 ## Building and running
 
@@ -206,15 +207,16 @@ cargo test -p deskhalloumi-lib calendar::caldav::tests::normalizes_ics_datetime_
 ## Development workflow
 
 Use `roadmap.yml` for release horizons and architecture direction, `todo.yml`
-for focused known gaps, and `tasks.yml` for detailed historical implementation
-evidence. The current package-by-package assessment is in
+for focused known gaps, `tasks.yml` for active release tasks, and
+`docs/history/tasks-through-0.3.2.yml` for the detailed historical ledger. The
+current package-by-package assessment is in
 `docs/implementation-state-0.3.2.md`.
 The current workflow is test-first:
 
 1. Reproduce the bug or missing behavior with a focused failing test or lint/doc check.
 2. Make the smallest implementation change that turns the test green.
 3. Run the focused test, `cargo check --workspace`, non-incremental clippy, and `scripts/test_safe.sh` when the slice touches production code.
-4. Update `tasks.yml` with completion evidence, new subtasks, and refinements to remaining work.
+4. Update `tasks.yml` with concise active-state evidence and move closed detailed ledgers into `docs/history/` when they become historical.
 
 For new behavior, prefer pure state/model tests over live DBus, live NetworkManager, or GUI-window tests. Add live smoke tests only after the pure behavior boundary is stable. See `CONTRIBUTING.md` for the safe testing policy and audit annotations.
 

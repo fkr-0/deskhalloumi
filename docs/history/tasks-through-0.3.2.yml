@@ -1,0 +1,2819 @@
+version: 1
+review:
+  title: unilii code review and modrelease-2 merge task map
+  generated_at: '2026-05-16'
+  target_project:
+    name_observed: unilii
+    requested_name: uniliii
+    path: /home/user/work/code/unilii
+    scope: current dirty working tree, not only committed main
+    head_commit: 5f0859cd02aacc4425865e5f08689fc5acaf5365
+  reference_project:
+    name: modrelease-2
+    path: /home/user/code/modrelease-2
+    scope: tested reference for portable menu, tabbar, keybinding, focus, workspace-preview, and input-flow mechanics
+  review_methods:
+  - inspected repository inventory and git status
+  - read existing README.md and MERGE_PLAN.md
+  - ran unilii cargo check, cargo test, and clippy commands
+  - ran modrelease-2 make test
+  - inspected key modrelease-2 UI docs for portable UX mechanics
+  guiding_constraints:
+  - Do not merge modrelease-2 renderer or X11/Cairo stack wholesale into unilii. Import interaction semantics and tested model
+    boundaries instead.
+  - 'All bugfixes and behavior changes must be TDD: failing test first, verified red, minimal green, verified green, then
+    refactor.'
+  - Do not treat compile success as behavioral success; tests and clippy currently disagree.
+  last_updated_at: '2026-07-18'
+  last_update_summary: 'Completed the supervised async runtime slice: shared action policy, owned workers, bounded shutdown,
+    provider refresh coalescing, latest-value module updates, and runtime metrics.'
+actual_bugs:
+- id: BUG-001
+  title: unknown tray icon names fall back to initials instead of generic icon
+  evidence:
+    command: cargo test --workspace
+    exit_code: 101
+    failure: tray::tests::icon_label_uses_known_icon_keywords
+    observed: icon_label_for_name("unknown-icon") returned "U"
+    expected: '"◉"'
+    affected_regions:
+    - unilii/bin/src/tray.rs:277-296 icon_label_for_name
+    - unilii/bin/src/tray.rs:592-596 failing regression test
+  consequence: The tray UI can display misleading one-letter badges for icon theme names that are not application names, and
+    the workspace test suite is red.
+  root_cause_hypothesis: The name-only helper applies initials fallback to arbitrary icon theme identifiers; that fallback
+    is appropriate for app/service labels but too broad for unknown icon names.
+  priority: P0
+  status: done
+  completed_at: '2026-05-16'
+  resolution: icon_label_for_name now returns the generic tray marker for unknown icon theme names instead of deriving initials
+    from arbitrary icon identifiers.
+  verification:
+  - 'RED: cargo test -p unilii-bin tray::tests::icon_label_uses_known_icon_keywords -- --nocapture exited 101 before the fix.'
+  - 'GREEN: cargo test -p unilii-bin tray::tests::icon_label_uses_known_icon_keywords -- --nocapture exited 0 after the fix.'
+- id: BUG-002
+  title: CalDAV datetime suffix branch has identical outcomes and fails clippy gate
+  evidence:
+    command: cargo clippy --workspace --all-targets -- -D warnings
+    exit_code: 101
+    failure: clippy::if_same_then_else
+    affected_regions:
+    - unilii/lib/src/calendar/caldav.rs:256
+    snippet: let suffix = if value.ends_with('Z') { "Z" } else { "Z" };
+  consequence: Lint gate fails and the intended timezone normalization rule is unclear.
+  root_cause_hypothesis: An unfinished normalization branch was left in place after deciding every value should be emitted
+    with Z, or the non-Z branch should transform local/naive values differently.
+  priority: P0
+  status: done
+  completed_at: '2026-05-16'
+  resolution: Replaced the unfinished identical suffix branch with an explicit UTC-shape format string and added a characterization
+    test for date-only, UTC datetime, and floating datetime ICS values.
+  verification:
+  - cargo test -p unilii-lib calendar::caldav::tests::normalizes_ics_datetime_values_to_utc_shape -- --nocapture exited 0.
+  - cargo clippy -p unilii-lib --all-targets -- -D warnings exited 0.
+- id: BUG-003
+  title: WiFi widget contains a tautological test assertion
+  evidence:
+    command: cargo test --workspace
+    warning: comparison is useless due to type limits
+    affected_regions:
+    - unilii/bin/src/widgets/wifi.rs:378
+    snippet: assert!(networks.len() >= 0);
+  consequence: The test can never fail for vector length and gives false confidence for WiFi parsing/discovery behavior.
+  root_cause_hypothesis: A smoke assertion was committed instead of a behavior assertion.
+  priority: P1
+  status: done
+  completed_at: '2026-05-16'
+  resolution: Replaced the tautological live nmcli assertion with a pure parser seam and a deterministic parser behavior test.
+  verification:
+  - 'RED: cargo test -p unilii-bin widgets::wifi::tests::test_parse_nmcli_networks_keeps_fields_and_filters_invalid_rows --
+    --nocapture failed before parser seam existed.'
+  - 'GREEN: cargo test -p unilii-bin widgets::wifi::tests::test_parse_nmcli_networks_keeps_fields_and_filters_invalid_rows
+    -- --nocapture exited 0 after parser implementation.'
+- id: BUG-004
+  title: Production action paths contain panic-capable unwrap/expect calls
+  evidence:
+    affected_regions:
+    - unilii/bin/src/widgets/audio.rs:133 set_output strip_prefix unwrap
+    - unilii/bin/src/widgets/audio.rs:136 set_input strip_prefix unwrap
+    - unilii/bin/src/module_loader.rs:175 last_error unwrap
+    - unilii/bin/src/subscription_manager.rs:146 mutex lock unwrap
+    - unilii/bin/src/action_runner.rs:78 blocking task expect
+    - unilii/bin/src/global_coordinator.rs mutex lock unwraps
+    - unilii/lib/src/util/udev.rs:48 mutex lock unwrap
+  consequence: Malformed action strings, poisoned locks, or task panics can crash the panel instead of surfacing a recoverable
+    UI error.
+  root_cause_hypothesis: Internal-only assumptions were embedded in production paths without boundary validation or poison/error
+    recovery.
+  priority: P1
+  status: done
+  completed_at: '2026-05-16'
+  resolution: 'Removed or isolated the listed production panic-capable unwrap/expect paths: audio widget action parsing is
+    now pure and rejects malformed actions; module retry logging no longer unwraps last_error; subscription and global coordinator
+    locks recover from poison; action runner join failures return ActionOutcome errors; udev monitor lock poison is recovered;
+    main startup/runtime initialization returns iced errors instead of panicking/exiting through unwrap.'
+  verification:
+  - 'RED: cargo test -p unilii-bin widgets::audio::tests::test_parse_audio_selection_action_rejects_empty_and_malformed_actions
+    -- --nocapture failed before parser seam existed.'
+  - 'GREEN: cargo test -p unilii-bin widgets::audio::tests::test_parse_audio_selection_action_rejects_empty_and_malformed_actions
+    -- --nocapture exited 0 after parser implementation.'
+  - Focused regression commands for module_loader, subscription_manager, action_runner, and unilii-lib exited 0.
+  - cargo check --workspace exited 0.
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings exited 0.
+  - cargo test --workspace exited 0; unilii-bin main test suite reported 156 passed, 0 failed, 3 ignored.
+  - A targeted unwrap/expect scan over the BUG-004 affected files found no production hits in module_loader.rs, subscription_manager.rs,
+    global_coordinator.rs, widgets/audio.rs, or lib/src/util/udev.rs; remaining main.rs hits are inside cfg(test).
+  remaining_notes:
+  - action_runner.rs still has expect calls in test helper setup only.
+  - main.rs still has cfg(test) expectations for key dry-run parser tests only.
+  - main.rs.bak and other archive/test files still appear in broad grep scans and should be handled by ARCH-004, not BUG-004.
+  - Standard incremental clippy produced one Rust/Clippy ICE during verification; CARGO_INCREMENTAL=0 clippy passed and is
+    the reliable command recorded here.
+- id: BUG-005
+  title: enhanced tray events are still marked TODO in the main update path
+  evidence:
+    affected_regions:
+    - unilii/bin/src/main.rs:869
+    snippet: 'TODO: Handle enhanced tray events'
+  consequence: Tray state may be tested in isolation but not fully wired into the running application event loop.
+  root_cause_hypothesis: Enhanced tray modules were developed faster than the canonical app update integration.
+  priority: P1
+  status: done
+  uncertainty: Runtime impact should be reproduced with a tray event integration test before fixing.
+  completed_at: '2026-05-16'
+  resolution: Replaced the main update-path TODO with apply_enhanced_tray_event, which applies IconsUpdated, MenuUpdated,
+    DbusMenuReceived, FavoritesChanged, and NavigationChanged events to the active EnhancedTrayState.
+  verification:
+  - 'RED: cargo test -p unilii-bin tests::enhanced_tray_event_updates_existing_tree_and_menu -- --nocapture failed before
+    apply_enhanced_tray_event existed.'
+  - 'GREEN: cargo test -p unilii-bin tests::enhanced_tray_event_updates_existing_tree_and_menu -- --nocapture exited 0 after
+    event integration.'
+  - 'grep found no remaining TODO: Handle enhanced tray events branch in unilii/bin/src/main.rs.'
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings exited 0.
+  - cargo test --workspace exited 0; unilii-bin main test suite reported 157 passed, 0 failed, 3 ignored.
+  remaining_notes:
+  - The helper currently lives in main.rs; T1.1 should move it into an extracted tray/app update module with characterization
+    tests.
+  - NavigationChanged is bounds-safe and ignores stale navigation for non-current app views.
+- id: BUG-006
+  title: README and high-level docs describe an obsolete architecture
+  evidence:
+    affected_regions:
+    - README.md says a single binary crate, src/main.rs, and no audio/network/process features
+    - current tree has workspace crates, plugins, tray, menus, audio/video/wifi widgets, and config docs
+  consequence: New contributors and future agents will run wrong commands, inspect wrong files, and misunderstand the architecture.
+  root_cause_hypothesis: The project evolved from X11 port to Iced/plugin/tray workspace without updating the root README.
+  priority: P1
+  status: done
+  completed_at: '2026-05-16'
+  resolution: Rewrote the root README to describe the current Cargo workspace, Iced/Tokio/DBus/status-bar architecture, active
+    crates/modules, current build/test/clippy commands, current features, and known transitional limitations.
+  verification:
+  - 'RED: grep found stale README claims: old X11-port title, src/main.rs/BAR_WIDTH guidance, and no-audio/network feature
+    claim.'
+  - 'GREEN: grep no longer finds stale claims: single binary crate, old X11-port title, BAR_WIDTH, or no-audio/network limitation.'
+  - README now documents Cargo workspace, unilii/bin/src/main.rs transitional state, audio/video/WiFi/power widgets, and CARGO_INCREMENTAL=0
+    clippy command.
+  - cargo check --workspace exited 0.
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings exited 0.
+  - cargo test --workspace exited 0; unilii-bin main test suite reported 158 passed, 0 failed, 3 ignored.
+  remaining_notes:
+  - README intentionally points to tasks.yml for current priorities instead of duplicating the full task map.
+  - Root still contains reference/untracked material; ARCH-004 remains the cleanup task for repo hygiene.
+architectural_problems:
+- id: ARCH-001
+  title: unilii/bin/src/main.rs is a 4085-line god module
+  consequence: Window lifecycle, rendering, tray, menus, keybindings, subscriptions, action handling, and tests are coupled,
+    making review and TDD cycles slow and risky.
+  affected_regions:
+  - unilii/bin/src/main.rs
+  - unilii/bin/src/main_tests.rs
+  priority: P0
+- id: ARCH-002
+  title: multiple competing app and tray state models exist simultaneously
+  consequence: UniliiPanel, UniliiPanelManager, UniliiBar, enhanced_tray state, tray.rs, menus, and legacy widget paths overlap
+    without one canonical message/update contract.
+  affected_regions:
+  - unilii/bin/src/app.rs
+  - unilii/bin/src/main.rs
+  - unilii/bin/src/tray.rs
+  - unilii/bin/src/enhanced_tray/*
+  - unilii/bin/src/menus/*
+  priority: P0
+- id: ARCH-003
+  title: tray code has active, backup, test, DBus, and menu layers mixed together
+  consequence: Dead code warnings and test-only paths obscure which tray host model is supported.
+  affected_regions:
+  - unilii/bin/src/tray.rs
+  - unilii/bin/src/enhanced_tray_backup.rs
+  - unilii/bin/src/enhanced_tray/dbus.rs
+  - unilii/bin/src/test_dbus.rs
+  priority: P1
+- id: ARCH-004
+  title: repository includes large untracked or archival material in active root
+  consequence: Review scope becomes ambiguous and future commits may accidentally include iced examples, wiUp, modrelease
+    dumps, backups, or zip artifacts.
+  affected_regions:
+  - iced_examples/
+  - wiUp/
+  - modrelease.md
+  - unilii_project_with_iced.zip
+  - '*.bak'
+  priority: P1
+- id: ARCH-005
+  title: menu UX lacks a reusable interaction contract
+  consequence: Network, mount, calendar, tray, and workspace flows risk diverging on focus, dismissal, keyboard navigation,
+    modifier release, and action dispatch behavior.
+  affected_regions:
+  - unilii/bin/src/menus/*
+  - unilii/bin/src/enhanced_tray/state.rs
+  - unilii/core/src/keys.rs
+  - unilii/core/src/key_engine.rs
+  priority: P0
+- id: ARCH-006
+  title: warning debt is large enough to hide review signals
+  consequence: Important warnings such as useless assertions and unused integration paths are buried under duplicate dead-code
+    and unused warnings.
+  affected_regions:
+  - workspace-wide cargo check/test output
+  priority: P1
+- id: ARCH-007
+  title: modrelease-2 mechanics are valuable but renderer-coupled
+  consequence: Blind copying would import Cairo/X11 assumptions into unilii's superior Iced concept; selective porting must
+    extract model, event, focus, keymap, and UX semantics only.
+  affected_regions:
+  - /home/user/code/modrelease-2/src/ui/widgets/menu.rs
+  - /home/user/code/modrelease-2/src/ui/widgets/tabbar.rs
+  - /home/user/code/modrelease-2/src/util/key_combination.rs
+  - /home/user/code/modrelease-2/src/util/workspace_menu_flow.rs
+  - /home/user/code/modrelease-2/src/util/workspace_snapshot.rs
+  priority: P0
+state_of_tests:
+  unilii:
+    cargo_check_workspace:
+      command: cargo check --workspace
+      exit_code: 0
+      state: passes
+    cargo_test_workspace:
+      command: cargo test --workspace
+      exit_code: 0
+      state: passes
+      summary: workspace tests pass; unilii-bin reports 182 passed, 0 failed, 3 ignored in the main bin test suite
+    clippy:
+      command: CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
+      exit_code: 0
+      state: passes
+      notes:
+      - Use CARGO_INCREMENTAL=0 due to one observed incremental clippy ICE during BUG-004 verification.
+      - Dead-code allowances remain local to transitional modules and are marked FIXME(T6).
+      - main.rs has a local FIXME(T1.1/T6) allow for clippy::collapsible_if until tray/menu update chains are extracted.
+    test_gaps:
+    - Enhanced tray events now have module-level update tests, but no full Iced daemon/update-path integration test yet.
+    - No modrelease-style menu input flow parity tests yet.
+    - Audio invalid widget actions are covered; add similar invalid-action parser tests for any remaining shell-backed widgets
+      as they are touched.
+    - No CI evidence that clippy was green before this review.
+  modrelease_2:
+    make_test:
+      command: make test
+      exit_code: 0
+      state: passes
+      useful_signal:
+      - Menu widget behavior tests pass.
+      - Modifier-release regression tests pass.
+      - Workspace menu input-flow tests pass.
+      - Workspace preview layout/render-model tests pass.
+      - Keymap tests pass.
+    caveats:
+    - Example warnings remain, but test command exits green.
+    - No bridge.yml exists, so project command discovery cannot run named bridge commands.
+todo:
+- id: T0
+  title: stabilize unilii baseline before any merge work
+  description: Make the target project testable and reviewable before importing mechanics from modrelease-2.
+  consequences: Without a green baseline, every merge task will mix existing regressions with new integration defects.
+  emerging_tasks:
+  - After tests are green, run focused tray/keybinding/menu test commands to expose integration-only failures.
+  - 'Create a dedicated clippy debt task for unilii-bin: unused transitional APIs, compatibility re-exports, dead panel/app
+    abstractions, and many collapsible-if warnings in main.rs.'
+  priority: P0
+  affected_regions:
+  - workspace root
+  - unilii/bin/src/tray.rs
+  - unilii/lib/src/calendar/caldav.rs
+  - unilii/bin/src/widgets/wifi.rs
+  conceptual_adherence:
+    tdd: Use existing failing test as RED for BUG-001; create focused RED tests for BUG-002 and BUG-003 before code changes.
+    yagni: Only fix failing/linting behavior; do not redesign tray or calendar in this task.
+    systematic_debugging: Confirm root cause before editing fallback or datetime normalization.
+  further_work:
+  - Once green, convert selected warning classes into denied lints incrementally.
+  - All original P0 baseline subtasks T0.1-T0.3 are now individually green; run full workspace test and clippy gates to discover
+    remaining blockers.
+  - Temporary localized allows should be retired by T1/T2 extraction/integration work, not left as permanent warning suppression.
+  test_cases:
+  - cargo test -p unilii-bin tray::tests::icon_label_uses_known_icon_keywords -- --nocapture
+  - cargo test --workspace
+  - cargo clippy --workspace --all-targets -- -D warnings
+  definition_of_done:
+  - cargo test --workspace exits 0.
+  - cargo clippy --workspace --all-targets -- -D warnings exits 0 or has an explicitly documented temporary allow with issue
+    link.
+  - No production source changes are made without a failing test/lint reproducer first.
+  points_for_later_review:
+  - Decide whether icon theme names should ever use initials fallback, or whether initials belong only to app/service labels.
+  subtasks:
+  - id: T0.1
+    title: fix unknown tray icon fallback
+    description: Separate arbitrary icon theme-name fallback from app label fallback.
+    consequences: Restores the red workspace test and prevents misleading icon badges.
+    emerging_tasks:
+    - Audit icon_label_for to ensure service/title fallback still intentionally uses initials.
+    priority: P0
+    affected_regions:
+    - unilii/bin/src/tray.rs:263-296
+    - unilii/bin/src/tray.rs:592-596
+    conceptual_adherence:
+      tdd: Run current failing test first, then implement minimal fix.
+      behavior_boundary: Known icon keywords map to emoji; unknown icon theme names map to generic icon.
+    further_work:
+    - Add cases for unknown-icon, unknown_icon, app service names, and title initials.
+    test_cases:
+    - icon_label_for_name("unknown-icon") == "◉"
+    - icon_label_for_name("network-wireless-signal-good") == "📶"
+    - icon_label_for_name("audio-volume-high") == "🔊"
+    definition_of_done:
+    - Focused tray icon test passes.
+    - Full workspace tests progress past this failure.
+    points_for_later_review:
+    - Maybe rename icon_label_for_name to icon_label_for_theme_name if behavior stays theme-specific.
+    status: done
+    completed_at: '2026-05-16'
+    verification:
+    - cargo test -p unilii-bin tray::tests::icon_label_uses_known_icon_keywords -- --nocapture
+    result: Known tray icon keyword mappings remain intact; unknown icon theme names use the generic marker.
+  - id: T0.2
+    title: fix CalDAV suffix lint by documenting intended datetime normalization
+    description: Replace identical branch with a single expression or implement the missing non-Z conversion rule.
+    consequences: Clippy gate can run and calendar timestamps become understandable.
+    emerging_tasks:
+    - Add timezone edge cases if non-Z inputs need conversion rather than suffix append.
+    priority: P0
+    affected_regions:
+    - unilii/lib/src/calendar/caldav.rs:256
+    conceptual_adherence:
+      tdd: Create/confirm a CalDAV query-body unit test before changing behavior.
+      explicitness: The code should reveal whether all values are UTC or whether conversion is required.
+    further_work:
+    - Document accepted datetime formats for calendar config/API.
+    test_cases:
+    - value ending with Z is not double-suffixed.
+    - value without Z follows intended normalization behavior.
+    definition_of_done:
+    - Clippy no longer reports if_same_then_else.
+    - Calendar tests cover both datetime branches or prove there is only one branch.
+    points_for_later_review:
+    - Avoid hiding this with allow; the current code is likely unfinished intent.
+    status: done
+    completed_at: '2026-05-16'
+    verification:
+    - cargo test -p unilii-lib calendar::caldav::tests::normalizes_ics_datetime_values_to_utc_shape -- --nocapture
+    - cargo clippy -p unilii-lib --all-targets -- -D warnings
+    result: CalDAV ICS datetime normalization remains stable and clippy no longer rejects the implementation.
+  - id: T0.3
+    title: replace tautological WiFi assertion
+    description: Turn the always-true networks.len() >= 0 assertion into a behavior assertion for parsing/discovery.
+    consequences: WiFi widget tests begin catching regressions instead of only executing code.
+    emerging_tasks:
+    - Add fixture-based nmcli output tests if not already present for every parser.
+    - Latest focused tray test still emits the useless WiFi assertion warning, confirming this remains an open cleanup after
+      BUG-001.
+    priority: P1
+    affected_regions:
+    - unilii/bin/src/widgets/wifi.rs:378
+    conceptual_adherence:
+      tdd: First make a test that would fail on broken parser output, then adjust implementation if needed.
+      anti_mock: Use realistic nmcli output fixtures instead of asserting on mocks.
+    further_work:
+    - Check whether widget tests depend on host WiFi state; isolate pure parsing from live probing.
+    test_cases:
+    - empty nmcli output returns empty network list.
+    - valid nmcli output returns expected SSID, signal, and security fields.
+    definition_of_done:
+    - No useless-comparison warning remains.
+    - WiFi tests fail if parser returns an incorrect list.
+    points_for_later_review:
+    - Live WiFi discovery should be integration-tested separately from pure parsing.
+    priority_notes:
+    - After BUG-001 and BUG-002, this is the remaining baseline warning explicitly observed in focused test output.
+    status: done
+    completed_at: '2026-05-16'
+    verification:
+    - cargo test -p unilii-bin widgets::wifi::tests::test_parse_nmcli_networks_keeps_fields_and_filters_invalid_rows -- --nocapture
+    result: WiFi nmcli list parsing is now covered by a deterministic pure parser test; the ignored live test no longer contains
+      a tautological assertion.
+  status: done
+  latest_verification:
+  - cargo check --workspace exited 0.
+  - cargo test --workspace exited 0.
+  - cargo clippy --workspace --all-targets -- -D warnings exited 0.
+  completed_at: '2026-05-16'
+  result: The original baseline bugs are fixed and the workspace check/test/clippy gates are green.
+- id: T1
+  title: define the canonical unilii interaction architecture
+  description: Create one app-state/update/message contract that all panels, menus, tray views, plugins, and keybindings use.
+  consequences: Without this, each feature will add another state island and make modrelease-2 merge work harder.
+  emerging_tasks:
+  - After the contract exists, migrate one menu path at a time.
+  - Archive or delete abandoned panel/tray abstractions after proving no callers remain.
+  - README now documents update/ as extracted update helpers; keep future architecture docs aligned with this boundary.
+  - All tracked actual_bugs are done; next T1 work can focus on extracting canonical update/message modules rather than firefighting
+    regressions.
+  priority: P0
+  affected_regions:
+  - unilii/bin/src/main.rs
+  - unilii/bin/src/app.rs
+  - unilii/bin/src/enhanced_tray/*
+  - unilii/bin/src/menus/*
+  - unilii/core/src/keys.rs
+  conceptual_adherence:
+    unilii_first: Keep unilii's Iced UI concept as the host architecture.
+    modrelease_import_rule: Import model/update/focus semantics, not Cairo rendering.
+    yagni: Do not build a generic UI framework beyond current menu/tray/keybinding needs.
+  further_work:
+  - Keep unilii/docs/plans/2026-05-16-canonical-interaction-architecture.md synchronized as update/message ownership changes.
+  - 'Use the documented next extraction order: startup/bootstrap error mapping, TrayNavigateLeft/Right, TrayToggleFavorite,
+    snapshot branches, then shared menu lifecycle helpers.'
+  - Tray navigation now has an extracted update owner; continue shrinking main.rs by moving TrayToggleFavorite and related
+    view-state updates next.
+  - Tray favorite toggling now has an extracted update owner; continue shrinking main.rs by moving filter/view snapshot branches
+    next.
+  - Tray view-state transitions now have an extracted update owner; continue shrinking main.rs by moving tray text-input/menu-fetched
+    branches next.
+  - Tray text-input mutations now have an extracted update owner; continue shrinking main.rs by moving TrayMenuFetched fallback/menu
+    population next.
+  - TrayMenuFetched menu population/fallback now has an extracted update owner; continue shrinking main.rs by moving tray
+    icon press/task setup or startup/bootstrap next.
+  - Tray icon press pure state setup now has an extracted owner; continue shrinking main.rs by moving network/mount/calendar
+    snapshot update branches or startup/bootstrap next.
+  - Network/mount/calendar snapshot state updates now have an extracted owner; continue shrinking main.rs by moving startup/bootstrap
+    or spawn-command completion branches next.
+  - Tray spawn-command loading/completion state updates now have an extracted owner; continue shrinking main.rs by moving
+    animation tick or startup/bootstrap next.
+  - Tray animation tick state updates now have an extracted owner; continue shrinking main.rs by moving startup/bootstrap
+    or async task-decision construction next.
+  test_cases:
+  - Unit tests for Message -> update effects.
+  - Menu open/close/focus tests independent of renderer.
+  - Tray event integration test that exercises main update path.
+  definition_of_done:
+  - A design doc names the canonical types and deprecated paths.
+  - Every new menu/tray feature has one documented update path.
+  - No new feature is added directly to main.rs.
+  - Canonical interaction architecture doc exists and remains aligned with README and tasks.yml.
+  points_for_later_review:
+  - Decide whether to keep plugin Module trait unchanged or adapt it to the new interaction model.
+  subtasks:
+  - id: T1.1
+    title: split main.rs by responsibility
+    description: Extract app state, messages, update functions, subscriptions, commands, and views out of the 4085-line main.rs.
+    consequences: Reduces review blast radius and makes TDD focused by behavior.
+    emerging_tasks:
+    - Create file-level ownership docs once split stabilizes.
+    - 'Retire #![allow(clippy::collapsible_if)] in main.rs by extracting tray/menu update chains into named, tested update
+      helpers.'
+    - Use existing green clippy baseline to ensure future main.rs extraction does not reintroduce warning debt.
+    - Main startup now returns iced errors for runtime/bootstrap failures; extract startup/bootstrap into a testable function
+      during the main.rs split.
+    - Broad grep still sees test-only expects in main.rs; keep production/test boundaries explicit when moving tests beside
+      extracted modules.
+    - apply_enhanced_tray_event now exists in main.rs; extract it with tests into the future tray/app update boundary.
+    - The focused enhanced-tray event test should move with the extracted update helper and expand to DbusMenuReceived/FavoritesChanged/NavigationChanged
+      cases.
+    - Create update/README.md or a design note documenting that update/* owns Message -> state transition helpers.
+    - 'Next extraction candidates: startup/bootstrap error mapping, TrayNavigateLeft/Right, TrayToggleFavorite, and network/mount/calendar
+      snapshot update branches.'
+    - Move remaining main.rs tests beside extracted modules as their target code moves.
+    - README names main.rs as bootstrap/wiring being split; keep that statement accurate as extraction proceeds.
+    - README now references update/ as extracted update helpers; use it as the destination for future state-transition slices.
+    - The canonical architecture note declares update/* as the owner for Message/state transition helpers.
+    - Follow the architecture note extraction order before adding broader abstractions.
+    - TrayNavigateLeft/Right are now owned by update/tray_navigation.rs; do not re-add navigation mutation directly to main.rs.
+    - Next T1.1 candidate is extracting TrayToggleFavorite into a tested update helper, following the same module-boundary
+      RED/GREEN pattern.
+    - TrayToggleFavorite is now owned by update/tray_favorites.rs; do not re-add favorite mutation directly to main.rs.
+    - Next T1.1 candidates are TrayFilterUpdate, TrayShowAggregated, TrayShowFavorites, TrayEnterSubmenu, and TrayExitSubmenu
+      as a view-state update module.
+    - TrayShowAggregated, TrayShowFavorites, TrayFilterUpdate, TrayEnterSubmenu, and TrayExitSubmenu are now owned by update/tray_view.rs;
+      do not re-add those mutations directly to main.rs.
+    - Next T1.1 candidate is extracting tray text-input value updates and TrayMenuFetched fallback/menu population into tested
+      update helpers.
+    - TrayTextInputChanged and TrayTextInputCleared are now owned by update/tray_text_input.rs; do not re-add recursive value
+      mutation directly to main.rs.
+    - Next T1.1 candidate is extracting TrayMenuFetched fallback/menu population into a tested update helper.
+    - TrayMenuFetched is now owned by update/tray_menu_fetch.rs; do not re-add DBus menu population/fallback mutation directly
+      to main.rs.
+    - Next T1.1 candidates are tray icon press task setup, network/mount/calendar snapshot update branches, and startup/bootstrap
+      extraction.
+    - TrayIconPressed now delegates pure state setup to update/tray_icon_press.rs; do not re-add state construction blocks
+      directly to main.rs.
+    - Async Task construction for TrayIconPressed remains in main.rs and is the next possible extraction boundary if a task-decision
+      model is introduced.
+    - Next T1.1 candidates are network/mount/calendar snapshot update branches and startup/bootstrap extraction.
+    - TrayNetworkSnapshot, TrayMountSnapshot, TrayCalendarSnapshot, refresh-loading, and network-toggle desired-state mutation
+      are now owned by update/tray_snapshots.rs.
+    - Async Task construction for snapshot reads remains in main.rs and should move only after a task-decision model exists.
+    - Next T1.1 candidates are spawn-command completion/loading branches and startup/bootstrap extraction.
+    - TraySpawnCommand and TraySpawnCommandDone state mutation are now owned by update/tray_snapshots.rs; do not re-add loading/error
+      mutation directly to main.rs.
+    - Command execution Task construction remains in main.rs and should move only after a task-decision model exists.
+    - Next T1.1 candidates are TrayAnimateTick extraction and startup/bootstrap extraction.
+    - TrayAnimateTick is now owned by update/tray_animation.rs; do not re-add animation progress mutation directly to main.rs.
+    - Next T1.1 candidate is startup/bootstrap extraction; remaining async Task construction should move only with an explicit
+      task-decision model.
+    - Animation extraction adds another small renderer-free transition boundary for future canonical Message -> state organization.
+    priority: P0
+    affected_regions:
+    - unilii/bin/src/main.rs
+    - new unilii/bin/src/app_state.rs
+    - new unilii/bin/src/message.rs
+    - new unilii/bin/src/update/*.rs
+    - new unilii/bin/src/views/*.rs
+    conceptual_adherence:
+      tdd: Characterize behavior before extraction; no behavior changes during mechanical split.
+      incremental: Extract one responsibility per commit.
+    further_work:
+    - Move tests beside the modules they describe.
+    - The old main.rs duplicate event test was removed; update/enhanced_tray_events.rs is now the behavior owner.
+    - Tray navigation branches in main.rs are now thin calls; remove them from future main.rs extraction candidate lists.
+    - Tray favorite branch in main.rs is now a thin call; remove it from future main.rs extraction candidate lists.
+    - Tray view-state branches in main.rs are now thin calls; remove them from future main.rs extraction candidate lists.
+    - Tray menu-fetch branch in main.rs is now a thin call; remove it from future main.rs extraction candidate lists.
+    - Tray icon press state construction blocks in main.rs are now thin helper calls; remove them from future main.rs extraction
+      candidate lists.
+    - Snapshot update branches in main.rs are now thin helper calls; remove them from future main.rs extraction candidate
+      lists.
+    - Spawn-command loading/completion branches in main.rs are now thin helper calls; remove them from future main.rs extraction
+      candidate lists.
+    - TrayAnimateTick branch in main.rs is now a thin helper call; remove it from future main.rs extraction candidate lists.
+    test_cases:
+    - cargo test --workspace after each extraction.
+    - Snapshot existing update behavior before moving logic.
+    - cargo clippy --workspace --all-targets -- -D warnings after each extraction batch
+    - characterization tests for TrayNavigateLeft/Right and TrayToggleFavorite before moving those branches out of main.rs
+    - enhanced_tray_event_updates_existing_tree_and_menu
+    - future tests for DbusMenuReceived, FavoritesChanged, and stale NavigationChanged events
+    - update::enhanced_tray_events::tests::enhanced_tray_event_updates_existing_tree_and_menu
+    - module-level tests for DbusMenuReceived, FavoritesChanged, stale NavigationChanged, and no-state initialization
+    - update::tray_navigation::tests::navigate_left_moves_to_previous_app_and_resets_submenu_path
+    - update::tray_navigation::tests::navigate_right_moves_to_next_app_and_resets_submenu_path
+    - update::tray_favorites::tests::toggle_favorite_updates_tree_and_refreshes_favorites_view
+    - update::tray_view::tests::show_aggregated_and_filter_update_refresh_view_items
+    - update::tray_view::tests::show_favorites_uses_tree_favorites
+    - update::tray_view::tests::submenu_enter_and_exit_update_path_and_selected_index
+    - update::tray_text_input::tests::set_text_input_value_updates_nested_item_in_any_app
+    - update::tray_text_input::tests::clear_text_input_value_resets_nested_item_to_empty_string
+    - update::tray_menu_fetch::tests::populated_fetch_replaces_existing_menu
+    - update::tray_menu_fetch::tests::empty_fetch_keeps_existing_menu
+    - update::tray_menu_fetch::tests::fetch_error_populates_fallback_for_known_app
+    - update::tray_icon_press::tests::network_icon_opens_loading_network_view
+    - update::tray_icon_press::tests::mount_and_calendar_icons_open_loading_specialized_views
+    - update::tray_icon_press::tests::regular_icon_opens_single_app_with_fallback_menu
+    - update::tray_icon_press::tests::clicking_current_single_app_should_close_existing_view
+    - update::tray_snapshots::tests::network_snapshot_success_updates_data_and_clears_error
+    - update::tray_snapshots::tests::mount_snapshot_success_updates_data_and_clears_error
+    - update::tray_snapshots::tests::calendar_snapshot_success_updates_data
+    - update::tray_snapshots::tests::refresh_marks_any_special_view_loading_and_clears_error
+    - update::tray_snapshots::tests::network_toggle_computes_desired_state_from_snapshot_and_marks_loading
+    - update::tray_snapshots::tests::snapshot_error_keeps_data_empty_and_records_error
+    - update::tray_snapshots::tests::spawn_command_started_marks_network_loading_and_clears_error
+    - update::tray_snapshots::tests::spawn_command_done_clears_loading_and_records_error_for_special_views
+    - update::tray_animation::tests::animation_tick_moves_progress_toward_target
+    - update::tray_animation::tests::animation_tick_drops_state_after_close_reaches_zero
+    definition_of_done:
+    - main.rs contains wiring/bootstrap only.
+    - No extracted module creates new behavior without tests.
+    - No production unwrap/expect should be reintroduced while extracting main.rs; test-only expects are acceptable when expressing
+      assertions.
+    points_for_later_review:
+    - Avoid premature trait abstraction; modules and functions may be enough.
+    priority_notes:
+    - 'Fresh clippy output confirms main.rs cleanup is not just style: dozens of collapsible-if warnings cluster around tray/menu
+      update logic, supporting the main.rs split/refactor task.'
+    completed_slices:
+    - id: T1.1-S1
+      title: extract enhanced tray event update helper
+      completed_at: '2026-05-16'
+      description: Moved apply_enhanced_tray_event out of main.rs into update/enhanced_tray_events.rs and moved the focused
+        event test with it.
+      verification:
+      - 'RED: cargo test -p unilii-bin update::enhanced_tray_events::tests::enhanced_tray_event_updates_existing_tree_and_menu
+        -- --nocapture failed before the helper existed in the new module.'
+      - 'GREEN: same focused test exited 0 after moving the implementation.'
+      - cargo check --workspace exited 0.
+      - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings exited 0.
+      - cargo test --workspace exited 0; unilii-bin main test suite reported 157 passed, 0 failed, 3 ignored.
+      files_changed:
+      - unilii/bin/src/update/mod.rs
+      - unilii/bin/src/update/enhanced_tray_events.rs
+      - unilii/bin/src/main.rs
+      - tasks.yml
+    - id: T1.1-S2
+      title: extract tray navigation update helper
+      completed_at: '2026-05-16'
+      description: Moved TrayNavigateLeft and TrayNavigateRight state transitions from main.rs into update/tray_navigation.rs
+        with focused left/right behavior tests.
+      verification:
+      - 'RED: cargo test -p unilii-bin update::tray_navigation::tests::navigate_left_moves_to_previous_app_and_resets_submenu_path
+        -- --nocapture failed before navigate_left/navigate_right existed.'
+      - 'GREEN: focused navigate_left and navigate_right tests passed after extraction.'
+      - cargo check --workspace exited 0.
+      - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings exited 0.
+      - cargo test --workspace exited 0; unilii-bin main test suite reported 160 passed, 0 failed, 3 ignored.
+      files_changed:
+      - unilii/bin/src/update/mod.rs
+      - unilii/bin/src/update/tray_navigation.rs
+      - unilii/bin/src/main.rs
+      - tasks.yml
+    - id: T1.1-S3
+      title: extract tray favorite update helper
+      completed_at: '2026-05-16'
+      description: Moved TrayToggleFavorite state mutation from main.rs into update/tray_favorites.rs with a focused test
+        for favorites-view refresh.
+      verification:
+      - 'RED: cargo test -p unilii-bin update::tray_favorites::tests::toggle_favorite_updates_tree_and_refreshes_favorites_view
+        -- --nocapture failed before toggle_favorite existed.'
+      - 'GREEN: focused tray favorite test passed after extraction.'
+      - cargo check --workspace exited 0.
+      - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings exited 0.
+      - cargo test --workspace exited 0; unilii-bin main test suite reported 161 passed, 0 failed, 3 ignored.
+      files_changed:
+      - unilii/bin/src/update/mod.rs
+      - unilii/bin/src/update/tray_favorites.rs
+      - unilii/bin/src/main.rs
+      - tasks.yml
+    - id: T1.1-S4
+      title: extract tray view-state update helper
+      completed_at: '2026-05-16'
+      description: Moved TrayShowAggregated, TrayShowFavorites, TrayFilterUpdate, TrayEnterSubmenu, and TrayExitSubmenu from
+        main.rs into update/tray_view.rs with focused renderer-free tests.
+      verification:
+      - 'RED: cargo test -p unilii-bin update::tray_view::tests::show_aggregated_and_filter_update_refresh_view_items -- --nocapture
+        failed before view helpers existed.'
+      - 'GREEN: focused tray view tests passed after extraction: show_aggregated/filter, show_favorites, enter/exit submenu.'
+      - cargo check --workspace exited 0.
+      - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings exited 0.
+      - cargo test --workspace exited 0; unilii-bin main test suite reported 164 passed, 0 failed, 3 ignored.
+      files_changed:
+      - unilii/bin/src/update/mod.rs
+      - unilii/bin/src/update/tray_view.rs
+      - unilii/bin/src/main.rs
+      - tasks.yml
+    - id: T1.1-S5
+      title: extract tray text-input update helper
+      completed_at: '2026-05-16'
+      description: Moved TrayTextInputChanged and TrayTextInputCleared mutation logic plus recursive menu item value updates
+        from main.rs into update/tray_text_input.rs with focused tests.
+      verification:
+      - 'RED: cargo test -p unilii-bin update::tray_text_input::tests::set_text_input_value_updates_nested_item_in_any_app
+        -- --nocapture failed before text-input helpers existed.'
+      - 'GREEN: focused text-input set/clear tests passed after extraction.'
+      - cargo check --workspace exited 0.
+      - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings exited 0.
+      - cargo test --workspace exited 0; unilii-bin main test suite reported 165 passed, 0 failed, 3 ignored.
+      files_changed:
+      - unilii/bin/src/update/mod.rs
+      - unilii/bin/src/update/tray_text_input.rs
+      - unilii/bin/src/main.rs
+      - tasks.yml
+    - id: T1.1-S6
+      title: extract tray menu-fetch update helper
+      completed_at: '2026-05-16'
+      description: Moved TrayMenuFetched success/empty/error handling and simple fallback menu construction from main.rs into
+        update/tray_menu_fetch.rs with focused tests.
+      verification:
+      - 'GREEN: cargo test -p unilii-bin tray_menu_fetch passed populated, empty, and error fallback tests.'
+      - cargo check --workspace exited 0.
+      - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings exited 0.
+      - cargo test --workspace exited 0; unilii-bin main test suite reported 168 passed, 0 failed, 3 ignored.
+      files_changed:
+      - unilii/bin/src/update/mod.rs
+      - unilii/bin/src/update/tray_menu_fetch.rs
+      - unilii/bin/src/main.rs
+      - tasks.yml
+    - id: T1.1-S7
+      title: extract tray icon press state setup helper
+      completed_at: '2026-05-16'
+      description: Moved pure tray icon press state setup and current-view close detection from main.rs into update/tray_icon_press.rs
+        while leaving async Task construction in main.rs.
+      verification:
+      - 'RED: cargo test -p unilii-bin tray_icon_press failed before open_tray_icon_state/should_close_current_tray_view existed.'
+      - 'GREEN: cargo test -p unilii-bin tray_icon_press passed network, mount, calendar, regular, and close-current behavior
+        tests after extraction.'
+      - cargo check --workspace exited 0.
+      - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings exited 0.
+      - cargo test --workspace exited 0; unilii-bin main test suite reported 172 passed, 0 failed, 3 ignored.
+      files_changed:
+      - unilii/bin/src/update/mod.rs
+      - unilii/bin/src/update/tray_icon_press.rs
+      - unilii/bin/src/main.rs
+      - tasks.yml
+    - id: T1.1-S8
+      title: extract tray snapshot update helpers
+      completed_at: '2026-05-16'
+      description: Moved network, mount, and calendar snapshot state mutations plus special-view loading/toggle state decisions
+        from main.rs into update/tray_snapshots.rs while leaving async Task construction in main.rs.
+      verification:
+      - 'GREEN: cargo test -p unilii-bin tray_snapshots passed six focused snapshot/loading/toggle tests.'
+      - tasks.yml and roadmap.yml parsed successfully.
+      - cargo check --workspace exited 0.
+      - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings exited 0.
+      - cargo test --workspace exited 0; unilii-bin main test suite reported 178 passed, 0 failed, 3 ignored.
+      files_changed:
+      - unilii/bin/src/update/mod.rs
+      - unilii/bin/src/update/tray_snapshots.rs
+      - unilii/bin/src/main.rs
+      - tasks.yml
+    - id: T1.1-S9
+      title: extract tray spawn-command state helpers
+      completed_at: '2026-05-16'
+      description: Moved TraySpawnCommand loading setup and TraySpawnCommandDone completion/error state updates from main.rs
+        into update/tray_snapshots.rs while leaving command execution Task construction in main.rs.
+      verification:
+      - 'RED: cargo test -p unilii-bin tray_snapshots failed with missing apply_spawn_command_started/apply_spawn_command_done
+        helpers.'
+      - 'GREEN: cargo test -p unilii-bin tray_snapshots passed eight focused snapshot/spawn-command tests after helper implementation
+        and main.rs wiring.'
+      - tasks.yml and roadmap.yml parsed successfully.
+      - cargo check --workspace exited 0.
+      - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings exited 0.
+      - cargo test --workspace exited 0; unilii-bin main test suite reported 180 passed, 0 failed, 3 ignored.
+      files_changed:
+      - unilii/bin/src/update/tray_snapshots.rs
+      - unilii/bin/src/main.rs
+      - tasks.yml
+    - id: T1.1-S10
+      title: extract tray animation tick helper
+      completed_at: '2026-05-16'
+      description: Moved TrayAnimateTick animation progress and close-at-zero state transition from main.rs into update/tray_animation.rs.
+      verification:
+      - 'RED: cargo test -p unilii-bin tray_animation failed because apply_animation_tick did not exist.'
+      - 'GREEN: cargo test -p unilii-bin tray_animation passed opening-progress and close-at-zero tests after implementation
+        and main.rs wiring.'
+      - tasks.yml and roadmap.yml parsed successfully.
+      - cargo check --workspace exited 0.
+      - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings exited 0.
+      - cargo test --workspace exited 0; unilii-bin main test suite reported 182 passed, 0 failed, 3 ignored.
+      files_changed:
+      - unilii/bin/src/update/mod.rs
+      - unilii/bin/src/update/tray_animation.rs
+      - unilii/bin/src/main.rs
+      - tasks.yml
+  - id: T1.2
+    title: consolidate tray implementations
+    description: Choose one tray state model and remove or archive backup/dead paths.
+    consequences: Clarifies which DBus/menu/favorite/navigation code is production.
+    emerging_tasks:
+    - Add a migration note for removed APIs if public.
+    - Enhanced tray core/state/rendering modules now carry FIXME(T6) dead-code allowances; T1.2 should classify each as production-wired,
+      test-support, future API, or removable.
+    - Enhanced tray event update logic now has an extracted owner under update/, making tray consolidation less dependent
+      on main.rs internals.
+    - Tray navigation update behavior is now extracted; tray consolidation can focus on state/model duplication instead of
+      navigation logic in main.rs.
+    - Tray favorite behavior is now extracted; tray consolidation can focus on state/model ownership and removing compatibility
+      duplicates.
+    - Tray view-state behavior is now extracted; tray consolidation can focus on data/model ownership and backup/dead path
+      removal.
+    - Tray text-input mutation is extracted; tray consolidation can now focus on menu fetch/population ownership and duplicate
+      state paths.
+    - Tray menu fetch fallback construction is extracted; tray consolidation can decide whether fallback menus belong in enhanced_tray
+      core, update, or a menu-model module.
+    - Tray icon press state construction is extracted; tray consolidation can now focus on classifying icon kinds and async
+      task decisions separately.
+    - Special tray snapshot state is extracted; tray consolidation can now separate data-provider async tasks from pure state
+      updates.
+    - Spawn-command result state is extracted; tray consolidation can group provider/command result updates before async task
+      extraction.
+    - Animation lifecycle now has a pure update helper; tray consolidation can reuse this boundary when replacing ad-hoc lifecycle
+      state.
+    priority: P1
+    affected_regions:
+    - unilii/bin/src/tray.rs
+    - unilii/bin/src/enhanced_tray/*
+    - unilii/bin/src/enhanced_tray_backup.rs
+    - unilii/bin/src/test_dbus.rs
+    conceptual_adherence:
+      preservation: Keep tested state/menu conversion logic; remove only unreachable duplicate shells.
+      verification: Use grep and compiler to prove callers before deletion.
+    further_work:
+    - Consider extracting tray host boundary into a smaller crate only after API stabilizes.
+    - BUG-004 scan still finds main.rs.bak; tray consolidation/archive cleanup should remove backup files from active source
+      scans.
+    - Enhanced tray event wiring is no longer missing; consolidation can now focus on moving helper/state logic out of main.rs
+      and retiring transition allowances.
+    - README documents enhanced_tray as the current StatusNotifier/DBus menu model; tray consolidation should preserve or
+      update that public description.
+    test_cases:
+    - Existing enhanced_tray tests.
+    - A main update test for TrayEvent handling.
+    - DBus conversion tests with complete mock menu payloads.
+    definition_of_done:
+    - No enhanced_tray_backup module in production build.
+    - Tray events are handled or explicitly unsupported with test coverage.
+    points_for_later_review:
+    - DBus integration may require live smoke tests outside unit suite.
+  completed_slices:
+  - id: T1-S1
+    title: write canonical interaction architecture design note
+    completed_at: '2026-05-16'
+    description: Added a short design note naming canonical owners, deprecated/transitional paths, update extraction rules,
+      and modrelease-2 import policy.
+    verification:
+    - grep found Canonical owners section in unilii/docs/plans/2026-05-16-canonical-interaction-architecture.md.
+    - grep found Deprecated or transitional paths section.
+    - grep found update/enhanced_tray_events.rs as current extracted update module.
+    - grep found Modrelease-2 import policy section.
+    files_changed:
+    - unilii/docs/plans/2026-05-16-canonical-interaction-architecture.md
+    - tasks.yml
+- id: T2
+  title: merge useful modrelease-2 UX/UI mechanics into unilii
+  description: Port proven menu, tabbar, focus, keybinding, workspace, and preview interaction semantics from modrelease-2
+    into unilii's Iced architecture.
+  consequences: Done carefully, unilii gains mature interaction mechanics without inheriting modrelease-2's older renderer/windowing
+    stack.
+  emerging_tasks:
+  - 'Create compatibility notes for every modrelease-2 concept: copied, adapted, rejected, or deferred.'
+  priority: P0
+  affected_regions:
+  - /home/user/code/modrelease-2/src/ui/*
+  - /home/user/code/modrelease-2/src/util/*
+  - /home/user/code/modrelease-2/tests/*
+  - unilii/bin/src/menus/*
+  - unilii/bin/src/enhanced_tray/*
+  - unilii/core/src/*
+  conceptual_adherence:
+    unilii_superior_ui: unilii remains the UI host; modrelease-2 supplies interaction mechanics and regression cases.
+    no_blind_copy: Do not copy Cairo render code, X11 focus calls, or model structs unchanged unless they are renderer-independent.
+    test_first_merge: Every imported mechanic starts as a failing unilii test derived from modrelease-2 behavior.
+  further_work:
+  - After parity tests pass, retire redundant unilii-specific bespoke code.
+  - 'Canonical architecture note now defines the modrelease-2 import policy: port behavior/model tests, not Cairo/X11 renderer
+    stack.'
+  test_cases:
+  - Ported modrelease-2 tests should fail in unilii before implementation and pass after adaptation.
+  - Existing unilii tray/menu tests stay green.
+  definition_of_done:
+  - Each imported mechanic has an explicit unilii test and no direct dependency on modrelease-2.
+  - UX flows are documented in CONFIGURATION.md or docs/plans.
+  points_for_later_review:
+  - Reassess whether modrelease-2 should remain a reference repo or become a test fixture source.
+  subtasks:
+  - id: T2.1
+    title: port menu lifecycle semantics
+    description: 'Adapt modrelease-2 MenuWidget behavior: visible/hidden lifecycle, Escape dismissal, click-outside dismissal,
+      focus-loss dismissal, keyboard navigation, selection, and action emission.'
+    consequences: All unilii menus get consistent interaction behavior instead of feature-specific logic.
+    emerging_tasks:
+    - Define a renderer-neutral MenuModel for Iced views.
+    - Map MenuAction to unilii Message or Task results.
+    - Menu modules now carry local transition allowances; shared MenuModel integration should remove those allowances by wiring
+      tested menu models into production paths.
+    - Menu event integration now updates EnhancedTrayState tree directly; shared MenuModel should eventually replace direct
+      tree mutations with typed menu state updates.
+    - update/tray_navigation.rs provides another renderer-free state transition module that shared MenuModel lifecycle work
+      can emulate.
+    - update/tray_favorites.rs is another small renderer-free update module to mirror when designing menu lifecycle state
+      transitions.
+    - update/tray_view.rs now contains renderer-free menu/view lifecycle helpers; use it as a stepping stone toward the shared
+      MenuModel lifecycle.
+    - update/tray_text_input.rs owns recursive text input mutation; shared MenuModel work should preserve this as a model-level
+      operation.
+    - update/tray_menu_fetch.rs now owns fallback menu construction; shared MenuModel work should replace or formalize this
+      fallback menu shape.
+    - update/tray_icon_press.rs establishes another renderer-free transition boundary; shared MenuModel work can reuse this
+      pattern for menu-open decisions.
+    - update/tray_snapshots.rs demonstrates provider-result-to-menu-state transitions; shared MenuModel should use the same
+      provider/result boundary.
+    - Command-result-to-view-state helpers now live beside snapshot-result helpers; shared MenuModel should preserve this
+      result/update split.
+    - Animation lifecycle is separated from rendering; shared MenuModel should preserve lifecycle/update separation.
+    priority: P0
+    affected_regions:
+    - /home/user/code/modrelease-2/docs/menu.md
+    - /home/user/code/modrelease-2/src/ui/widgets/menu.rs
+    - unilii/bin/src/menus/*
+    - unilii/bin/src/enhanced_tray/state.rs
+    conceptual_adherence:
+      imported: lifecycle semantics, state shape, action dispatch expectations
+      rejected: Cairo RenderContext and direct X11 input grabbing
+      adapted: Command/Event becomes Iced Message/Task or local effect enum
+    further_work:
+    - Add a MenuController trait only if two real menu implementations need it.
+    - README now documents network/mount/calendar/custom menu models; shared MenuModel work should update README/CONFIGURATION.md
+      when menu lifecycle becomes canonical.
+    test_cases:
+    - escape hides active menu
+    - click outside hides active menu
+    - focus lost hides active menu
+    - enter confirms selected item and emits action
+    - up/down wraps or clamps according to chosen unilii policy
+    definition_of_done:
+    - Network, mount, calendar, and tray menus use the same lifecycle helpers.
+    - No menu duplicates its own Escape/click-outside/focus-loss policy.
+    points_for_later_review:
+    - Check accessibility and keyboard-only navigation once visual UX stabilizes.
+  - id: T2.2
+    title: port modifier-release robustness
+    description: Adapt modrelease-2's centralized modifier-release detection so transient menus terminate reliably on Ctrl/Alt/Super/Shift
+      release.
+    consequences: Prevents sticky menus when activation and release keycodes differ across layouts/platforms.
+    emerging_tasks:
+    - Reconcile with unilii global evdev key daemon and sxhkd import path.
+    priority: P0
+    affected_regions:
+    - /home/user/code/modrelease-2/docs/dev-guides/keybinding-robustness.md
+    - /home/user/code/modrelease-2/tests/modifier_release_regression_tests.rs
+    - unilii/core/src/keys.rs
+    - unilii/core/src/key_engine.rs
+    - unilii/core/src/key_import_sxhkd.rs
+    conceptual_adherence:
+      imported: centralized release utility and regression matrix
+      adapted: keycode source must match unilii's evdev/Iced input stack
+      rejected: hard-coded X11-only assumptions unless behind a backend adapter
+    further_work:
+    - Document supported keycode backends and layout caveats.
+    test_cases:
+    - Super_L release terminates active menu
+    - Super_R release terminates active menu
+    - Ctrl/Alt/Shift release terminates active menu where configured
+    - non-modifier release does not terminate menu
+    - modifier-release confirm behavior matches Return confirm where applicable
+    definition_of_done:
+    - All menu/popup flows consume the shared release detector.
+    - Regression tests cover both active-menu and focused-menu fallback cases.
+    points_for_later_review:
+    - Verify behavior under non-US keyboard layouts and Wayland/X11 backends if both are intended.
+  - id: T2.3
+    title: port filter-tab and workspace-menu flow semantics
+    description: 'Bring over the tested staged flow: activate menu, select workspace, select window, confirm/cancel by key
+      or modifier release, and refresh after actions.'
+    consequences: Unilii can gain modrelease-2's productive keyboard-driven workflow without inheriting its renderer.
+    emerging_tasks:
+    - Define unilii WorkspaceMenuState and WindowSelectionStage types.
+    - Define action outcomes for kill, move, focus, toggle floating, and refresh.
+    priority: P1
+    affected_regions:
+    - /home/user/code/modrelease-2/src/util/workspace_menu_flow.rs
+    - /home/user/code/modrelease-2/src/util/filter_tab_support.rs
+    - /home/user/code/modrelease-2/tests/workspace_menu_input_flow_tests.rs
+    - unilii/bin/src/menus/*
+    - unilii/bin/src/action_runner.rs
+    conceptual_adherence:
+      imported: staged state transitions and action descriptors
+      adapted: i3 command emission goes through unilii action runner with explicit errors
+      rejected: direct renderer dependencies
+    further_work:
+    - Add a help menu generated from the same action descriptor source.
+    test_cases:
+    - activation enters workspace selection stage
+    - selecting workspace moves to window stage
+    - escape in window stage cancels workspace selection but keeps menu open
+    - selecting window then modifier release confirms target
+    - kill workspace action emits refresh outcome
+    definition_of_done:
+    - Ported tests exist in unilii and pass.
+    - Action runner errors are shown in UI or logged without panic.
+    points_for_later_review:
+    - Decide if workspace flows should be optional plugin modules or core bar behavior.
+  - id: T2.4
+    title: port tabbar mechanics as an Iced component
+    description: 'Adapt TabBarWidget semantics: tab state, active index, hit-testing/click activation, and later keyboard
+      navigation.'
+    consequences: Unilii can organize tray/menu panels without bespoke tab handling.
+    emerging_tasks:
+    - Create renderer-independent tab layout tests before implementing Iced view.
+    priority: P2
+    affected_regions:
+    - /home/user/code/modrelease-2/docs/tabbar.md
+    - /home/user/code/modrelease-2/src/ui/widgets/tabbar.rs
+    - unilii/bin/src/enhanced_tray/rendering.rs
+    - unilii/bin/src/menus/*
+    conceptual_adherence:
+      imported: TabBarState and active-tab behavior
+      adapted: Cairo extents become Iced layout/event mapping
+      rejected: hardcoded Cairo rendering path
+    further_work:
+    - Add keyboard tab traversal after click behavior is stable.
+    test_cases:
+    - click inactive tab updates active index
+    - click active tab is no-op
+    - click outside tabbar is no-op
+    - tab labels produce stable layout metadata
+    definition_of_done:
+    - At least one unilii panel/menu uses shared tabbar state.
+    - Ported tabbar tests pass without Cairo dependency.
+    points_for_later_review:
+    - Keep styling minimal until UX validates the component.
+  - id: T2.5
+    title: port workspace preview snapshot and render-model tests
+    description: Bring over workspace snapshot normalization and preview render-model behavior as pure data transformations.
+    consequences: Workspace previews become testable independent of live i3/X11 state.
+    emerging_tasks:
+    - Add a provider boundary for live workspace snapshots.
+    priority: P1
+    affected_regions:
+    - /home/user/code/modrelease-2/src/util/workspace_snapshot.rs
+    - /home/user/code/modrelease-2/src/ui/widgets/workspace_preview.rs
+    - /home/user/code/modrelease-2/tests/workspace_snapshot_tests.rs
+    - /home/user/code/modrelease-2/tests/workspace_preview_layout_tests.rs
+    - unilii/bin/src/menus/*
+    conceptual_adherence:
+      imported: snapshot parsing, normalization, render-model data
+      adapted: i3 tree source and output rendering for unilii UI
+      rejected: any direct dependency on modrelease-2's renderer
+    further_work:
+    - Add live i3/sway adapter tests only after pure parser tests are stable.
+    test_cases:
+    - parse tree filters empty workspaces
+    - extract window metadata
+    - map layout modes
+    - normalize windows to preview bounds
+    - render model uses app icon fallback for unknown classes
+    definition_of_done:
+    - Pure snapshot and render-model tests pass in unilii.
+    - UI uses render model, not live parser output directly.
+    points_for_later_review:
+    - Decide which desktop/window-manager targets are officially supported.
+  - id: T2.6
+    title: evaluate systray-menu crate as a boundary model
+    description: Review modrelease-2/systray-menu for small provider/host/dispatch/keymap interfaces that could simplify unilii
+      tray host boundaries.
+    consequences: May reduce DBus tray complexity if adapted as an interface pattern, but blind copying may duplicate existing
+      enhanced_tray code.
+    emerging_tasks:
+    - 'Write a decision record: adopt interface, extract idea only, or reject.'
+    priority: P2
+    affected_regions:
+    - /home/user/code/modrelease-2/systray-menu/src/*
+    - /home/user/code/modrelease-2/systray-menu/tests/*
+    - unilii/bin/src/enhanced_tray/*
+    conceptual_adherence:
+      imported: small boundary shapes if they fit
+      adapted: DBus types and Iced messages
+      rejected: parallel tray stack if it increases duplication
+    further_work:
+    - Only port tests after boundary decision.
+    test_cases:
+    - provider returns stable menu model
+    - dispatch maps action to effect
+    - host integration smoke can run without live DBus
+    definition_of_done:
+    - Decision is documented with affected unilii modules.
+    - No new duplicate tray stack exists.
+    points_for_later_review:
+    - Prefer deleting complexity over adding an adapter if enhanced_tray is already close.
+- id: T3
+  title: turn modrelease-2 behavior into unilii regression tests
+  description: Create a test-parity suite in unilii from modrelease-2's passing menu, keymap, modifier-release, workspace-flow,
+    and preview tests.
+  consequences: The merge becomes behavior-driven rather than copy-driven.
+  emerging_tasks:
+  - Build small test fixtures for fake workspace trees, fake menu items, fake key events, and fake tray menu payloads.
+  - Use update/enhanced_tray_events.rs as the pattern for renderer-free behavior tests when porting modrelease-2 parity cases.
+  - README recommends pure state/model tests before live DBus/NetworkManager/UI tests; use this as the parity-test policy
+    for modrelease-2 imports.
+  - 'Tray menu-fetch tests are another renderer-free pattern for future modrelease-2 menu parity imports: test model replacement/empty/fallback
+    behavior first.'
+  priority: P0
+  affected_regions:
+  - unilii/bin/src/menus/*
+  - unilii/core/tests/*
+  - unilii/lib/tests/*
+  - unilii/bin/src/enhanced_tray/*
+  conceptual_adherence:
+    tdd: Every merge mechanic starts with a failing unilii test.
+    testing_anti_patterns: Tests must verify real state transitions and parsed data, not mock existence.
+  further_work:
+  - Move high-value tests into integration crates if module-private tests become brittle.
+  test_cases:
+  - modifier release confirms focused menu when active menu is missing
+  - release matrix covers default example profiles
+  - workspace key assignment follows same order
+  - workspace menu input flow covers cancel, confirm, refresh
+  - preview layout normalizes rectangles
+  definition_of_done:
+  - A documented parity checklist maps each selected modrelease-2 test to a unilii test file.
+  - All selected parity tests fail before implementation and pass after adaptation.
+  - Parity checklist should cite the canonical interaction architecture note for import/rejection policy.
+  points_for_later_review:
+  - Do not chase 100% parity; only port mechanics that serve unilii UX.
+  subtasks:
+  - id: T3.1
+    title: create menu-flow fixtures
+    description: Build renderer-free fixtures for menu state, key events, click events, focus changes, and action outputs.
+    consequences: Allows fast unit tests without Iced windows or live X11.
+    emerging_tasks:
+    - Add fixture builders only in test support modules.
+    priority: P0
+    affected_regions:
+    - unilii/bin/src/menus/test_support.rs or equivalent
+    conceptual_adherence:
+      anti_pollution: Do not add test-only public methods to production types.
+    further_work:
+    - Consider crate-local test helpers if multiple crates need them.
+    test_cases:
+    - fixture can create active menu with selected item
+    - fixture can emit modifier release event
+    definition_of_done:
+    - Fixtures are private to tests or clearly separated under test-support.
+    points_for_later_review:
+    - Delete fixture helpers that become unused after refactors.
+  - id: T3.2
+    title: create DBus/tray complete mock payload tests
+    description: Use complete representative StatusNotifier and DBus menu structures to test conversion and event dispatch.
+    consequences: Prevents partial mocks from hiding missing fields or invalid assumptions.
+    emerging_tasks:
+    - Capture anonymized real payload examples if available.
+    priority: P1
+    affected_regions:
+    - unilii/bin/src/enhanced_tray/dbus.rs
+    - unilii/bin/src/enhanced_tray/dbus_tests.rs
+    conceptual_adherence:
+      complete_mocks: Mocks must mirror complete data structures consumed downstream.
+    further_work:
+    - Add live smoke test behind an ignored feature flag.
+    test_cases:
+    - menu item with children converts recursively
+    - checkable item preserves checked state
+    - separator item has no accidental action
+    - invalid identifier returns explicit error
+    definition_of_done:
+    - DBus conversion tests fail on omitted required fields.
+    points_for_later_review:
+    - Keep live DBus tests separate from deterministic unit suite.
+- id: T4
+  title: clean repository and documentation boundaries
+  description: Make the repo reflect the chosen architecture and keep reference materials out of the active source path unless
+    intentionally vendored.
+  consequences: Reduces accidental commits, stale docs, and future review confusion.
+  emerging_tasks:
+  - Create a docs/reference or archive policy if large design dumps must remain.
+  priority: P1
+  affected_regions:
+  - README.md
+  - CONFIGURATION.md
+  - KEYBINDINGS.md
+  - MERGE_PLAN.md
+  - iced_examples/
+  - wiUp/
+  - modrelease.md
+  - '*.bak'
+  conceptual_adherence:
+    clarity: Repository top level should show active product, docs, examples, and archived/reference material separately.
+    preserve_evidence: Do not delete reference code until migration decisions are recorded.
+  further_work:
+  - Add .gitignore entries or move artifacts under docs/archive with explicit status.
+  test_cases:
+  - cargo metadata works after moving/removing artifacts
+  - cargo test --workspace still finds intended crates only
+  - README build/test commands match bridge.yml commands
+  definition_of_done:
+  - Root README describes current workspace accurately.
+  - Archive/reference directories are named and documented.
+  - No accidental binary/zip/backup artifacts appear in git status.
+  points_for_later_review:
+  - Decide whether wiUp remains a reference branch, subdirectory, or separate repo.
+- id: T5
+  title: establish quality gates for future branches
+  description: Make check, test, clippy, and selected focused suites the required verification sequence before merge.
+  consequences: Prevents reintroducing a red test suite or warning debt after stabilization.
+  emerging_tasks:
+  - Add CI once local commands are green and deterministic.
+  - Workspace tests are green, but clippy cannot yet be a merge gate because unilii-bin has 100+ warning-deny blockers after
+    real failures were fixed.
+  priority: P1
+  affected_regions:
+  - bridge.yml
+  - .github/workflows or local CI equivalent
+  - Cargo.toml workspace lints
+  conceptual_adherence:
+    verification: No completion claims without fresh command evidence.
+    incremental_lints: Deny warnings only where currently green, then expand.
+  further_work:
+  - Add all-features gate after default gate is green.
+  - After BUG-001, focused tray test is green, but workspace quality gates still require CalDAV clippy and WiFi assertion
+    cleanup before becoming enforceable.
+  - unilii-lib clippy is green after BUG-002; workspace clippy still needs a full run after BUG-003 cleanup.
+  - BUG-003 removes the useless WiFi assertion warning; next quality-gate refinement should be based on fresh full workspace
+    test/clippy output.
+  - README records the current non-incremental clippy command; CI task should adopt or revisit that command explicitly.
+  test_cases:
+  - cargo check --workspace
+  - cargo test --workspace
+  - cargo clippy --workspace --all-targets -- -D warnings
+  - cargo test -p unilii-bin tray -- --nocapture
+  - cargo test -p unilii-core key -- --nocapture
+  definition_of_done:
+  - CI or documented local gate runs the same commands as bridge.yml.
+  - All quality gates pass on clean checkout.
+  points_for_later_review:
+  - Consider separate slow/live tests for DBus, i3, X11, and actual tray host behavior.
+  status: open_blocked_by_warning_debt
+  verification:
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
+  - cargo test --workspace
+- id: T6
+  title: burn down unilii-bin clippy warning debt without hiding architecture problems
+  description: Make cargo clippy --workspace --all-targets -- -D warnings pass after the baseline behavioral bugs are fixed.
+  consequences: Until this is complete, clippy cannot serve as a reliable merge gate and warning noise can hide real regressions.
+  emerging_tasks:
+  - Separate mechanical warning fixes from architecture refactors.
+  - Avoid deleting compatibility re-exports that main.rs still depends on; keep explicit allows where they are intentional
+    API surfaces.
+  - Use main.rs extraction work to remove collapsible-if clusters rather than only formatting them in place if possible.
+  priority: P1
+  affected_regions:
+  - unilii/bin/src/main.rs
+  - unilii/bin/src/app.rs
+  - unilii/bin/src/enhanced_tray/*
+  - unilii/bin/src/menus/*
+  - unilii/bin/src/widgets/*
+  - unilii/bin/src/action_runner.rs
+  conceptual_adherence:
+    senior_rust: Prefer deleting unreachable transitional code or moving it behind intended public boundaries over blanket
+      crate-level allows.
+    tdd: For logic-bearing changes in main.rs, add characterization tests first; for pure import/unused-variable cleanup,
+      run existing tests before and after.
+    architecture: Use warning clusters as evidence for extraction boundaries, especially tray/menu update logic.
+  further_work:
+  - Classify dead code as keep-public-api, move-to-test-support, integrate, or delete.
+  - Collapse or extract nested tray/menu if-chains into named functions with tests.
+  - Re-run full clippy after each small batch.
+  test_cases:
+  - cargo check --workspace
+  - cargo test --workspace
+  - cargo clippy --workspace --all-targets -- -D warnings
+  definition_of_done:
+  - Workspace clippy exits 0 with -D warnings.
+  - Any remaining allow attributes are local and justified.
+  - No compatibility re-export required by main.rs is accidentally removed.
+  - Tests remain green.
+  points_for_later_review:
+  - After clippy is green, revisit whether unilii-bin should deny warnings in CI immediately or phase it by crate.
+  - Review all FIXME(T6) allowances during T1/T2 to decide integrate/delete/move-to-test-support per module.
+  - Prefer CARGO_INCREMENTAL=0 for clippy in CI until the observed rustc/clippy incremental ICE is understood or no longer
+    reproducible.
+  status: done
+  completed_at: '2026-05-16'
+  verification:
+  - cargo clippy --workspace --all-targets -- -D warnings
+  - cargo test --workspace
+  result: Clippy is green using behavior-preserving lint fixes plus local, justified transition allowances for dormant architecture
+    slices.
+done:
+- id: D0
+  title: selected applicable review workflows
+  description: Used skill-driven code review, systematic debugging, and verification discipline before writing tasks.
+  evidence:
+  - Relevant project skills were loaded from the conversation files.
+- id: D1
+  title: identified target and reference projects
+  description: Found target as /home/user/work/code/unilii and reference as /home/user/code/modrelease-2.
+  evidence:
+  - Project discovery listed both repositories.
+- id: D2
+  title: inspected unilii repository state
+  description: Recorded dirty working tree, modified/untracked files, current branch, and head commit.
+  evidence:
+  - git status reported branch main at 5f0859cd02aacc4425865e5f08689fc5acaf5365 with many modified and untracked files.
+- id: D3
+  title: reviewed existing merge material
+  description: Read existing MERGE_PLAN.md and used it as context rather than blindly copying it.
+  evidence:
+  - MERGE_PLAN.md already compares main Iced workspace and wiUp X11 implementation.
+  copypasted: false
+- id: D4
+  title: verified unilii compile state
+  description: Ran cargo check --workspace.
+  evidence:
+  - Exit code 0 with large warning surface.
+- id: D5
+  title: verified unilii test state
+  description: Ran cargo test --workspace.
+  evidence:
+  - Exit code 101 with one failing tray icon test.
+- id: D6
+  title: verified unilii clippy state
+  description: Ran cargo clippy --workspace --all-targets -- -D warnings.
+  evidence:
+  - Exit code 101 due to if_same_then_else in CalDAV code.
+- id: D7
+  title: verified modrelease-2 tests
+  description: Ran make test in /home/user/code/modrelease-2.
+  evidence:
+  - Exit code 0; unit, integration, and doc tests passed.
+- id: D8
+  title: mapped portable modrelease-2 mechanics
+  description: Inspected menu, tabbar, and keybinding robustness docs and source tree to identify model/update/focus/keymap/workspace-preview
+    mechanics suitable for porting.
+  evidence:
+  - docs/menu.md documents menu lifecycle and input behavior.
+  - docs/tabbar.md documents tab state and click behavior.
+  - docs/dev-guides/keybinding-robustness.md documents modifier-release regression prevention.
+- id: D9
+  title: created tasks.yml
+  description: Wrote this review result file with bugs, architecture problems, test state, todo, done, and merge steps.
+  evidence:
+  - tasks.yml exists at repository root.
+- id: D10
+  title: fixed unknown tray icon fallback
+  description: Changed icon_label_for_name so unknown icon theme names fall back to the generic tray marker instead of arbitrary
+    initials.
+  evidence:
+  - RED focused test reproduced BUG-001 with left U and right generic marker.
+  - GREEN focused test passed for tray::tests::icon_label_uses_known_icon_keywords in both test_dbus and unilii test binaries.
+  files_changed:
+  - unilii/bin/src/tray.rs
+  copypasted: false
+- id: D11
+  title: fixed CalDAV datetime clippy failure
+  description: Added focused coverage for ICS datetime normalization and removed the identical if/else suffix branch.
+  evidence:
+  - Focused CalDAV normalization test passed.
+  - cargo clippy -p unilii-lib --all-targets -- -D warnings passed.
+  files_changed:
+  - unilii/lib/src/calendar/caldav.rs
+  copypasted: false
+- id: D12
+  title: replaced WiFi tautological assertion with parser test
+  description: Added a pure nmcli network parser and deterministic test, and removed the always-true ignored live test assertion.
+  evidence:
+  - Parser test failed before parse_nmcli_networks existed.
+  - Parser test passed after implementation.
+  files_changed:
+  - unilii/bin/src/widgets/wifi.rs
+  copypasted: false
+- id: D13
+  title: restored green workspace test gate after baseline fixes
+  description: After BUG-001, BUG-002, and BUG-003, cargo check and cargo test pass for the workspace; clippy still identifies
+    warning debt.
+  evidence:
+  - cargo check --workspace exited 0.
+  - cargo test --workspace exited 0 with 155 unilii-bin tests passing plus other workspace tests.
+  - cargo clippy --workspace --all-targets -- -D warnings exits 101 due to unilii-bin warning debt, now tracked as T6.
+  files_changed:
+  - tasks.yml
+  copypasted: false
+- id: D14
+  title: made workspace clippy gate green
+  description: Resolved T6 by converting broad warning debt into either behavior-preserving lint fixes or local documented
+    transition allowances, then verified clippy and tests.
+  evidence:
+  - cargo clippy --workspace --all-targets -- -D warnings exited 0.
+  - cargo test --workspace exited 0 after clippy cleanup.
+  - cargo check --workspace exited 0 during cleanup.
+  files_changed:
+  - unilii/bin/src/main.rs
+  - unilii/bin/src/app.rs
+  - unilii/bin/src/action_runner.rs
+  - unilii/bin/src/enhanced_tray/core.rs
+  - unilii/bin/src/enhanced_tray/dbus.rs
+  - unilii/bin/src/enhanced_tray/rendering.rs
+  - unilii/bin/src/enhanced_tray/state.rs
+  - unilii/bin/src/menus/*.rs
+  - unilii/bin/src/widgets/*.rs
+  - tasks.yml
+  copypasted: false
+- id: D15
+  title: removed BUG-004 production panic paths
+  description: Replaced listed production unwrap/expect paths with parser boundaries, recoverable lock handling, action-runner
+    error outcomes, and iced startup errors.
+  evidence:
+  - Focused audio parser RED/GREEN cycle completed.
+  - Focused module_loader, subscription_manager, action_runner, and unilii-lib tests passed.
+  - cargo test --workspace exited 0.
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings exited 0.
+  - Targeted unwrap/expect scan shows no production hits in BUG-004 files except cfg(test)/test helper assertions.
+  files_changed:
+  - unilii/bin/src/widgets/audio.rs
+  - unilii/bin/src/module_loader.rs
+  - unilii/bin/src/subscription_manager.rs
+  - unilii/bin/src/action_runner.rs
+  - unilii/bin/src/global_coordinator.rs
+  - unilii/bin/src/main.rs
+  - unilii/lib/src/util/udev.rs
+  - tasks.yml
+  copypasted: false
+- id: D16
+  title: wired enhanced tray events into main update path
+  description: Added apply_enhanced_tray_event and replaced the EnhancedTrayEvent TODO branch with real state updates.
+  evidence:
+  - Focused RED/GREEN enhanced tray event test completed.
+  - No remaining TODO branch for EnhancedTrayEvent in main.rs.
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings passed.
+  - cargo test --workspace passed.
+  files_changed:
+  - unilii/bin/src/main.rs
+  - tasks.yml
+  copypasted: false
+- id: D17
+  title: extracted enhanced tray event updater from main
+  description: Moved the tested enhanced tray event state-transition helper into update/enhanced_tray_events.rs and removed
+    the duplicate main.rs test.
+  evidence:
+  - Focused new-module RED/GREEN test completed.
+  - cargo check --workspace passed.
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings passed.
+  - cargo test --workspace passed.
+  files_changed:
+  - unilii/bin/src/update/mod.rs
+  - unilii/bin/src/update/enhanced_tray_events.rs
+  - unilii/bin/src/main.rs
+  - tasks.yml
+  copypasted: false
+- id: D18
+  title: updated stale root README architecture docs
+  description: Replaced obsolete single-crate X11-port README with current workspace, feature, command, and development workflow
+    documentation.
+  evidence:
+  - Stale README grep check was red before rewrite and green after rewrite.
+  - README now documents Cargo workspace, Iced/Tokio/DBus architecture, widgets, menus, plugins, and verified commands.
+  - cargo check --workspace passed.
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings passed.
+  - cargo test --workspace passed.
+  files_changed:
+  - README.md
+  - tasks.yml
+  copypasted: false
+- id: D19
+  title: documented canonical interaction architecture
+  description: Added a concise architecture plan for canonical owners, update extraction, transitional paths, and modrelease-2
+    import policy.
+  evidence:
+  - Design note exists under unilii/docs/plans/2026-05-16-canonical-interaction-architecture.md.
+  - Doc grep verified canonical owners, deprecated paths, extracted update module, and modrelease-2 import policy sections.
+  files_changed:
+  - unilii/docs/plans/2026-05-16-canonical-interaction-architecture.md
+  - tasks.yml
+  copypasted: false
+- id: D20
+  title: extracted tray navigation updater from main
+  description: Moved TrayNavigateLeft/TrayNavigateRight state transitions into update/tray_navigation.rs and left main.rs
+    as a thin caller.
+  evidence:
+  - Focused new-module RED/GREEN tray navigation tests completed.
+  - cargo check --workspace passed.
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings passed.
+  - cargo test --workspace passed.
+  files_changed:
+  - unilii/bin/src/update/mod.rs
+  - unilii/bin/src/update/tray_navigation.rs
+  - unilii/bin/src/main.rs
+  - tasks.yml
+  copypasted: false
+- id: D21
+  title: extracted tray favorite updater from main
+  description: Moved TrayToggleFavorite state mutation into update/tray_favorites.rs and left main.rs as a thin caller.
+  evidence:
+  - Focused new-module RED/GREEN tray favorite test completed.
+  - cargo check --workspace passed.
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings passed.
+  - cargo test --workspace passed.
+  files_changed:
+  - unilii/bin/src/update/mod.rs
+  - unilii/bin/src/update/tray_favorites.rs
+  - unilii/bin/src/main.rs
+  - tasks.yml
+  copypasted: false
+- id: D22
+  title: extracted tray view-state updater from main
+  description: Moved aggregated/favorites/filter/submenu tray view state transitions into update/tray_view.rs and left main.rs
+    as thin callers.
+  evidence:
+  - Focused new-module RED/GREEN tray view tests completed.
+  - cargo check --workspace passed.
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings passed.
+  - cargo test --workspace passed.
+  files_changed:
+  - unilii/bin/src/update/mod.rs
+  - unilii/bin/src/update/tray_view.rs
+  - unilii/bin/src/main.rs
+  - tasks.yml
+  copypasted: false
+- id: D23
+  title: extracted tray text-input updater from main
+  description: Moved tray text-input value mutation into update/tray_text_input.rs and removed the duplicate main.rs helper/test.
+  evidence:
+  - Focused new-module RED/GREEN tray text-input tests completed.
+  - cargo check --workspace passed.
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings passed.
+  - cargo test --workspace passed.
+  files_changed:
+  - unilii/bin/src/update/mod.rs
+  - unilii/bin/src/update/tray_text_input.rs
+  - unilii/bin/src/main.rs
+  - tasks.yml
+  copypasted: false
+- id: D24
+  title: extracted tray menu-fetch updater from main
+  description: Moved TrayMenuFetched success, empty, and error fallback handling into update/tray_menu_fetch.rs and removed
+    the fallback menu builder from main.rs.
+  evidence:
+  - Focused tray_menu_fetch tests passed for populated, empty, and error fallback outcomes.
+  - cargo check --workspace passed.
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings passed.
+  - cargo test --workspace passed.
+  files_changed:
+  - unilii/bin/src/update/mod.rs
+  - unilii/bin/src/update/tray_menu_fetch.rs
+  - unilii/bin/src/main.rs
+  - tasks.yml
+  copypasted: false
+- id: D25
+  title: extracted tray icon press state setup from main
+  description: Moved current-view close detection and network/mount/calendar/regular tray state construction into update/tray_icon_press.rs.
+  evidence:
+  - Focused tray_icon_press RED/GREEN tests passed.
+  - cargo check --workspace passed.
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings passed.
+  - cargo test --workspace passed.
+  files_changed:
+  - unilii/bin/src/update/mod.rs
+  - unilii/bin/src/update/tray_icon_press.rs
+  - unilii/bin/src/main.rs
+  - tasks.yml
+  copypasted: false
+- id: D26
+  title: extracted tray snapshot updaters from main
+  description: Moved network/mount/calendar snapshot result handling, refresh loading, and network-toggle desired-state calculation
+    into update/tray_snapshots.rs.
+  evidence:
+  - Focused tray_snapshots tests passed.
+  - tasks.yml and roadmap.yml parsed.
+  - cargo check --workspace passed.
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings passed.
+  - cargo test --workspace passed.
+  files_changed:
+  - unilii/bin/src/update/mod.rs
+  - unilii/bin/src/update/tray_snapshots.rs
+  - unilii/bin/src/main.rs
+  - tasks.yml
+  copypasted: false
+- id: D27
+  title: extracted tray spawn-command state updates from main
+  description: Moved network spawn-command loading and special-view spawn-command completion/error handling into update/tray_snapshots.rs.
+  evidence:
+  - RED focused tray_snapshots tests failed before helpers existed.
+  - Focused tray_snapshots tests passed after implementation and wiring.
+  - tasks.yml and roadmap.yml parsed.
+  - cargo check --workspace passed.
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings passed.
+  - cargo test --workspace passed.
+  files_changed:
+  - unilii/bin/src/update/tray_snapshots.rs
+  - unilii/bin/src/main.rs
+  - tasks.yml
+  copypasted: false
+- id: D28
+  title: extracted tray animation tick update from main
+  description: Moved animation progress update and close-at-zero state removal into update/tray_animation.rs.
+  evidence:
+  - RED focused tray_animation tests failed before helper existed.
+  - Focused tray_animation tests passed after implementation and wiring.
+  - tasks.yml and roadmap.yml parsed.
+  - cargo check --workspace passed.
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings passed.
+  - cargo test --workspace passed.
+  files_changed:
+  - unilii/bin/src/update/mod.rs
+  - unilii/bin/src/update/tray_animation.rs
+  - unilii/bin/src/main.rs
+  - tasks.yml
+  copypasted: false
+
+# BEGIN generated feature implementation plan: polybar_makepad
+feature_implementation_plan:
+  id: "polybar_makepad"
+  title: "Polybar replacement using Makepad"
+  source_reviewed:
+    - "features.md"
+    - "Cargo.toml"
+    - "crates/unilii-core/src/module.rs"
+    - "crates/unilii-cli/src/main.rs"
+    - "crates/unilii-ui/README.md"
+  reviewed_at: "2026-05-25"
+  status: "in_progress"
+  owner: "implementation pass"
+  objective: >
+    Implement a native Makepad-powered top bar binary named unilii-bar that can
+    replace the current Polybar workflow while reusing unilii scanning,
+    metadata, config generation, and module-discovery concepts.
+  scope:
+    in:
+      - "Native top-of-screen bar application with left, center, and right zones."
+      - "Declarative TOML configuration for bar geometry, theme, layout, modules, and actions."
+      - "Independent module update runtime supporting intervals, event streams, hot reload, and click actions."
+      - "Core modules: workspaces, window_title, clock, system, network, vpn, audio, battery, script, notifications."
+      - "Bar-specific module provider metadata integrated with existing scan/config-generation flow."
+      - "Docs and examples for i3, sway, generic X11 fallback, and WM rule setup."
+    out:
+      - "Perfect Polybar config compatibility."
+      - "A full desktop shell or compositor."
+      - "Dynamic plugin loading as the first implementation path."
+      - "A full notification daemon unless explicitly promoted from future work."
+  codebase_fit:
+    existing_strengths:
+      - "The workspace already uses crates/*, so crates/unilii-bar can be added as a normal workspace member."
+      - "unilii-core already has config, schema, manifest, module, and registry concepts that can be extended with bar metadata."
+      - "unilii-cli already has config-oriented commands that can gain bar config generation without creating a second CLI."
+      - "Scanner-related crates already provide a natural home for discovering bar module provider metadata."
+    guardrails:
+      - "Keep Makepad dependencies isolated in crates/unilii-bar so existing CLI/core crates do not pay UI dependency cost."
+      - "Do not force the existing command-oriented Module trait to represent long-running live widgets. Add a bar-specific trait and metadata bridge instead."
+      - "Keep crates/unilii-ui as the terminal UI crate; do not mix ratatui/crossterm concerns with the Makepad bar."
+      - "Treat screen-space reservation as best effort until the target compositor/window-manager stack is proven."
+  release_slices:
+    mvp:
+      goal: "A useful bar that can replace a simple Polybar config for daily use."
+      includes:
+        - "unilii-bar starts and renders a top bar with theme and zones."
+        - "Config parsing, validation, defaults, sample template, and hot reload are working."
+        - "Clock, script, basic CPU, memory, network, audio, battery, workspaces, and window title are functional with graceful fallbacks."
+        - "i3 and sway command backends are documented and usable."
+    full:
+      goal: "The complete feature spec is implemented with registry integration, tests, docs, and hardening."
+      includes:
+        - "All core modules listed in features.md are implemented."
+        - "Bar module provider metadata is discoverable through the existing unilii scan/config-generation path."
+        - "Module actions, scheduler cancellation, script timeouts, and threshold states are covered by tests."
+        - "Install/startup docs cover common WM setups and known platform limitations."
+  dependency_order:
+    - "BAR-M0"
+    - "BAR-M1"
+    - "BAR-M2"
+    - "BAR-M3"
+    - "BAR-M4"
+    - "BAR-M5"
+    - "BAR-M6"
+    - "BAR-M7"
+    - "BAR-M8"
+    - "BAR-M9"
+    - "BAR-M10"
+    - "BAR-M11"
+  milestones:
+    - id: "BAR-M0"
+      title: "Set architecture decisions and MVP boundaries"
+      priority: "P0"
+      status: "done"
+      depends_on: []
+      objective: "Resolve the open questions from features.md before committing to APIs that will be hard to change."
+      tasks:
+        - id: "BAR-M0-T01"
+          title: "Choose first WM backend targets"
+          details: "Use i3 and sway command backends first unless project constraints require a different primary target. Keep x11-generic as fallback work."
+        - id: "BAR-M0-T02"
+          title: "Decide initial plugin model"
+          details: "Start with built-in linked modules plus script modules. Defer dynamic libraries until the metadata and runtime contracts stabilize."
+        - id: "BAR-M0-T03"
+          title: "Define module rendering boundary"
+          details: "Use text/view-model rendering for the first module set; allow Makepad-specific view binding metadata for richer modules later."
+        - id: "BAR-M0-T04"
+          title: "Document screen-reservation strategy"
+          details: "Identify what Makepad can do directly and what must be delegated to WM rules, layer-shell, struts, or fallback always-on-top behavior."
+      deliverables:
+        - "docs/bar-architecture.md with accepted decisions and explicit deferrals."
+        - "An MVP checklist matching the release_slices.mvp section."
+      acceptance:
+        - "Every open question in features.md is answered, deferred with rationale, or converted into a tracked risk."
+        - "The first supported platform path can be implemented without guessing about backend priority."
+    - id: "BAR-M1"
+      title: "Create crates/unilii-bar and a blank Makepad top bar"
+      priority: "P0"
+      status: "partial"
+      depends_on: ["BAR-M0"]
+      objective: "Add the runnable binary crate and prove the window lifecycle before implementing modules."
+      tasks:
+        - id: "BAR-M1-T01"
+          title: "Add workspace crate"
+          details: "Create crates/unilii-bar/Cargo.toml and src/main.rs. Use workspace package metadata where possible."
+        - id: "BAR-M1-T02"
+          title: "Add Makepad dependency behind the bar crate"
+          details: "Keep Makepad out of unilii-core, unilii-cli, and unilii-ui dependency graphs unless a shared type is intentionally needed."
+        - id: "BAR-M1-T03"
+          title: "Implement BarApp lifecycle skeleton"
+          details: "Create src/app.rs with startup, shutdown, redraw request, and error reporting boundaries."
+        - id: "BAR-M1-T04"
+          title: "Render a frameless top-width placeholder"
+          details: "Implement best-effort top placement, configured height, and always-on-top fallback."
+        - id: "BAR-M1-T05"
+          title: "Add basic logging and panic diagnostics"
+          details: "Ensure early users can distinguish config errors, Makepad/window errors, and runtime module errors."
+      deliverables:
+        - "crates/unilii-bar/Cargo.toml"
+        - "crates/unilii-bar/src/main.rs"
+        - "crates/unilii-bar/src/app.rs"
+      acceptance:
+        - "cargo run -p unilii-bar opens a visible bar window or reports a clear platform limitation."
+        - "cargo check --workspace succeeds after the crate is added."
+    - id: "BAR-M2"
+      title: "Implement bar configuration, defaults, and generation"
+      priority: "P0"
+      status: "partial"
+      depends_on: ["BAR-M1"]
+      objective: "Turn the example config in features.md into typed, validated configuration used by the app and CLI."
+      tasks:
+        - id: "BAR-M2-T01"
+          title: "Define typed config structs"
+          details: "Create BarConfig, Theme, Layout, ModuleSpec, action, state-style, and validation types in crates/unilii-bar/src/config.rs or a shared core module if needed."
+        - id: "BAR-M2-T02"
+          title: "Parse TOML and apply defaults"
+          details: "Support the proposed [bar], [theme], [layout], and [[module]] schema. Validate duplicate ids, unknown modules, invalid intervals, and missing commands."
+        - id: "BAR-M2-T03"
+          title: "Add templates/bar.toml"
+          details: "Provide starter config equivalent to the spec, with comments and safe defaults."
+        - id: "BAR-M2-T04"
+          title: "Wire CLI generation"
+          details: "Extend existing CLI/config generation so unilii can emit the starter unilii-bar config without requiring the bar binary to run."
+        - id: "BAR-M2-T05"
+          title: "Add config file discovery"
+          details: "Support explicit --config and default lookup under XDG-style config paths."
+      deliverables: ["crates/unilii-bar/src/config.rs", "templates/bar.toml", "CLI command or option that generates bar config"]
+      acceptance:
+        - "The config example from features.md parses successfully."
+        - "Invalid configs return actionable diagnostics naming the bad field and module id."
+        - "Tests cover defaults, duplicate ids, unknown module types, and interval validation."
+    - id: "BAR-M3"
+      title: "Map theme and layout to Makepad views"
+      priority: "P0"
+      status: "partial"
+      depends_on: ["BAR-M2"]
+      objective: "Render configured zones and modules consistently before adding live data."
+      tasks:
+        - id: "BAR-M3-T01"
+          title: "Implement layout zones"
+          details: "Create left, center, and right containers; preserve declarative module ordering from config."
+        - id: "BAR-M3-T02"
+          title: "Implement theme mapping"
+          details: "Map font, size, foreground, background, accent, warning, critical, padding, margin, and border settings to Makepad style values."
+        - id: "BAR-M3-T03"
+          title: "Define common module view model"
+          details: "Represent label, tooltip, state, visibility, css-like style overrides, and pending error state."
+        - id: "BAR-M3-T04"
+          title: "Implement state styling"
+          details: "Support ok, warning, critical, active, visible, urgent, empty, muted, charging, and disconnected states where applicable."
+      deliverables: ["crates/unilii-bar/src/layout.rs", "crates/unilii-bar/src/theme.rs", "A static rendered bar matching configured zones and sample theme"]
+      acceptance:
+        - "Changing theme and layout in config changes the rendered bar without code edits."
+        - "Disabled modules are not rendered and unknown module references produce diagnostics."
+    - id: "BAR-M4"
+      title: "Build module runtime, scheduler, actions, and hot reload"
+      priority: "P0"
+      status: "partial"
+      depends_on: ["BAR-M3"]
+      objective: "Provide the runtime foundation all modules use for independent updates and user actions."
+      tasks:
+        - id: "BAR-M4-T01"
+          title: "Define BarModule and ModuleContext traits"
+          details: "Support init, update, optional event stream, render model output, and shutdown/cancel hooks."
+        - id: "BAR-M4-T02"
+          title: "Implement scheduler"
+          details: "Run interval-based modules independently, coalesce redraws, and isolate module failures."
+        - id: "BAR-M4-T03"
+          title: "Implement config hot reload"
+          details: "Watch the config file, validate new config, rebuild the module graph safely, and keep the previous graph alive if reload fails."
+        - id: "BAR-M4-T04"
+          title: "Implement action dispatcher"
+          details: "Support on_click_left, on_click_middle, on_click_right for shell commands and internal module actions."
+        - id: "BAR-M4-T05"
+          title: "Add capability/error reporting"
+          details: "Expose unavailable dependencies, command failures, and stale module values in diagnostics and optional tooltips."
+      deliverables: ["crates/unilii-bar/src/modules/mod.rs", "scheduler and action dispatcher modules", "hot reload integration in BarApp"]
+      acceptance:
+        - "Each module can update without blocking other modules."
+        - "Reload failure keeps the last working bar config active."
+        - "Click actions are debounced or otherwise protected from accidental duplicate execution."
+    - id: "BAR-M5"
+      title: "Implement first core modules: clock, script, and system"
+      priority: "P0"
+      status: "partial"
+      depends_on: ["BAR-M4"]
+      objective: "Deliver the simplest useful data modules and validate the runtime contract."
+      tasks:
+        - id: "BAR-M5-T01"
+          title: "Implement clock module"
+          details: "Support format string, timezone option, interval updates, and locale-safe fallback formatting."
+        - id: "BAR-M5-T02"
+          title: "Implement script module"
+          details: "Support command, env, interval, timeout, output trimming/parsing, stale output handling, and click action."
+        - id: "BAR-M5-T03"
+          title: "Implement system module"
+          details: "Support CPU, memory, load, and temperature providers with warning/critical thresholds."
+        - id: "BAR-M5-T04"
+          title: "Add module tests"
+          details: "Cover config parsing, scheduler intervals, script timeout, command failure, and threshold formatting."
+      deliverables: ["crates/unilii-bar/src/modules/clock.rs", "crates/unilii-bar/src/modules/script.rs", "crates/unilii-bar/src/modules/system.rs"]
+      acceptance:
+        - "A sample config can render clock, script output, CPU, and memory in the bar."
+        - "A hanging script is killed at timeout and does not block redraws."
+        - "System thresholds set warning and critical states deterministically."
+    - id: "BAR-M6"
+      title: "Implement Linux desktop status modules"
+      priority: "P1"
+      status: "partial"
+      depends_on: ["BAR-M5"]
+      objective: "Add the non-WM desktop modules needed for a practical Polybar replacement."
+      tasks:
+        - id: "BAR-M6-T01"
+          title: "Implement network module"
+          details: "Show interface status, IP address, up/down state, and Wi-Fi SSID when available."
+        - id: "BAR-M6-T02"
+          title: "Implement vpn module"
+          details: "Detect common tunnel interfaces and support optional command probe overrides."
+        - id: "BAR-M6-T03"
+          title: "Implement audio module"
+          details: "Support PipeWire/PulseAudio volume and mute using available command/API backends; expose toggle and mixer actions."
+        - id: "BAR-M6-T04"
+          title: "Implement battery module"
+          details: "Show percentage, charging/discharging state, estimated state when available, and low/critical thresholds."
+      deliverables: ["crates/unilii-bar/src/modules/network.rs", "crates/unilii-bar/src/modules/vpn.rs", "crates/unilii-bar/src/modules/audio.rs", "crates/unilii-bar/src/modules/battery.rs"]
+      acceptance:
+        - "Missing system dependencies degrade to disabled/unavailable state instead of crashing."
+        - "Each module documents its Linux commands/files/API dependencies."
+        - "State transitions are covered by unit tests or fixture-based tests where practical."
+    - id: "BAR-M7"
+      title: "Implement workspace and focused-window integration"
+      priority: "P1"
+      status: "partial"
+      depends_on: ["BAR-M4"]
+      objective: "Support the interactive WM behavior that makes the bar a real Polybar replacement."
+      tasks:
+        - id: "BAR-M7-T01"
+          title: "Define WmBackend trait"
+          details: "Represent workspace list, active workspace, urgent state, visible state, focused window title, and switch-workspace actions."
+        - id: "BAR-M7-T02"
+          title: "Implement i3 backend"
+          details: "Use i3-msg for initial implementation and later replace with an event socket if needed."
+        - id: "BAR-M7-T03"
+          title: "Implement sway backend"
+          details: "Use swaymsg for initial implementation with config-selectable backend."
+        - id: "BAR-M7-T04"
+          title: "Implement generic fallback backend"
+          details: "Use wmctrl, xprop, or configured shell commands where i3/sway are unavailable."
+        - id: "BAR-M7-T05"
+          title: "Implement workspaces and window_title modules"
+          details: "Render active, visible, urgent, and empty workspace states; expose click-to-switch behavior."
+      deliverables: ["crates/unilii-bar/src/modules/workspaces.rs", "crates/unilii-bar/src/modules/window_title.rs", "WM backend module and docs"]
+      acceptance:
+        - "Active workspace state updates correctly on i3 or sway."
+        - "Clicking a workspace switches to that workspace."
+        - "Focused window title updates and falls back to empty or host label when unavailable."
+    - id: "BAR-M8"
+      title: "Integrate bar module providers with unilii discovery"
+      priority: "P1"
+      status: "partial"
+      depends_on: ["BAR-M2", "BAR-M4"]
+      objective: "Reuse existing project scan/config-generation concepts for bar module metadata without conflating runtime widget modules with existing command modules."
+      tasks:
+        - id: "BAR-M8-T01"
+          title: "Add bar registry types"
+          details: "Create crates/unilii-core/src/bar_registry.rs with ModuleProvider metadata, config schema/defaults, capability requirements, polling/event info, and optional Makepad binding info."
+        - id: "BAR-M8-T02"
+          title: "Expose bar registry from unilii-core"
+          details: "Re-export bar registry APIs without changing existing ModuleRegistry behavior."
+        - id: "BAR-M8-T03"
+          title: "Extend scanner metadata extraction"
+          details: "Recognize bar module provider declarations in Makepad-enabled or bar-enabled crates."
+        - id: "BAR-M8-T04"
+          title: "Generate starter config from discovered providers"
+          details: "Allow config generation to include provider defaults and schema-derived comments."
+        - id: "BAR-M8-T05"
+          title: "Add registry contract tests"
+          details: "Ensure discovered providers produce stable ids, valid defaults, and capability diagnostics."
+      deliverables: ["crates/unilii-core/src/bar_registry.rs", "scanner support for bar metadata", "config generation using discovered bar providers"]
+      acceptance:
+        - "Built-in bar modules are discoverable through the registry."
+        - "A generated config can be produced from provider defaults."
+        - "Existing core ModuleRegistry tests continue to pass unchanged."
+    - id: "BAR-M9"
+      title: "Implement notification indicator"
+      priority: "P2"
+      status: "partial"
+      depends_on: ["BAR-M4"]
+      objective: "Provide a lightweight notification/counter hook while keeping a full daemon optional."
+      tasks:
+        - id: "BAR-M9-T01"
+          title: "Define notifications module scope"
+          details: "Start with a count/indicator sourced from a configured command, file, or event hook."
+        - id: "BAR-M9-T02"
+          title: "Implement notifications module"
+          details: "Support indicator text, count, stale state, and click action to open the configured notification UI."
+        - id: "BAR-M9-T03"
+          title: "Document future daemon path"
+          details: "Record what would be needed for a full notification daemon or tray implementation."
+      deliverables: ["crates/unilii-bar/src/modules/notifications.rs", "docs entry describing limitations and integration options"]
+      acceptance:
+        - "Users can configure a notification count/indicator without running a new daemon."
+        - "Full daemon work remains clearly marked as future scope."
+    - id: "BAR-M10"
+      title: "Add docs, examples, and startup integration"
+      priority: "P1"
+      status: "partial"
+      depends_on: ["BAR-M6", "BAR-M7", "BAR-M8"]
+      objective: "Make the bar installable and understandable for the target tiling-WM workflow."
+      tasks:
+        - id: "BAR-M10-T01"
+          title: "Document installation"
+          details: "Cover cargo install/run, config path, logging, and common dependency requirements."
+        - id: "BAR-M10-T02"
+          title: "Document i3 startup"
+          details: "Include exec line, bar replacement guidance, gap/reserved-space notes, and workspace click behavior."
+        - id: "BAR-M10-T03"
+          title: "Document sway startup"
+          details: "Include sway config example, layer/surface limitations, and fallback WM rules."
+        - id: "BAR-M10-T04"
+          title: "Add example configs"
+          details: "Provide minimal, full, and script-heavy example configs."
+        - id: "BAR-M10-T05"
+          title: "Document troubleshooting"
+          details: "Cover missing commands, audio backends, battery paths, WM backend selection, and screen reservation limitations."
+      deliverables: ["docs/unilii-bar.md", "examples/bar/minimal.toml", "examples/bar/full.toml", "examples/bar/scripts.toml"]
+      acceptance:
+        - "A new user can install and start unilii-bar from docs alone."
+        - "Known platform limitations are explicit and not hidden as bugs."
+    - id: "BAR-M11"
+      title: "Harden tests, CI, packaging, and release readiness"
+      priority: "P1"
+      status: "todo"
+      depends_on: ["BAR-M10"]
+      objective: "Promote the implementation from feature-complete to maintainable."
+      tasks:
+        - id: "BAR-M11-T01"
+          title: "Add unit and fixture tests"
+          details: "Cover config parsing, defaults, module formatting, script timeout, threshold states, WM parsing fixtures, and registry metadata."
+        - id: "BAR-M11-T02"
+          title: "Add integration smoke tests"
+          details: "Exercise headless or mock runtime paths where Makepad/windowing permits; otherwise test non-window app state and module graph construction."
+        - id: "BAR-M11-T03"
+          title: "Add CI gates"
+          details: "Ensure cargo fmt, cargo clippy, cargo test, and cargo check --workspace include the new crate or an explicitly documented target gate."
+        - id: "BAR-M11-T04"
+          title: "Review dependency and license impact"
+          details: "Record Makepad and Linux backend dependency implications before release."
+        - id: "BAR-M11-T05"
+          title: "Add release checklist"
+          details: "Include config migration, known issues, startup docs, and rollback guidance."
+      deliverables:
+        - "Test coverage for all non-visual contracts."
+        - "CI-compatible checks for the new crate."
+        - "Release checklist in docs or tasks.yml."
+      acceptance:
+        - "Full workspace checks pass or unsupported graphical checks are documented and gated."
+        - "The bar can be configured, run, reloaded, and exited cleanly in the supported environment."
+        - "All features.md goals are implemented, tested, documented, or explicitly deferred with rationale."
+
+  implementation_notes:
+    - date: "2026-05-25"
+      status: "completed_first_compiling_slice"
+      summary:
+        - "Adapted the plan to the actual repository layout: unilii/core and unilii/bin rather than crates/*."
+        - "Added docs/bar-architecture.md with accepted MVP architecture decisions and explicit deferrals."
+        - "Added templates/bar.toml as a valid starter bar config."
+        - "Added unilii_core::bar for typed config parsing, semantic validation, starter config generation, and built-in provider metadata."
+        - "Added unilii_core::bar_runtime for renderer-neutral module view models, module graph construction, and safe placeholder runtime updates."
+        - "Added the unilii-bar binary entry in unilii/bin with --print-default-config, --check-config, --config, and headless scaffold output."
+      tests:
+        - "cargo fmt --all"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --check-config --config templates/bar.toml"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "Makepad native rendering is not implemented yet."
+        - "Platform-dependent modules currently return renderer-neutral Unavailable/Stale states except clock and basic load probing."
+        - "Hot reload, real scheduler concurrency, command execution with timeout, WM backends, and native status modules remain pending."
+
+    - date: "2026-05-25"
+      status: "implemented_runtime_and_core_module_slice"
+      summary:
+        - "Implemented real script module execution with shell command spawning, stdout/stderr capture, output limiting, format placeholders, non-zero exit warnings, and timeout handling."
+        - "Implemented default bar config discovery using UNILII_BAR_CONFIG, XDG_CONFIG_HOME, HOME, and ProjectDirs fallback."
+        - "Added existing unilii CLI subcommands: init-bar-config and validate-bar-config."
+        - "Implemented system module load/memory fixture support with warning/critical threshold states and stale diagnostics."
+        - "Updated templates/bar.toml to include the system module in the default right zone."
+      tests:
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii -- init-bar-config --output /tmp/unilii-bar-test.toml --force"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config /tmp/unilii-bar-test.toml"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config templates/bar.toml"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "The script runner is synchronous inside the current headless update call; the async scheduler and redraw coalescing are still pending."
+        - "The system module currently covers load and memory; CPU and temperature providers remain pending."
+        - "Makepad rendering, WM modules, and Linux desktop modules remain pending or placeholder-only."
+
+    - date: "2026-05-25"
+      status: "implemented_desktop_wm_notification_runtime_slice"
+      summary:
+        - "Replaced placeholder network, VPN, audio, battery, workspaces, window_title, and notifications modules with renderer-neutral runtime modules."
+        - "Network now reads sysfs-style interface fixtures or /sys/class/net and reports Ok or Disconnected states."
+        - "VPN now detects common tunnel interface names such as tun*, tap*, wg*, ppp*, tailscale*, and zt*."
+        - "Battery now reads sysfs power_supply fixtures or /sys/class/power_supply and applies charging, warning, and critical states."
+        - "Audio now has a safe fixture/status parser through UNILII_BAR_AUDIO_STATUS and reports Muted or Ok where status is available."
+        - "Notifications now support count sources through UNILII_BAR_NOTIFICATION_COUNT or a configured source_file."
+        - "Workspaces and window_title now have tested renderer-neutral snapshot inputs through UNILII_BAR_WORKSPACES and UNILII_BAR_WINDOW_TITLE."
+        - "Fixed a battery-state bug where Discharging was misclassified as Charging because of substring matching."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config templates/bar.toml"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "Audio still depends on fixture/status text and does not yet call PipeWire/PulseAudio backends directly."
+        - "Workspaces/window_title currently use environment snapshot inputs; direct i3-msg/swaymsg command backends and click-to-switch are pending."
+        - "Network does not yet expose IP address or Wi-Fi SSID without additional backend support."
+        - "Makepad rendering, async scheduling, hot reload, and action dispatch are still pending."
+
+    - date: "2026-05-25"
+      status: "implemented_render_model_action_reload_runtime_slice"
+      summary:
+        - "Added renderer-neutral BarRenderModel grouped into left, center, and right zones from validated layout config."
+        - "Added BarClickButton, BarActionStatus, and BarActionResult for tested click/action dispatch."
+        - "Implemented command action dispatch for configured on_click_left, on_click_middle, and on_click_right actions, including success and non-zero exit reporting."
+        - "Added BarRuntimeState with reload_from_str behavior that preserves the previous valid config/graph when reload validation fails."
+        - "Updated unilii-bar scaffold output to use the grouped render model that the future Makepad renderer can consume."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config templates/bar.toml"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "The runtime is still synchronous; async interval scheduling and redraw coalescing remain pending."
+        - "Hot reload is implemented as validated reload semantics, but no filesystem watcher is wired yet."
+        - "Internal actions and click-to-switch workspace commands are still pending."
+        - "Makepad rendering remains pending, but the renderer-neutral zone model is now available."
+
+    - date: "2026-05-25"
+      status: "implemented_interval_scheduler_cache_slice"
+      summary:
+        - "Extended BarModuleGraph with per-module intervals sourced from module interval_ms config."
+        - "Added last-update timestamps and cached module view models."
+        - "Added update_due_modules and update_due_render_model so ticks update only modules whose interval has elapsed."
+        - "Added cached_render_model for renderer redraws without forcing all modules to recompute."
+        - "Added next_due_in to support future async timer scheduling and redraw coalescing."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config templates/bar.toml"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "The scheduler is still a synchronous runtime primitive; no async task executor or UI timer loop is wired yet."
+        - "Event-stream modules are still pending."
+        - "Filesystem watcher hot reload is still pending."
+        - "Redraw coalescing is enabled by cached render models conceptually, but not yet connected to a renderer event loop."
+
+    - date: "2026-05-25"
+      status: "implemented_file_hot_reload_polling_slice"
+      summary:
+        - "Added BarReloadStatus for file hot-reload checks."
+        - "Added BarRuntimeState::from_config_file to bind runtime state to a config path and initial modified timestamp."
+        - "Added reload_from_file_if_changed to reload only when file metadata changes."
+        - "Implemented unchanged, successful reload, read-failure, and invalid-config preservation behavior at the renderer-neutral runtime level."
+        - "Invalid changed configs now leave the previous valid config and graph active while recording the reload error."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config templates/bar.toml"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "This is polling-based hot reload; no notify/inotify filesystem watcher is wired yet."
+        - "The unilii-bar scaffold does not yet run a persistent event loop that calls reload_from_file_if_changed periodically."
+        - "Makepad renderer integration remains pending."
+
+    - date: "2026-05-25"
+      status: "implemented_bounded_bar_watch_loop_slice"
+      summary:
+        - "Added unilii-bar --watch to run the renderer-neutral scheduler/reload loop."
+        - "Added --ticks for bounded loop execution in tests and CI."
+        - "Added --tick-interval-ms to control maximum sleep between scheduler ticks."
+        - "The watch loop now calls reload_from_file_if_changed and update_due_render_model, then prints grouped zone output."
+        - "Default one-shot scaffold behavior is preserved when --watch is not provided."
+      tests:
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 2 --tick-interval-ms 0"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --check-config --config templates/bar.toml"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "This remains a headless scaffold loop; native Makepad rendering is still pending."
+        - "The loop uses polling hot reload, not notify/inotify."
+        - "No OS signal handling or graceful long-running shutdown path has been added beyond bounded --ticks testing."
+
+    - date: "2026-05-25"
+      status: "implemented_wm_json_backend_parser_slice"
+      summary:
+        - "Added serde_json as a unilii-core workspace dependency for i3/sway-compatible JSON parsing."
+        - "Workspaces module now supports UNILII_BAR_I3_WORKSPACES_JSON and UNILII_BAR_I3_WORKSPACES_FILE in addition to the simple UNILII_BAR_WORKSPACES snapshot format."
+        - "Window-title module now supports UNILII_BAR_I3_TREE_JSON and UNILII_BAR_I3_TREE_FILE and recursively extracts the focused node title/name from i3/sway tree JSON."
+        - "Added fixture tests for workspace JSON, workspace JSON file loading, focused tree title extraction, and focused tree file loading."
+        - "A full workspace test initially failed because the build partition had no free space; after cargo clean freed build artifacts, focused and full workspace tests passed."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 1 --tick-interval-ms 0"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "This implements parser/file/env backends only; direct i3-msg/swaymsg command invocation is still pending."
+        - "Workspace click-to-switch actions are still pending."
+        - "No event-socket subscription backend is implemented yet."
+
+    - date: "2026-05-25"
+      status: "implemented_wm_command_and_workspace_switch_slice"
+      summary:
+        - "Workspaces module now supports command/workspaces_command to execute a shell command that returns i3/sway-compatible workspace JSON."
+        - "Window-title module now supports command/tree_command to execute a shell command that returns i3/sway-compatible tree JSON."
+        - "Added BarModuleGraph::dispatch_workspace_switch for renderer-neutral workspace click-to-switch support."
+        - "Added switch_command_template with {workspace} and shell-quoted {workspace_shell} placeholders."
+        - "Added shell quoting tests for workspace names containing spaces and single quotes."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 1 --tick-interval-ms 0"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "i3-msg and swaymsg are supported through configurable command templates, not auto-detected defaults yet."
+        - "Renderer click handlers are still pending because there is no native Makepad renderer yet."
+        - "Event-socket subscription backends remain pending."
+    - date: "2026-05-25"
+      status: "implemented_network_ip_fixture_slice"
+      summary:
+        - "NetworkSnapshot now carries ip_address in addition to interface, state, and MAC address."
+        - "Network module format strings now support {ip}."
+        - "Sysfs-style fixtures can provide ipv4 or ip_address files per interface."
+        - "Tooltips now include IP address information when available."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 1 --tick-interval-ms 0"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "Real IP discovery still needs a backend that reads rtnetlink, ip command output, or NetworkManager; current direct path is fixture/file based."
+        - "Wi-Fi SSID display remains pending."
+
+    - date: "2026-05-25"
+      status: "implemented_backend_presets_docs_examples_slice"
+      summary:
+        - "Added backend = i3 and backend = sway presets for workspaces/window_title modules."
+        - "i3 preset maps workspaces to i3-msg -t get_workspaces, tree to i3-msg -t get_tree, and switching to i3-msg workspace -- {workspace_shell}."
+        - "sway preset maps workspaces to swaymsg -t get_workspaces, tree to swaymsg -t get_tree, and switching to swaymsg workspace -- {workspace_shell}."
+        - "Explicit command/workspaces_command/tree_command/switch_command_template still override backend presets."
+        - "Added docs/unilii-bar.md covering commands, config discovery, modules, backend presets, environment fixtures, i3/sway startup, and troubleshooting."
+        - "Added examples/bar/minimal.toml, examples/bar/full.toml, and examples/bar/scripts.toml."
+        - "Updated templates/bar.toml comments and network format to expose backend and {ip} usage."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config templates/bar.toml"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config examples/bar/minimal.toml"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config examples/bar/full.toml"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config examples/bar/scripts.toml"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 1 --tick-interval-ms 0"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "Docs still describe the current headless scaffold; native Makepad rendering/window reservation docs remain pending."
+        - "Backend presets still use command execution rather than event-socket subscriptions."
+        - "Examples default to i3 for concreteness; sway users must change backend = sway."
+
+    - date: "2026-05-25"
+      status: "implemented_network_enrichment_sources_slice"
+      summary:
+        - "Network module now supports {ssid} in addition to {interface}, {state}, {address}, and {ip}."
+        - "NetworkSnapshot now carries ssid."
+        - "Network module accepts status_file, ip_command, and ssid_command settings."
+        - "Network module also supports UNILII_BAR_NETWORK_STATUS, UNILII_BAR_NETWORK_STATUS_FILE, UNILII_BAR_NETWORK_IP, UNILII_BAR_NETWORK_SSID, UNILII_BAR_NETWORK_IP_COMMAND, and UNILII_BAR_NETWORK_SSID_COMMAND."
+        - "Added deterministic tests for sysfs-style SSID fixture files, status env parsing, status file parsing, and command fallbacks."
+        - "Updated docs/unilii-bar.md, templates/bar.toml, and examples/bar/full.toml for {ssid} and network enrichment sources."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config templates/bar.toml"
+        - "cargo run -p unilii-bin --bin unilii -- validate-bar-config --config examples/bar/full.toml"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 1 --tick-interval-ms 0"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "Native rtnetlink/NetworkManager implementations remain pending; this slice adds file/env/command enrichment paths."
+        - "Network command execution is still synchronous inside the current headless runtime."
+        - "SSID values containing spaces are not supported by the key/value status parser and should use direct env, file fixture, or command source."
+
+
+    - date: "2026-05-25"
+      status: "fixed_live_wm_mutation_in_tests"
+      summary:
+        - "Identified that backend_preset_provides_workspace_switch_template dispatched the i3 backend switch command during tests."
+        - "This could execute i3-msg workspace -- <name> on a real running i3 session and change the developer's active workspace."
+        - "Added BarModuleGraph::workspace_switch_command to render workspace switch commands without executing them."
+        - "Replaced the i3 backend preset dispatch test with a non-executing rendered-command assertion."
+        - "Kept dispatch_workspace_switch tests only for explicit harmless printf templates."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 1 --tick-interval-ms 0"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "This now includes a runtime test-build guard; broader static linting and opt-in live-session integration tests remain pending."
+
+
+    - date: "2026-05-25"
+      status: "implemented_test_side_effect_command_guard"
+      summary:
+        - "Added a test-build guard in action dispatch before command execution."
+        - "During unit tests, dispatching side-effectful commands is blocked unless UNILII_BAR_ALLOW_SIDE_EFFECT_COMMANDS_IN_TESTS is explicitly set to an affirmative value."
+        - "The guard blocks common live-session mutators including i3-msg, swaymsg, nmcli, pactl, wpctl, systemctl, loginctl, and notify-send."
+        - "Harmless mock commands such as printf and echo remain allowed for dispatch tests."
+        - "Added tests proving i3-msg workspace dispatch is blocked and harmless mock dispatch still executes."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 1 --tick-interval-ms 0"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "The guard is active in test builds; explicit live-session integration tests need a separate opt-in harness."
+        - "The command classifier is conservative and should be expanded if more mutating tools are introduced."
+
+
+    - date: "2026-05-25"
+      status: "implemented_low_level_test_command_guard"
+      summary:
+        - "Moved side-effect command protection down into run_script_command so script modules and command-backed data modules are protected in test builds too."
+        - "Retained the action-dispatch guard for clear action-level Unsupported results."
+        - "Added a synthetic unilii-test-side-effect classifier token for deterministic low-level guard regression tests without embedding or running real live-session mutators."
+        - "Added regression tests proving script modules and network command sources are blocked before shell execution in normal unit tests."
+        - "Normal harmless mock command tests continue to pass."
+      tests:
+        - "cargo test -p unilii-core bar_runtime -- --nocapture"
+        - "cargo test -p unilii-core bar -- --nocapture"
+        - "cargo test -p unilii-bin --bin unilii-bar -- --nocapture"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 1 --tick-interval-ms 0"
+        - "cargo test --workspace -- --nocapture"
+      limitations:
+        - "The guard is test-build only and classifier based; future mutating command families must be added to the classifier."
+        - "Opt-in live-session integration tests remain pending under BAR-E10."
+
+
+    - date: "2026-05-25"
+      status: "fixed_cross_crate_test_harness_side_effect_guard"
+      summary:
+        - "Audited remaining WM command references after the live-workspace mutation report."
+        - "Found that the previous guard relied on cfg!(test), which only protects code compiled as the current test crate."
+        - "Extended the guard with is_test_command_guard_active so it also activates when unilii_core runs as a dependency inside Cargo test harness binaries."
+        - "The guard now checks cfg!(test), common Cargo test harness arguments, and current executable parent path ending in deps."
+        - "This closes the path where another crate's tests could route through unilii_core command execution without the side-effect guard active."
+      tests:
+        - "cargo test -p unilii-core bar"
+        - "cargo test -p unilii-bin --bin unilii-bar"
+        - "cargo run -p unilii-bin --bin unilii-bar -- --config templates/bar.toml --watch --ticks 1 --tick-interval-ms 0"
+        - "cargo test --workspace"
+      limitations:
+        - "The guard remains classifier based and must be maintained as new mutating command families are introduced."
+        - "Explicit live-session tests still require an opt-in harness under BAR-E10."
+
+
+    - date: "2026-05-25"
+      status: "implemented_static_live_session_command_audit"
+      summary:
+        - "Added scripts/audit_live_session_commands.py to scan Rust tests for live-session command execution hazards."
+        - "The audit detects real WM backend tests that dispatch workspace switches instead of only rendering commands."
+        - "The audit detects potentially executed references to session-mutating command families in tests while allowing parser fixtures, comments, rendered-command assertions, and explicit guard tests."
+        - "Added bridge.yml commands audit-live-session-commands and test-safe."
+        - "Refined the audit after its first run flagged parser/comment false positives and one non-executing menu-order assertion."
+      tests:
+        - "python3 scripts/audit_live_session_commands.py"
+        - "cargo test -p unilii-core bar"
+        - "cargo test -p unilii-bin --bin unilii-bar"
+        - "cargo test --workspace"
+      limitations:
+        - "The audit is intentionally heuristic and should be maintained as command-backed modules evolve."
+        - "It currently scans Rust test functions; shell scripts and external CI workflows may need separate checks."
+
+
+    - date: "2026-05-25"
+      status: "implemented_explicit_live_session_audit_annotations"
+      summary:
+        - "Reduced broad live-session audit allowlist coverage by replacing parser/menu name allowances with an explicit annotation marker."
+        - "Added ALLOW_REFERENCE_MARKER to scripts/audit_live_session_commands.py for tests that only parse, render, or assert command data without executing it."
+        - "Annotated network_view_actions_follow_control_then_network_order because it asserts menu action data and does not execute commands."
+        - "Documented the audit marker and safe test policy in docs/unilii-bar.md."
+        - "Kept dispatch tests limited to harmless mock commands and rendered-command assertions."
+      tests:
+        - "python3 scripts/audit_live_session_commands.py"
+        - "cargo test -p unilii-core bar"
+        - "cargo test -p unilii-bin --bin unilii-bar"
+        - "cargo test --workspace"
+      limitations:
+        - "The audit still focuses on Rust test functions; shell scripts and external CI definitions remain a separate follow-up."
+        - "Some parser-specific safe names remain allowed for now and should be migrated to explicit annotations opportunistically."
+
+
+    - date: "2026-05-25"
+      status: "implemented_executable_surface_live_session_audit"
+      summary:
+        - "Extended scripts/audit_live_session_commands.py beyond Rust test functions."
+        - "The audit now scans bridge.yml/bridge.yaml, Makefile, justfile, .envrc, shell scripts, and GitHub workflow YAML files as executable command surfaces."
+        - "Added ALLOW_EXECUTION_MARKER for rare explicitly opted-in executable files."
+        - "Docs and examples remain treated as non-executed references to avoid noisy false positives."
+        - "The existing bridge command audit-live-session-commands now covers the expanded audit surface."
+      tests:
+        - "python3 scripts/audit_live_session_commands.py"
+        - "cargo test -p unilii-core bar"
+        - "cargo test -p unilii-bin --bin unilii-bar"
+        - "cargo test --workspace"
+      limitations:
+        - "The audit is still heuristic and classifier based."
+        - "The current shell environment prints an unrelated line before audit output; the audit itself exits successfully and reports pass/fail correctly."
+
+
+    - date: "2026-05-25"
+      status: "implemented_audit_output_modes"
+      summary:
+        - "Added --quiet and --verbose output modes to scripts/audit_live_session_commands.py."
+        - "Normal mode still prints a single pass/fail summary."
+        - "Verbose mode prints scanned Rust file, Rust test, and executable command file counts."
+        - "Quiet mode suppresses success output and prints only failures."
+        - "Updated bridge.yml test-safe command and docs/unilii-bar.md to use the quiet audit mode before cargo test --workspace."
+      tests:
+        - "python3 scripts/audit_live_session_commands.py --help"
+        - "python3 scripts/audit_live_session_commands.py --verbose"
+        - "python3 scripts/audit_live_session_commands.py --quiet"
+        - "cargo test -p unilii-core bar"
+        - "cargo test -p unilii-bin --bin unilii-bar"
+        - "python3 scripts/audit_live_session_commands.py --quiet && cargo test --workspace"
+      limitations:
+        - "The unrelated '2925 i3' line still appears before shell-command output in this workspace bridge environment; quiet mode confirms it is not emitted by the audit script."
+
+
+    - date: "2026-05-25"
+      status: "closed_workspace_bridge_shell_prefix_noise"
+      summary:
+        - "Investigated the unrelated prefix line that appears before shell-backed command output in this project environment."
+        - "Confirmed the prefix appears before the first command stdout, including before a plain printf."
+        - "Confirmed nested /bin/sh -lc can emit the prefix, while bash --noprofile --norc does not."
+        - "Confirmed audit --quiet suppresses audit success output, so the prefix is external to scripts/audit_live_session_commands.py."
+        - "Kept project changes limited to audit output modes, documentation, and task tracking because the prefix is external to repository code."
+      tests:
+        - "python3 scripts/audit_live_session_commands.py --quiet"
+        - "python3 scripts/audit_live_session_commands.py --verbose"
+        - "cargo test -p unilii-core bar"
+        - "cargo test --workspace"
+      limitations:
+        - "The exact external shell/session hook was not modified because it appears outside the repository."
+        - "Future bridge-tool or shell-profile cleanup may remove the prefix outside this project."
+
+
+    - date: "2026-05-25"
+      status: "implemented_safe_test_wrapper_script"
+      summary:
+        - "Added scripts/test_safe.sh as the canonical safe local/CI test entrypoint."
+        - "The wrapper runs the live-session command audit in quiet mode before cargo test --workspace."
+        - "The wrapper fails fast via set -eu and prints concise progress/success messages."
+        - "Updated bridge.yml test-safe to call scripts/test_safe.sh instead of duplicating inline shell logic."
+        - "Updated docs/unilii-bar.md to document scripts/test_safe.sh as the canonical safe test command."
+      tests:
+        - "scripts/test_safe.sh"
+      limitations:
+        - "The external shell prefix line still appears in this workspace tool output before repository script output."
+        - "CI workflow integration for scripts/test_safe.sh remains pending if/when CI files are added or updated."
+
+
+    - date: "2026-05-25"
+      status: "implemented_safe_test_ci_and_contributor_docs"
+      summary:
+        - "Added CONTRIBUTING.md with the canonical safe test policy, audit annotations, and live-session integration-test rules."
+        - "Added .github/workflows/ci.yml with a safe-test job that runs scripts/test_safe.sh."
+        - "Updated README.md to use scripts/test_safe.sh in the verified baseline and development workflow."
+        - "Confirmed scripts/audit_live_session_commands.py scans the new workflow as an executable command surface."
+        - "Kept direct cargo test --workspace documented as expert/debug usage rather than the default handoff gate."
+      tests:
+        - "python3 scripts/audit_live_session_commands.py --verbose"
+        - "scripts/test_safe.sh"
+        - "YAML parse check for bridge.yml, .github/workflows/ci.yml, and tasks.yml"
+      limitations:
+        - "The CI workflow is added but not executed by GitHub in this local environment."
+        - "CI cache optimization and optional clippy/doc jobs remain future enhancements."
+
+  emerging_follow_up_tasks:
+    - id: "BAR-E1"
+      title: "Add renderer event bridge for workspace clicks"
+      status: "todo"
+      derived_from: "implemented_wm_command_and_workspace_switch_slice"
+      details:
+        - "Connect future Makepad workspace item clicks to BarModuleGraph::dispatch_workspace_switch."
+        - "Surface command failures in tooltip/log output without blocking the UI thread."
+        - "Add an integration fixture that simulates clicking workspace names with spaces, colons, and quotes."
+    - id: "BAR-E3"
+      title: "Implement non-blocking command execution for WM and action commands"
+      status: "todo"
+      derived_from: "runtime shell command usage"
+      details:
+        - "Move command-backed modules and action dispatch onto a non-blocking executor or worker pool."
+        - "Retain timeout, output-size limit, stale-cache behavior, and deterministic tests."
+        - "Prevent repeated clicks from spawning unbounded concurrent commands."
+    - id: "BAR-E4A"
+      title: "Implement native network identity backends"
+      status: "todo"
+      derived_from: "implemented_network_enrichment_sources_slice"
+      details:
+        - "Support IP discovery via rtnetlink or ip -j addr with fixture tests."
+        - "Support SSID discovery via NetworkManager D-Bus, nmcli, iw, or iwgetid fixture parsers."
+        - "Keep existing file/env/command sources as explicit overrides and test fallback order."
+    - id: "BAR-E4B"
+      title: "Improve network status parsing semantics"
+      status: "todo"
+      derived_from: "implemented_network_enrichment_sources_slice"
+      details:
+        - "Support quoted key/value status values so SSIDs with spaces can be represented safely."
+        - "Add structured parser errors for malformed status files."
+        - "Expose stale or partial network data when IP/SSID sources fail but interface state is still available."
+
+    - id: "BAR-E5"
+      title: "Split oversized bar_runtime.rs into focused modules"
+      status: "todo"
+      derived_from: "implementation maintainability"
+      details:
+        - "Move config/runtime model types into runtime/model.rs."
+        - "Move scheduler/reload/action code into runtime/scheduler.rs, runtime/reload.rs, and runtime/actions.rs."
+        - "Move module implementations into runtime/modules/*.rs."
+        - "Keep public re-exports stable for unilii-bar and future renderer crates."
+    - id: "BAR-E6"
+      title: "Add CI disk-space guard for workspace builds"
+      status: "todo"
+      derived_from: "previous cargo test disk-space failure"
+      details:
+        - "Document cargo clean or target-dir pruning in release/test docs."
+        - "Consider smaller targeted check workflows for graphical and non-graphical crates."
+        - "Record expected target directory size after full workspace test."
+
+    - id: "BAR-E7"
+      title: "Add event-socket i3/sway backends"
+      status: "todo"
+      derived_from: "implemented_backend_presets_docs_examples_slice"
+      details:
+        - "Subscribe to i3/sway workspace and window events instead of polling command output."
+        - "Keep command backend presets as fallback when event sockets are unavailable."
+        - "Add parser fixtures for workspace focus, urgent flag, and title-change events."
+    - id: "BAR-E8"
+      title: "Add docs for native renderer once Makepad lands"
+      status: "todo"
+      derived_from: "implemented_backend_presets_docs_examples_slice"
+      details:
+        - "Replace headless scaffold warnings with Makepad run/install instructions."
+        - "Document window reservation, layer-shell/strut behavior, and WM-specific startup rules."
+        - "Add screenshots or render-model examples once a visual renderer exists."
+
+
+    - id: "BAR-E9"
+      title: "Add side-effect guardrails for command-executing tests"
+      status: "done"
+      derived_from: "fixed_live_wm_mutation_in_tests"
+      details:
+        - "Add a test helper or lint convention that forbids dispatching backend preset commands such as i3-msg, swaymsg, nmcli, pactl, or systemctl in unit tests."
+        - "Prefer command rendering assertions for real backend presets and reserve dispatch tests for explicit harmless mock commands such as printf."
+        - "Consider a cargo test feature or environment variable that must be set before integration tests can touch a live WM/session."
+        - "Document the policy in docs/unilii-bar.md or a contributor testing guide."
+
+    - id: "BAR-E10"
+      title: "Add opt-in live-session integration tests"
+      status: "todo"
+      derived_from: "implemented_test_side_effect_command_guard"
+      details:
+        - "Create ignored or feature-gated tests that may touch a real i3/sway session only when an explicit environment variable is set."
+        - "Require tests to restore the original workspace/session state after running."
+        - "Document the exact opt-in contract and risks for developers running live-session tests."
+        - "Keep normal cargo test runs free of live WM, audio, network, notification, or power-management mutations."
+
+    - id: "BAR-E11"
+      title: "Maintain side-effect command classifier"
+      status: "todo"
+      derived_from: "implemented_low_level_test_command_guard"
+      details:
+        - "Review every newly introduced command-backed module or action for possible live-session side effects."
+        - "Add mutating tools to is_side_effectful_test_command before adding tests that mention or route through them."
+        - "Keep deterministic regression tests based on synthetic blocked command tokens where real command names would be risky to embed in patch tooling."
+        - "Consider moving the classifier and is_test_command_guard_active into a dedicated test-safety module when bar_runtime.rs is split."
+
+    - id: "BAR-E12"
+      title: "Add static audit for live-session command references in tests"
+      status: "done"
+      derived_from: "fixed_cross_crate_test_harness_side_effect_guard"
+      details:
+        - "Add a small script or cargo xtask that scans Rust tests for direct mutating session commands such as i3-msg, swaymsg, network, audio, power, login, and notification tools."
+        - "Allow documentation and non-executing rendered-command assertions, but flag command execution helpers and dispatch calls."
+        - "Run the audit in CI before workspace tests so accidental live-session mutations are caught early."
+        - "Include example configs in the audit as non-executed references with explicit comments."
+
+    - id: "BAR-E13"
+      title: "Reduce live-session audit allowlist surface"
+      status: "done"
+      derived_from: "implemented_static_live_session_command_audit"
+      details:
+        - "Replace broad name-based allowlist entries with explicit non-executing annotations or helper names."
+        - "Split parser fixtures from execution tests where command names appear in assertions."
+        - "Extend the audit to shell scripts, bridge commands, and CI workflows if they begin executing session commands."
+        - "Document how to add a safe exception when a test only parses or renders command text."
+
+    - id: "BAR-E14"
+      title: "Extend live-session audit beyond Rust unit tests"
+      status: "done"
+      derived_from: "implemented_explicit_live_session_audit_annotations"
+      details:
+        - "Scan shell scripts, bridge.yml commands, CI workflows, and example runner scripts for live-session mutating commands."
+        - "Classify docs/examples separately from executable scripts to avoid noisy false positives."
+        - "Add an explicit opt-in marker for scripts that intentionally run live-session commands."
+        - "Consider adding the audit to the standard bridge test-safe command once shell/CI scanning is reliable."
+
+    - id: "BAR-E15"
+      title: "Normalize audit command output"
+      status: "done"
+      derived_from: "implemented_executable_surface_live_session_audit"
+      details:
+        - "Investigate the unrelated shell/session line that appears before audit output in this environment."
+        - "Ensure bridge test-safe output is stable and easy to read in CI logs."
+        - "Optionally add --quiet and --verbose flags to scripts/audit_live_session_commands.py."
+        - "Keep failure output detailed enough to identify file, line, and hazardous pattern."
+
+    - id: "BAR-E16"
+      title: "Investigate workspace bridge shell prefix noise"
+      status: "done"
+      derived_from: "implemented_audit_output_modes"
+      details:
+        - "Identify why shell-backed command executions in this environment print an unrelated prefix line before command stdout."
+        - "Confirm whether the prefix comes from shell startup files, tmux/session hooks, or the workspace bridge wrapper."
+        - "Keep audit output modes stable regardless of the external prefix."
+        - "Avoid changing project code if the prefix is external to the repository."
+
+    - id: "BAR-E17"
+      title: "Add dedicated safe test wrapper script"
+      status: "done"
+      derived_from: "implemented_audit_output_modes"
+      details:
+        - "Add a repository script such as scripts/test_safe.sh that runs the live-session audit in quiet mode followed by cargo test --workspace."
+        - "Keep bridge.yml test-safe as a thin call to the script."
+        - "Document the wrapper as the canonical local and CI test command."
+        - "Make the wrapper fail fast and print a concise summary on success."
+
+    - id: "BAR-E18"
+      title: "Adopt safe test wrapper in CI and contributor docs"
+      status: "done"
+      derived_from: "implemented_safe_test_wrapper_script"
+      details:
+        - "Use scripts/test_safe.sh in any future CI workflow test jobs."
+        - "Add a contributor-focused testing section if the project gets a CONTRIBUTING.md."
+        - "Keep direct cargo test --workspace available for expert use, but document scripts/test_safe.sh as the default safe path."
+        - "Consider adding a bridge command that prints the exact safe-test policy before running."
+
+    - id: "BAR-E19"
+      title: "Harden CI workflow with cache and optional lint jobs"
+      status: "todo"
+      derived_from: "implemented_safe_test_ci_and_contributor_docs"
+      details:
+        - "Add Rust/Cargo cache configuration to reduce CI runtime once the workflow is active."
+        - "Add an optional non-incremental clippy job matching the README baseline."
+        - "Consider adding docs/example validation jobs for bar configs and documentation links."
+        - "Keep scripts/test_safe.sh as the required test gate before any optional jobs."
+  cross_cutting_requirements:
+    observability:
+      - "Every module exposes unavailable, stale, warning, critical, and last-error state where applicable."
+      - "Runtime logs identify module id, module type, backend, and action command for failures."
+    safety:
+      - "Script/action modules must enforce timeout, avoid unbounded output, and make shell usage explicit."
+      - "Config reload must never leave the user with an invisible or crashed bar if the previous config was valid."
+    compatibility:
+      - "Prefer Linux-first implementations, but isolate OS-specific code behind provider/backend traits."
+      - "Support text-only module rendering first so external providers do not need to depend on Makepad immediately."
+    performance:
+      - "Avoid global tick loops when modules can schedule at their own intervals."
+      - "Coalesce redraw events and avoid blocking the UI thread with command execution or system probing."
+  risk_register:
+    - id: "BAR-R1"
+      risk: "Makepad may not reserve top screen space on the target WM/compositor."
+      mitigation: "Implement best-effort window hints and document WM-specific rules; defer compositor-specific APIs until required."
+      owner_milestone: "BAR-M0"
+    - id: "BAR-R2"
+      risk: "i3, sway, generic X11, and Wayland status APIs diverge enough to destabilize the first release."
+      mitigation: "Start with command backends and a WmBackend trait; add native event backends after the module contract stabilizes."
+      owner_milestone: "BAR-M7"
+    - id: "BAR-R3"
+      risk: "Dynamic plugins add ABI, safety, and packaging complexity too early."
+      mitigation: "Ship built-in modules plus script modules first; use metadata registry as the extension seam."
+      owner_milestone: "BAR-M8"
+    - id: "BAR-R4"
+      risk: "System modules depend on optional host commands or Linux files that may not exist."
+      mitigation: "Treat missing dependencies as unavailable capabilities and expose clear diagnostics."
+      owner_milestone: "BAR-M6"
+    - id: "BAR-R5"
+      risk: "Hot reload can leak module tasks or leave duplicate action handlers."
+      mitigation: "Require cancellation/shutdown hooks and add scheduler tests for reload/rebuild cycles."
+      owner_milestone: "BAR-M4"
+  definition_of_done:
+    - "unilii-bar is a workspace binary crate that can be built and run on the supported Linux target."
+    - "The sample bar config is generated by the existing CLI/config-generation flow and is accepted by unilii-bar."
+    - "All core modules named in features.md exist, are configurable, and fail gracefully when their host capability is missing."
+    - "Workspace and window-title behavior works for the chosen first WM backend and has a documented fallback path."
+    - "The provider registry exposes module type, schema/defaults, capability requirements, polling/event info, and optional Makepad binding metadata."
+    - "Docs explain installation, i3/sway startup, config format, module behavior, troubleshooting, and known limitations."
+    - "Tests cover config, scheduling, script timeouts, threshold formatting, registry contracts, and backend parsers."
+# END generated feature implementation plan: polybar_makepad
+
+runtime_modernization_2026_07_18:
+  status: complete
+  scope:
+  - shared action and runtime ownership boundary
+  - UI-sensitive subprocess migration
+  - task supervision, cancellation, and bounded shutdown
+  - provider refresh admission, coalescing, and latest-value delivery
+  - runtime metrics and documentation
+  implementation_evidence:
+  - unilii/core/src/runtime/action.rs
+  - unilii/core/src/runtime/supervisor.rs
+  - unilii/core/src/runtime/refresh.rs
+  - unilii/core/src/runtime/provider.rs
+  - unilii/core/src/runtime/metrics.rs
+  - unilii/bin/src/main.rs
+  - unilii/bin/src/subscription_manager.rs
+  - docs/async-runtime.md
+  verification:
+  - cargo fmt --all -- --check
+  - python3 scripts/check_release_metadata.py --candidate
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
+  - scripts/test_safe.sh
+  - scripts/test_i3_hotkeys.sh
+  - runtime supervisor cancellation stress test passed 50 consecutive runs
+  remaining:
+  - repeated provider replacement soak tests
+  - provider/action-history live diagnostic expansion beyond aggregate runtime metrics
+
+interaction_provider_menu_contracts_2026_07_19:
+  status: complete
+  scope:
+  - one-shot quick-select action overlays
+  - typed provider lifecycle and generation safety
+  - renderer-neutral menu lifecycle
+  - CLI introspection and typed invocation
+  - visible bounded action history
+  - main.rs action-routing and introspection extraction
+  implementation_evidence:
+  - unilii/core/src/quick_select.rs
+  - unilii/core/src/runtime/provider.rs
+  - unilii/core/src/menu.rs
+  - unilii/core/src/action_history.rs
+  - unilii/bin/src/action_routing.rs
+  - unilii/bin/src/introspection.rs
+  - unilii/bin/src/subscription_manager.rs
+  - docs/runtime-contracts.md
+  verification:
+  - cargo check --workspace --all-targets
+  - focused quick-select/provider/menu/introspection tests
+  - scripts/test_safe.sh
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
+  remaining:
+  - live action-bus query for provider snapshots and action history
+  - further extraction of runtime bootstrap and Iced view/update adapters from main.rs
+  - provider reload soak tests across generation replacement
+
+provider_reload_metrics_runtime_decision_2026_07_19:
+  status: complete
+  scope:
+  - provider-instance generation and stale queued-message suppression
+  - live structured runtime metrics over CLI and action bus
+  - explicit synchronous headless contract for deskhalloumi-bar
+  implementation_evidence:
+  - unilii/core/src/runtime/provider.rs
+  - unilii/core/src/runtime/metrics.rs
+  - unilii/core/src/action_bus.rs
+  - unilii/bin/src/subscription_manager.rs
+  - unilii/bin/src/action_routing.rs
+  - unilii/bin/src/introspection.rs
+  - unilii/bin/src/bar_main.rs
+  - docs/runtime-contracts.md
+  verification:
+  - provider replacement unit test rejects old-instance snapshots
+  - action-bus metrics response round-trip test
+  - deskhalloumi runtime-metrics CLI parsing and client decoding tests
+  - deskhalloumi-bar runtime-contract parsing test
+  - managed menu process identity stress test uses Linux process start ticks and passes repeated immediate status checks
+
+documentation_and_release_roadmap_2026_07_19:
+  status: complete
+  scope:
+  - reconcile runtime/provider/menu documents with the 0.3.0 implementation
+  - distinguish shipped foundations from remaining migration and hardening work
+  - define release targets 0.4.0 through 0.8.0 with acceptance criteria and non-goals
+  - define native Linux AArch64 publication gates and a non-promissory musl investigation
+  - preserve i3/X11 as the supported baseline while keeping 0.8.0 compositor work experimental
+  documentation_evidence:
+  - docs/roadmap.md
+  - docs/runtime-contracts.md
+  - docs/async-runtime.md
+  - docs/menu-design-system.md
+  - docs/installation.md
+  - docs/versioning.md
+  - docs/README.md
+  - README.md
+  - roadmap.yml
+  review_findings:
+  - the previous roadmap listed provider and menu foundations as future work even though 0.3.0 shipped them
+  - async-runtime.md used an obsolete four-state provider sketch
+  - menu-design-system.md described TrayMenuItem as canonical despite MenuModel being canonical in deskhalloumi-core
+  remaining_release_work:
+  - 0.4.0 provider replacement soak tests and live provider-health introspection
+  - native AArch64 installation and runtime smoke infrastructure
+  - musl feasibility ADR
+  - 0.5.0 completion of menu adapters and main.rs decomposition
+
+production_hardening_0_3_1_2026_07_26:
+  status: superseded_before_publication
+  superseded_by: 0.3.2
+  scope:
+  - bounded hotkey execution queue and concurrency
+  - supervised shell, menu, and action-bus execution
+  - bounded embedded bar, tray, and hotkey channels
+  - live bar reload with last-known-good retention
+  - module visibility and focus actions with operator feedback
+  - conditional tray animation subscription and removal of render-loop info logs
+  - concurrent control clients with serialized supervisor mutations
+  - transactional i3 include rollback and rollback reload
+  implementation_evidence:
+  - unilii/core/src/keys.rs
+  - unilii/core/src/config.rs
+  - unilii/core/src/hotkey_control.rs
+  - unilii/core/src/runtime/metrics.rs
+  - unilii/bin/src/bar_control.rs
+  - unilii/bin/src/main.rs
+  - unilii/bin/src/hotkeyd_main.rs
+  - unilii/bin/src/widgets/mod.rs
+  - scripts/test_i3_hotkeys.sh
+  verification:
+  - cargo fmt --all -- --check
+  - cargo check --workspace
+  - scripts/test_safe.sh
+  - scripts/test_i3_hotkeys.sh
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
+  - python3 scripts/check_release_metadata.py --candidate
+  remaining_before_publication:
+  - commit and require-clean candidate validation
+  - deterministic release archive, checksum, extraction, and command smoke tests
+  - explicit maintainer authorization for tag, push, and publication
+
+production_hardening_0_3_2_2026_07_27:
+  status: candidate
+  supersedes_unpublished_candidate: 0.3.1
+  scope:
+  - enforce action-bus and hotkey-control frame limits during reads and writes
+  - cap simultaneous action-bus clients and preserve control-socket timeouts
+  - generation-check concurrent live bar reload results
+  - restore documented space-separated module actions and orderly quit
+  - add module-visibility and focus recovery actions
+  - expose cancellation-safe active and queued action gauges
+  - bound selective X11 event delivery with ordered backpressure
+  - strengthen hotkey source fingerprints for atomic same-length replacements
+  - make generated i3 writes unique, durable, permission-preserving, and cleanup-safe
+  - fail early when the release filesystem lacks sufficient working space
+  implementation_evidence:
+  - unilii/core/src/ipc_frame.rs
+  - unilii/core/src/action_bus.rs
+  - unilii/core/src/hotkey_control.rs
+  - unilii/core/src/runtime/action.rs
+  - unilii/core/src/runtime/metrics.rs
+  - unilii/core/src/x11_hotkeys.rs
+  - unilii/core/src/keys.rs
+  - unilii/bin/src/bar_control.rs
+  - unilii/bin/src/main.rs
+  - unilii/bin/src/hotkeyd_main.rs
+  - scripts/check_build_space.py
+  verification:
+  - bounded IPC client and server adversarial tests
+  - cancellation and queue-gauge regression tests
+  - same-size atomic replacement and durable write tests
+  - complete core and binary crate suites
+  - cargo check --workspace
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
+  - scripts/test_i3_hotkeys.sh
+  remaining_before_publication:
+  - complete clean release train after filesystem cleanup
+  - deterministic archive, checksum, extraction, and command smoke tests
+  - explicit maintainer authorization for tag, push, and publication
