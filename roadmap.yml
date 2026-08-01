@@ -1,12 +1,14 @@
 schema_version: 2
 kind: internal_maintainer_roadmap
-updated_at: '2026-07-27'
+updated_at: '2026-08-02'
 project:
   name: DeskHalloumi
   slug: deskhalloumi
   repository: https://github.com/fkr-0/deskhalloumi
-  current_version: 0.3.0
-  current_candidate: 0.3.2
+  current_version: 0.3.2
+  current_candidate: null
+  current_tag: v0.3.2
+  release_state: locally_tagged_unpublished
   supported_session: i3/X11
   compatibility_boundary:
   - unilii command aliases remain available during 0.x
@@ -24,16 +26,21 @@ planning_principles:
 - Publish a new architecture target only after native installation and runtime smoke tests pass on that target.
 current_baseline:
   release:
-    tag: v0.3.0
-    source_status: published
-    linux_binary_archive: published
-    checksum: published
+    tag: v0.3.2
+    target_revision: 84e9ca856a25a7988373d3622d4be9cb51646974
+    source_status: locally_tagged
+    branch_push: not_requested
+    github_release: not_published
+    linux_binary_archive: locally_built_and_verified
+    checksum: locally_verified
     crates_io: not_published
   quality:
     formatting: green
     safe_workspace_tests: green
     isolated_i3_x11_tests: green
     current_stable_clippy: green
+    release_metadata: green
+    independent_review: approved_no_release_blockers
     release_toolchain: '1.94.1'
   completed_foundations:
   - DeskHalloumi rename with pre-1.0 compatibility aliases
@@ -48,6 +55,42 @@ current_baseline:
   - typed generation-safe provider lifecycle
   - renderer-neutral menu and quick-select contracts
   - CLI introspection, action history, and live runtime metrics
+workspace_members:
+- package: deskhalloumi
+  role: small public facade and helper crate
+  patch_focus: clarify facade documentation and remove stale legacy prose
+  minor_focus: decide whether it is a supported facade or internal convenience crate
+  major_requirement: expose an intentional tested facade or mark the package internal and non-publishable
+- package: deskhalloumi-core
+  role: runtime, action, provider, menu, configuration, hotkey, i3/X11, and IPC contracts
+  patch_focus: add boundary regressions and inventory public APIs
+  minor_focus: complete renderer-neutral provider lifecycle and diagnostics contracts
+  major_requirement: stabilize selected config, action, menu, hotkey, IPC, and plugin-facing APIs
+- package: deskhalloumi-lib
+  role: Linux data-source adapters and CalDAV/cache helpers
+  patch_focus: correct stale documentation and improve hardware-free seams
+  minor_focus: provide injected Linux and CalDAV backends with deterministic fixtures
+  major_requirement: define stable OS-adapter contracts, errors, and supported feature combinations
+- package: deskhalloumi-bin
+  role: interactive bar, hotkey daemon, auxiliary frontends, and compatibility launchers
+  patch_focus: release-state documentation, regression closure, and archival cleanup
+  minor_focus: extract provider ownership and expose live provider health end to end
+  major_requirement: become a thin composition root with one authoritative runtime state path
+- package: deskhalloumi-clock
+  role: compile-time optional clock module
+  patch_focus: add an injectable time seam for deterministic tests
+  minor_focus: publish through the shared provider adapter without lifecycle shortcuts
+  major_requirement: conform to the selected stable compile-time plugin API
+- package: deskhalloumi-battery
+  role: compile-time optional battery module
+  patch_focus: add constructor and subscription fixture seams
+  minor_focus: remove mandatory live-sysfs discovery from ordinary construction and tests
+  major_requirement: provide stable behavior on battery, desktop, and battery-less hosts
+- package: deskhalloumi-tmux
+  role: compile-time optional tmux pane module
+  patch_focus: add command fixture and failure-path coverage
+  minor_focus: inject command execution and expose stale, error, and disabled state consistently
+  major_requirement: provide stable bounded behavior without a live tmux server in unit tests
 release_targets:
 - version: 0.3.0
   theme: structured runtime and action execution
@@ -62,7 +105,9 @@ release_targets:
   - runtime metrics expose task failures, command timeouts, and dropped/coalesced updates.
 - version: 0.3.2
   theme: production hardening for hotkeys, bar runtime, and i3 integration
-  status: candidate
+  status: tagged_local
+  tag: v0.3.2
+  target_revision: 84e9ca856a25a7988373d3622d4be9cb51646974
   supersedes_unpublished_candidate: 0.3.1
   scope:
   - bounded hotkey execution and action admission
@@ -79,9 +124,32 @@ release_targets:
   - presentation recovery and documented compatibility actions
   - release filesystem-space preflight
   exit_criteria:
-  - formatting, safe tests, isolated i3/X11 tests, strict Clippy, and candidate metadata validation pass.
-  - deterministic Linux archive and checksum are produced locally before tagging.
-  - no tag, push, or publication occurs without explicit maintainer authorization.
+  - formatting, safe tests, isolated i3/X11 tests, strict Clippy, and release metadata validation passed.
+  - deterministic Linux archive and checksum were produced and verified locally before tagging.
+  - the annotated local tag points exactly to the reviewed release commit.
+  - branch push and remote publication remain explicit maintainer actions and were not performed.
+- version: 0.3.3
+  theme: release follow-up and regression closure
+  status: planned
+  primary_work:
+  - Reconcile active documentation with the locally tagged but unpublished 0.3.2 state.
+  - Verify the assembled archive through checksum, extraction, temporary-prefix installation, command smoke, and clean removal.
+  - Add exact maximum-frame IPC regressions and document the durable-write failure contract after rename and directory sync.
+  - Replace contract-name-only plugin tests with small injectable time, sysfs, and command seams without changing public behavior.
+  - Remove tracked archival .bak source files after proving no active reference remains.
+  - Separate active tasks from historical review evidence and correct stale legacy prose.
+  exit_criteria:
+  - No public CLI, config, IPC, service, application-ID, or path compatibility change.
+  - All seven packages inherit 0.3.3 from the coordinated workspace version.
+  - Safe tests, isolated i3/X11 tests, strict Clippy, and release metadata validation pass.
+  - Plugin unit tests require no battery hardware or tmux server and can control clock time where needed.
+  - No tracked .bak file remains in the active source tree.
+  - Release notes distinguish local tag, branch push, artifact publication, and crates.io publication.
+  non_goals:
+  - No Wayland shortcut parity.
+  - No dynamic plugin ABI.
+  - No removal of unilii compatibility launchers.
+  - No broad menu or provider rewrite.
 - version: 0.4.0
   theme: provider hardening and target expansion
   foundation_status:
@@ -177,11 +245,26 @@ release_targets:
   - Do not weaken the existing i3/X11 support contract to make an experimental backend appear complete.
 - version: 1.0.0
   theme: stable desktop-control contract
+  primary_work:
+  - Publish a machine-readable inventory of primary and compatibility binaries, CLI options, config schemas, paths, environment variables, systemd units, IPC, DBus identities, generated i3 semantics, state formats, Rust crates, features, and plugin-facing APIs.
+  - Classify every inventoried surface as stable, deprecated with a horizon, experimental, or internal.
+  - Make deskhalloumi-bin a thin composition and renderer adapter rather than the owner of provider, menu, action, or hotkey semantics.
+  - Remove Iced types from renderer-neutral provider and menu contracts.
+  - Decide whether the top-level deskhalloumi crate is a supported facade, internal package, or non-published compatibility crate.
+  - Record a crates.io publication decision for each first-party package without assuming publication is required.
+  - Version config and IPC schemas and test upgrade, downgrade, negotiation, or explicit rejection behavior.
+  - Add reproducible artifacts, checksums, SBOM, provenance, installation, upgrade, rollback, and removal verification.
+  - Record an explicit retain, deprecate, or future-major removal policy for unilii compatibility.
   exit_criteria:
-  - public configuration and IPC schemas have explicit compatibility guarantees.
-  - installation and rollback are package-quality.
-  - legacy unilii compatibility has a documented retirement decision.
-  - supported platform/session boundaries are stable and tested.
+  - All selected stable CLI, configuration, IPC, service, package, state, and Rust/plugin surfaces have compatibility tests and migration documentation.
+  - deskhalloumi-core has explicit public and internal boundaries with no accidental stabilization of implementation details.
+  - deskhalloumi-lib has documented Linux adapter and error contracts with deterministic fixtures.
+  - Clock, battery, and Tmux satisfy one tested compile-time plugin contract without mandatory live services in unit tests.
+  - No broad transitional dead-code allowance or tracked archival source file remains in a production path.
+  - Installation, upgrade, rollback, and removal pass from assembled artifacts.
+  - Supported providers and hotkey paths meet documented soak and resource budgets.
+  - A release candidate soak period completes with no unresolved P0 or P1 correctness, security, data-loss, or compatibility defect.
+  - The stable platform matrix may explicitly support only i3/X11; experimental Wayland parity is not required.
 workstreams:
 - id: REL
   name: release and distribution
@@ -190,6 +273,7 @@ workstreams:
   completed:
   - annotated v0.2.0 tag
   - annotated v0.3.0 tag
+  - local annotated v0.3.2 tag at the reviewed release commit
   - deterministic Linux x86-64 archive
   - SHA-256 checksum
   - public GitHub Release assets
@@ -396,6 +480,8 @@ risk_register:
   mitigation: keep them out of Iced update paths; deskhalloumi-bar is intentionally synchronous and headless by the completed ASYNC-09 decision.
 - risk: provider generations are typed but live reload can still require cross-provider generation coordination.
   mitigation: keep generation ownership inside provider supervisors and add reload soak tests before dynamic replacement.
+- risk: provider contracts name hardware-free test backends while some plugin constructors and workers still access live clock, sysfs, or tmux services directly.
+  mitigation: require executable injected backends and deterministic provider fixtures in 0.4.0 rather than treating contract metadata as completed migration.
 - risk: Linux release binaries are not portable across all distributions.
   mitigation: document the glibc/system-library boundary, require native smoke tests for AArch64, investigate musl without promising it, and add distro packaging.
 - risk: roadmap items can duplicate foundations already shipped in 0.3.0 and hide the remaining migration work.

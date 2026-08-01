@@ -13,18 +13,19 @@ Canonical repository: <https://github.com/fkr-0/deskhalloumi>
 
 ## Release 0.3.2
 
-`0.3.2` supersedes the untagged 0.3.1 candidate and is prepared as a local
-production-hardening release candidate. It adds admission-time bounded IPC,
+`0.3.2` supersedes the untagged 0.3.1 candidate and is now represented by the
+local annotated tag `v0.3.2`. It adds admission-time bounded IPC,
 generation-safe bar reloads, bounded X11 event delivery, durable atomic i3
 writes, cancellation-safe action diagnostics, presentation recovery actions,
 and an early release-space check. The existing i3/X11, configuration-path,
-application-ID, and `unilii-*` compatibility contracts remain available. No
-`v0.3.2` tag or publication is implied until explicitly created by the
-maintainer.
+application-ID, and `unilii-*` compatibility contracts remain available. The
+tag and branch have not been pushed, and no remote release or crates.io
+publication is implied.
 
 - [Release notes](docs/releases/0.3.2.md)
 - [Complete changelog](CHANGELOG.md)
-- [Roadmap for 0.4.0–0.8.0](docs/roadmap.md)
+- [Implementation state at 0.3.2](docs/implementation-state-0.3.2.md)
+- [Roadmap for 0.3.3, 0.4.0, and 1.0.0](docs/roadmap.md)
 - [Versioning and release policy](docs/versioning.md)
 - [Binary release and source tag `v0.3.0`](https://github.com/fkr-0/deskhalloumi/releases/tag/v0.3.0)
 - [Installation and upgrade guide](docs/installation.md)
@@ -205,7 +206,9 @@ cargo test -p deskhalloumi-lib calendar::caldav::tests::normalizes_ics_datetime_
 ## Development workflow
 
 Use `roadmap.yml` for release horizons and architecture direction, `todo.yml`
-for focused known gaps, and `tasks.yml` for detailed implementation evidence.
+for focused known gaps, and `tasks.yml` for detailed historical implementation
+evidence. The current package-by-package assessment is in
+`docs/implementation-state-0.3.2.md`.
 The current workflow is test-first:
 
 1. Reproduce the bug or missing behavior with a focused failing test or lint/doc check.
@@ -230,6 +233,10 @@ limits are documented in [the rename plan](docs/project-renaming.md).
 - `main.rs` is still too large and is being split incrementally.
 - Some transitional modules carry local `FIXME(T6)` dead-code allowances until the tray/menu architecture is fully consolidated.
 - Enhanced tray events now have module-level update tests, but a full Iced daemon/update-path integration test is still pending.
+- The top-level facade crate and the long-term publishable Rust API boundary are
+  not yet finalized.
+- Clock, battery, and Tmux declare provider contracts, but complete injected
+  hardware/service-free backends remain 0.4.0 work.
 
 ## License
 

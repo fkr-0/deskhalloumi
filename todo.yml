@@ -1,5 +1,5 @@
 schema_version: 1
-generated_at: '2026-07-18'
+generated_at: '2026-08-02'
 project:
   current_name: DeskHalloumi
   slug: deskhalloumi
@@ -12,6 +12,7 @@ scope:
 - native hotkey backend gaps
 - project rename compatibility
 - semantic versioning and release hygiene
+- coordinated monorepo patch, minor, and stable-major planning
 resolved:
 - id: HK-I3-001
   status: complete
@@ -179,7 +180,35 @@ resolved:
   - scripts/check_build_space.py
   - .github/workflows/release.yml
   - bridge.yml
+- id: REL-TAG-030
+  status: complete
+  summary: Represent all seven coordinated workspace packages with one annotated local v0.3.2 tag after the complete release gate passed.
+  evidence:
+  - tag v0.3.2 points to 84e9ca856a25a7988373d3622d4be9cb51646974
+  - scripts/test_safe.sh
+  - scripts/test_i3_hotkeys.sh
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
+  - python3 scripts/check_release_metadata.py --release --require-clean
 remaining:
+- id: PATCH-033
+  status: pending
+  target_release: 0.3.3
+  priority: P0
+  gap: The tagged release needs narrow follow-up verification and repository-state cleanup without consuming 0.4.0 feature scope.
+  task: Verify installation and removal from the assembled archive, close exact boundary regressions, add plugin test seams, remove tracked archival source files, and separate active from historical task evidence.
+  acceptance_criteria:
+  - No public CLI, config, IPC, service, application-ID, or path compatibility change.
+  - Archive checksum, extraction, temporary-prefix installation, command smoke, and clean removal pass.
+  - Plugin unit tests require no battery hardware or tmux server and can control clock time where necessary.
+  - No tracked .bak file remains in the active source tree.
+  - Release-state documentation distinguishes local tags, pushes, remote releases, assets, and crates.io publication.
+  suggested_files:
+  - unilii/core/src/ipc_frame.rs
+  - unilii/bin/src/hotkeyd_main.rs
+  - unilii/plugins/Clock/src/lib.rs
+  - unilii/plugins/Battery/src/lib.rs
+  - unilii/plugins/Tmux/src/lib.rs
+  - tasks.yml
 - id: SXHKD-011
   status: pending
   priority: P1
@@ -213,6 +242,29 @@ remaining:
   - Repeated reloads retain the last-known-good generation.
   - Idle CPU and memory budgets are measured.
   - Action failure volume cannot create unbounded logs or child processes.
+- id: PROVIDER-040
+  status: pending
+  target_release: 0.4.0
+  priority: P0
+  gap: Provider contracts and generations exist, but some plugins still access live clock, sysfs, or tmux services directly and only name hypothetical test backends.
+  task: Complete executable backend injection, end-to-end lifecycle states, live health introspection, and provider-churn soak tests for all production providers.
+  acceptance_criteria:
+  - Ordinary provider tests require no battery, input device, NetworkManager, audio daemon, tmux server, compositor, or desktop session.
+  - Refresh and instance generations reject stale results for every provider class.
+  - Provider health, generation, last-update age, and bounded errors are visible over live introspection and one panel surface.
+  - Repeated replacement does not leak tasks, retain stale updates, or grow logs without bound.
+- id: STABLE-100
+  status: pending
+  target_release: 1.0.0
+  priority: P1
+  gap: The workspace has not selected and classified the exact stable CLI, configuration, IPC, service, package, state, Rust, and plugin-facing surfaces.
+  task: Define the stable compatibility inventory, thin the binary composition root, remove transitional production allowances, and prove package-quality installation, migration, upgrade, rollback, and removal.
+  acceptance_criteria:
+  - Every inventoried surface is stable, deprecated with a horizon, experimental, or internal.
+  - Selected stable surfaces have compatibility tests and migration documentation.
+  - The unilii compatibility layer has an explicit retain, deprecate, or future-major removal policy.
+  - No broad production dead-code allowance or tracked archival source remains.
+  - A 1.0 release candidate soak period has no unresolved P0 or P1 correctness, security, data-loss, or compatibility defect.
 release_gate:
   required_commands:
   - python3 scripts/check_build_space.py

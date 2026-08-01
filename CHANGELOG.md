@@ -4,12 +4,20 @@ All notable user-visible changes to the active DeskHalloumi workspace are
 recorded in this file. The project follows Semantic Versioning as described in
 [`docs/versioning.md`](docs/versioning.md).
 
-Version `0.3.0` is the latest published release and is identified by the
-annotated `v0.3.0` tag. Version `0.3.2` is prepared below as a local release
-candidate; no tag or publication is implied until the maintainer performs those
-steps explicitly.
+Version `0.3.0` is the latest remotely published release and is identified by
+the annotated `v0.3.0` tag. Version `0.3.2` is represented locally by annotated
+tag `v0.3.2`, but neither the tag nor branch has been pushed and no remote asset
+or crate publication is implied.
 
 ## [Unreleased]
+
+### Changed
+
+- Added a package-by-package 0.3.2 implementation-state review and a coordinated
+  roadmap for the next patch (`0.3.3`), next minor (`0.4.0`), intermediate
+  convergence milestones, and the stable-major (`1.0.0`) contract.
+- Clarified the distinction between a local annotated tag, branch push, GitHub
+  Release publication, binary assets, and crates.io publication.
 
 ## [0.3.2] - 2026-07-27
 
