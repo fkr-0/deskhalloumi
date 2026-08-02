@@ -11,22 +11,24 @@ commands and config fallbacks remain available during the pre-1.0 migration.
 
 Canonical repository: <https://github.com/fkr-0/deskhalloumi>
 
-## Release 0.3.3
+## Release 0.4.0
 
-`0.3.3` is a backwards-compatible regression and repository-hygiene release.
-It adds source-tree-independent archive installation/removal smoke tests, exact
-IPC frame-limit coverage, explicit durable-write failure phases, and executable
-Clock, Battery, and Tmux fixture sources. It also separates active tasks from
-the detailed historical ledger and removes tracked backup sources. Existing
-i3/X11, CLI, configuration, IPC, path, application-ID, service, and `unilii-*`
+`0.4.0` completes the shared provider lifecycle migration. Clock, battery,
+network, audio, system, and optional Tmux now share bounded admission, timeout,
+cancellation, refresh and instance generations, disabled/stale/error states,
+last-known-good retention, bounded shutdown, metrics, and live status
+registration. Built-in provider ownership moved out of `main.rs`, all providers
+have executable service-free test backends, and `deskhalloumi provider-status`
+plus the panel expose live health and bounded errors. Existing i3/X11, CLI,
+configuration, IPC, path, application-ID, service, generated-i3, and `unilii-*`
 compatibility contracts remain unchanged. No tag push, remote release, asset
 upload, or crates.io publication is implied.
 
-- [Release notes](docs/releases/0.3.3.md)
+- [Release notes](docs/releases/0.4.0.md)
 - [Complete changelog](CHANGELOG.md)
-- [Atomic file replacement contract](docs/atomic-file-replacement.md)
-- [Implementation state at 0.3.2](docs/implementation-state-0.3.2.md)
-- [Roadmap for 0.4.0 and 1.0.0](docs/roadmap.md)
+- [Provider and runtime contracts](docs/runtime-contracts.md)
+- [ADR 0001: no musl artifact for 0.4](docs/adr/0001-no-musl-release-artifact-for-0.4.md)
+- [Roadmap toward 1.0.0](docs/roadmap.md)
 - [Versioning and release policy](docs/versioning.md)
 - [Binary release and source tag `v0.3.0`](https://github.com/fkr-0/deskhalloumi/releases/tag/v0.3.0)
 - [Installation and upgrade guide](docs/installation.md)
@@ -39,10 +41,11 @@ cd deskhalloumi
 ```
 
 Pushing an annotated version tag runs the release workflow, which validates the
-tag, builds the primary and compatibility binaries, creates a deterministic
-Linux archive and checksum, and attaches both files to a durable GitHub Release.
-The same files are retained temporarily as a GitHub Actions artifact. Crates are
-not published automatically.
+tag, builds and installs the primary and compatibility binaries on native
+x86-64 and AArch64 GNU/Linux runners, smoke-tests both deterministic archives,
+and publishes both architectures only after both lanes pass. The files are also
+retained temporarily as GitHub Actions artifacts. Crates are not published
+automatically.
 
 ## Workspace layout
 
@@ -237,8 +240,8 @@ limits are documented in [the rename plan](docs/project-renaming.md).
 - Enhanced tray events now have module-level update tests, but a full Iced daemon/update-path integration test is still pending.
 - The top-level facade crate and the long-term publishable Rust API boundary are
   not yet finalized.
-- Clock, battery, and Tmux declare provider contracts, but complete injected
-  hardware/service-free backends remain 0.4.0 work.
+- Provider lifecycle migration is complete, but menu/action convergence and the
+  remaining Iced composition-root split continue toward 0.5.0.
 
 ## License
 

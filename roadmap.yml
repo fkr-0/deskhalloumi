@@ -5,10 +5,10 @@ project:
   name: DeskHalloumi
   slug: deskhalloumi
   repository: https://github.com/fkr-0/deskhalloumi
-  current_version: 0.3.2
-  current_candidate: 0.3.3
-  current_tag: v0.3.2
-  release_state: patch_candidate
+  current_version: 0.3.3
+  current_candidate: 0.4.0
+  current_tag: v0.3.3
+  release_state: minor_candidate
   supported_session: i3/X11
   compatibility_boundary:
   - unilii command aliases remain available during 0.x
@@ -26,8 +26,8 @@ planning_principles:
 - Publish a new architecture target only after native installation and runtime smoke tests pass on that target.
 current_baseline:
   release:
-    tag: v0.3.2
-    target_revision: 84e9ca856a25a7988373d3622d4be9cb51646974
+    tag: v0.3.3
+    target_revision: c2daa0a1a09cb1b739c2a588945d11efdb9f10f4
     source_status: locally_tagged
     branch_push: not_requested
     github_release: not_published
@@ -130,7 +130,9 @@ release_targets:
   - branch push and remote publication remain explicit maintainer actions and were not performed.
 - version: 0.3.3
   theme: release follow-up and regression closure
-  status: candidate
+  status: tagged_local
+  tag: v0.3.3
+  target_revision: c2daa0a1a09cb1b739c2a588945d11efdb9f10f4
   primary_work:
   - Reconcile active documentation with the locally tagged but unpublished 0.3.2 state.
   - Verify the assembled archive through checksum, extraction, temporary-prefix installation, command smoke, and clean removal.
@@ -152,25 +154,28 @@ release_targets:
   - No broad menu or provider rewrite.
 - version: 0.4.0
   theme: provider hardening and target expansion
+  status: candidate
   foundation_status:
   - 0.3.0 introduced ProviderContract, ProviderSnapshot, Tokio watch channels, generation suppression, test backends, and provider health.
-  - 0.4.0 completes migration, soak testing, operator visibility, and architecture-target validation.
-  primary_work:
-  - Complete one lifecycle contract for clock, battery, network, audio, system, and optional Tmux providers.
-  - Remove any remaining fixed clock/battery registry or provider-specific state path from the production runtime.
-  - Require startup, loading, fresh, stale, error, disabled, shutdown, refresh-policy, and hardware-free test behavior from every provider.
-  - Exercise repeated replacement, overlapping refresh, cancellation, stale-result, and last-known-good retention behavior under soak tests.
-  - Surface provider health, active instance generation, refresh generation, and last-update age in live diagnostics and panel status.
-  - Add a native Linux AArch64 build, installation, and runtime-smoke lane; publish AArch64 archives only after that lane passes.
-  - Investigate a musl build and record an ADR without promising a static artifact.
+  - 0.4.0 completes the production migration, soak coverage, operator visibility, and architecture-target release gate.
+  completed_scope:
+  - Clock, battery, network, audio, system, and optional Tmux providers use one bounded lifecycle and snapshot path.
+  - Built-in audio, network, and system lifecycle ownership is extracted from main.rs into provider_runtime.rs.
+  - Executable fixture backends cover every production provider without live hardware or services.
+  - Provider status exposes health, active instance generation, refresh generation, refresh policy, last-update age, and bounded errors over the action bus and panel.
+  - A 128-generation replacement regression proves stale status and refresh permits do not leak.
+  - A native ubuntu-24.04-arm build, archive, installation, smoke, checksum, and removal lane gates multi-architecture publication.
+  - ADR 0001 records that 0.4.x publishes no musl artifact.
   exit_criteria:
-  - All named production providers publish through the shared typed watch-channel contract and no production global registry remains.
+  - All named production providers publish through the shared typed watch-channel contract and no provider-specific mutable state registry remains.
+  - The process-wide diagnostic status registry rejects stale provider instances and contains only bounded structured lifecycle data.
   - Ordinary provider tests require no physical battery, input device, NetworkManager, audio daemon, tmux server, compositor, or desktop session.
   - Keyed admission prevents overlapping refreshes, and both refresh-generation and instance-generation tests prove stale results cannot overwrite replacements.
-  - Provider health and last-update age are visible through live action-bus introspection and at least one operator-facing panel surface.
-  - Repeated provider replacement completes without leaked tasks, stale updates, or unbounded log growth.
-  - Linux AArch64 archives are published only if native install and runtime smoke tests pass for every packaged primary binary.
-  - The musl investigation documents graphics, Iced, DBus, udev, libc, and desktop-library constraints and may conclude that no artifact should be published.
+  - Provider health and last-update age are visible through live action-bus introspection and an operator-facing panel surface.
+  - Repeated provider replacement completes without leaked refresh permits, stale status, or unbounded error data.
+  - Linux AArch64 assets are published only if the native hosted lane passes archive installation and command smoke for every packaged binary.
+  - Local x86-64 evidence does not claim the remote native AArch64 lane has executed.
+  - ADR 0001 explicitly rejects a musl artifact for 0.4.x pending a named native distribution and full artifact validation.
   non_goals:
   - Cross-compilation alone is not sufficient evidence for AArch64 publication.
   - A fully static or universally portable musl build is not promised.
@@ -274,22 +279,23 @@ workstreams:
   - annotated v0.2.0 tag
   - annotated v0.3.0 tag
   - local annotated v0.3.2 tag at the reviewed release commit
+  - local annotated v0.3.3 tag at the reviewed release commit
   - deterministic Linux x86-64 archive
   - SHA-256 checksum
   - public GitHub Release assets
   - release notes sourced from docs/releases/<version>.md
   - explicit immutable-tag release retry path
-  next:
   - id: REL-01
-    task: Add native Linux AArch64 release validation and conditional publication.
-    acceptance:
-    - Build, extraction, installation, and runtime smoke tests run on native AArch64 hardware or a native AArch64 hosted runner.
-    - Publication is skipped rather than guessed when the native lane is unavailable or failing.
+    task: Configure native Linux AArch64 release validation and conditional publication.
+    evidence:
+    - ubuntu-24.04-arm builds the exact packaged binaries natively.
+    - The native archive is installed, smoke-tested, checksum-verified, and removed before publication.
+    - Publication waits for both x86-64 and AArch64 jobs.
   - id: REL-02
-    task: Investigate musl feasibility without committing to a static release artifact.
-    acceptance:
-    - An ADR records Iced, graphics, DBus, udev, libc, and desktop-service limitations.
-    - The outcome may explicitly reject musl publication.
+    task: Record the musl publication decision.
+    evidence:
+    - docs/adr/0001-no-musl-release-artifact-for-0.4.md rejects a 0.4.x musl asset pending native end-to-end evidence.
+  next:
   - id: REL-03
     task: Add Arch packaging, reproducible installation, and post-publication verification.
     acceptance:
@@ -355,11 +361,11 @@ workstreams:
     - deskhalloumi-bar --runtime-contract emits a machine-readable role contract.
     - Help and runtime output identify it as headless and synchronous.
     - docs/runtime-contracts.md defines supported and excluded uses.
-  next:
   - id: ASYNC-10
-    task: Add reload and provider-churn soak tests across repeated instance replacement.
-    acceptance:
-    - Repeated replacement cannot apply stale snapshots or leak subscription tasks.
+    task: Add provider-churn soak tests across repeated instance replacement.
+    evidence:
+    - A 128-generation regression rejects stale replaced-instance status and returns every refresh permit.
+  next: []
 - id: ARCH
   name: architecture decomposition
   priority: P1
@@ -387,9 +393,12 @@ workstreams:
     task: Add typed action history with visible failure details and standardized menu lifecycle states.
   - id: INTERACTION-03
     task: Add CLI inventories for modules, menus, actions, hotkeys, and typed action invocation.
-  next:
   - id: INTERACTION-04
-    task: Expose live provider health and action history through action-bus introspection rather than configuration-only CLI inventory.
+    task: Expose live provider health through action-bus introspection and the panel.
+    evidence:
+    - deskhalloumi provider-status supports text and JSON output.
+    - The panel renders the worst live provider with generations, age, and bounded error detail.
+  next: []
 - id: HOTKEY
   name: hotkeys and input semantics
   priority: P1
@@ -480,8 +489,8 @@ risk_register:
   mitigation: keep them out of Iced update paths; deskhalloumi-bar is intentionally synchronous and headless by the completed ASYNC-09 decision.
 - risk: provider generations are typed but live reload can still require cross-provider generation coordination.
   mitigation: keep generation ownership inside provider supervisors and add reload soak tests before dynamic replacement.
-- risk: provider contracts name hardware-free test backends while some plugin constructors and workers still access live clock, sysfs, or tmux services directly.
-  mitigation: require executable injected backends and deterministic provider fixtures in 0.4.0 rather than treating contract metadata as completed migration.
+- risk: the global provider status registry becomes a second mutable provider state source.
+  mitigation: keep it diagnostic-only, reject stale instance/generation updates, and retain authoritative values in typed provider watch channels.
 - risk: Linux release binaries are not portable across all distributions.
   mitigation: document the glibc/system-library boundary, require native smoke tests for AArch64, investigate musl without promising it, and add distro packaging.
 - risk: roadmap items can duplicate foundations already shipped in 0.3.0 and hide the remaining migration work.

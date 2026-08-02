@@ -2,9 +2,9 @@
 
 ## Current state
 
-The active Cargo workspace declares the coordinated version `0.3.3` in the root
+The active Cargo workspace declares the coordinated version `0.4.0` in the root
 `Cargo.toml`, and all seven first-party packages inherit it with
-`version.workspace = true`. A local `0.3.3` release candidate follows the reviewed annotated `v0.3.2`
+`version.workspace = true`. A local `0.4.0` release candidate follows the reviewed annotated `v0.3.3`
 tag. Version `0.3.0` remains the latest remotely published release; later tags
 and the branch have not been pushed. The canonical remote is
 `https://github.com/fkr-0/deskhalloumi`.
@@ -181,10 +181,11 @@ publication remains an explicit maintainer action.
 ## Current release state
 
 Version `0.3.0` remains the latest remotely published release. Annotated local
-tag `v0.3.2` identifies the prior hardening baseline. Version `0.3.3` is the
-current coordinated patch candidate and adds release archive installation and
-removal verification, exact IPC boundary tests, explicit durable-write failure
-semantics, executable plugin fixtures, active/history task separation, and
-repository cleanup without changing public compatibility contracts. No branch
-push, GitHub Release, asset upload, or crates.io publication has been performed.
-The next minor remains 0.4.0 provider lifecycle completion.
+tag `v0.3.3` identifies the preceding patch baseline. Version `0.4.0` is the
+current coordinated minor candidate and completes provider lifecycle migration,
+live provider health diagnostics, replacement churn coverage, the native
+AArch64 publication gate, and the 0.4 musl decision without changing released
+compatibility contracts. The AArch64 lane is configured but cannot be executed
+on the local x86-64 host; remote publication remains conditional on that native
+lane passing. No branch push, GitHub Release, asset upload, or crates.io
+publication has been performed.

@@ -5,11 +5,56 @@ recorded in this file. The project follows Semantic Versioning as described in
 [`docs/versioning.md`](docs/versioning.md).
 
 Version `0.3.0` is the latest remotely published release and is identified by
-the annotated `v0.3.0` tag. Versions through `0.3.2` are represented by local
+the annotated `v0.3.0` tag. Versions through `0.3.3` are represented by local
 annotated tags, but no later tag or branch push, remote asset upload, or crate
 publication is implied.
 
 ## [Unreleased]
+
+## [0.4.0] - 2026-08-02
+
+### Added
+
+- A shared provider operation and runner path covering bounded refresh admission,
+  timeout, cancellation, refresh and instance generations, explicit disabled
+  state, last-known-good stale state, bounded error retention, and bounded
+  backend shutdown.
+- A process-wide provider status registry that rejects replaced instances and
+  exposes health, generations, refresh policy, last-update age, and bounded
+  errors over the existing action bus.
+- `deskhalloumi provider-status [--json]` and a compact panel badge showing the
+  worst live provider.
+- Provider refresh failure/timeout and shutdown failure/timeout counters in live
+  runtime metrics.
+- Executable fixed backends for audio, network, and system providers, completing
+  the hardware- and service-free backend set for all production providers.
+- A 128-generation provider replacement soak regression proving stale status and
+  refresh permits do not leak.
+- A native `ubuntu-24.04-arm` AArch64 release lane with archive installation,
+  command smoke, checksum verification, and clean removal.
+- ADR 0001 recording that 0.4.x intentionally publishes no musl artifact.
+
+### Changed
+
+- Clock, battery, Tmux, audio, network, and system providers now use the same
+  lifecycle, admission, timeout, generation, status, and shutdown contracts.
+- Built-in audio, network, and system provider ownership moved from the Iced
+  composition root to `unilii/bin/src/provider_runtime.rs`.
+- Module subscription supervision now passes the process cancellation token and
+  shared refresh registry into lifecycle-managed provider workers.
+- Battery-less hosts and unavailable tmux servers publish explicit disabled
+  states instead of failing startup.
+- GitHub Release publication is deferred until both native x86-64 and AArch64
+  GNU/Linux archives pass their release lanes.
+
+### Fixed
+
+- A stopped provider from an older instance can no longer overwrite the status
+  of its active replacement.
+- Provider errors are retained across shutdown/stopped transitions and truncated
+  on a UTF-8 boundary before entering diagnostics.
+- Built-in provider refresh and selection paths no longer duplicate timeout and
+  generation logic in `main.rs`.
 
 ## [0.3.3] - 2026-08-02
 
@@ -274,7 +319,8 @@ publication is implied.
 - sxhkd Cartesian brace expansion is capped at 4096 generated values to prevent
   accidental configuration blow-ups during migration.
 
-[Unreleased]: https://github.com/fkr-0/deskhalloumi/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/fkr-0/deskhalloumi/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/fkr-0/deskhalloumi/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/fkr-0/deskhalloumi/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/fkr-0/deskhalloumi/compare/v0.3.0...v0.3.2
 [0.3.0]: https://github.com/fkr-0/deskhalloumi/compare/v0.2.0...v0.3.0

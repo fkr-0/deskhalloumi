@@ -2,54 +2,54 @@ schema_version: 2
 updated_at: '2026-08-02'
 project:
   name: DeskHalloumi
-  coordinated_workspace_version: 0.3.3
+  coordinated_workspace_version: 0.4.0
   historical_ledger: docs/history/tasks-through-0.3.2.yml
 principles:
-- Preserve every released CLI, configuration, IPC, path, application-ID, service, and compatibility contract unless a future release documents a migration.
+- Preserve every released CLI, configuration, IPC, path, application-ID, service, generated-i3, and compatibility contract unless a future release documents a migration.
 - Add behavior through the existing runtime, provider, menu, action, and hotkey contracts rather than parallel stacks.
-- Require focused regression evidence before implementation and full release gates before tagging.
+- Require focused regression evidence and full local release gates before tagging.
 active:
-- id: PATCH-033
-  target: 0.3.3
-  title: Release follow-up and repository hygiene
-  status: in_progress
-  work:
-  - Verify checksum, safe extraction, temporary-prefix installation, all packaged command smokes, runtime contract, and clean removal from the assembled archive.
-  - Cover IPC frames exactly at and one byte over the protocol limit.
-  - Classify durable generated-file failures before and after destination replacement, and restore transactional i3 state after uncertain post-replacement durability.
-  - Provide executable fixture seams for clock, battery, and Tmux without changing production defaults.
-  - Remove tracked backup source files.
-  - Keep this active task file separate from the historical review ledger.
-  acceptance:
-  - Existing public compatibility surfaces remain unchanged.
-  - Safe tests, isolated i3/X11 tests, strict Clippy, release metadata, deterministic archive, and archive smoke pass.
 - id: PROVIDER-040
   target: 0.4.0
-  title: Provider lifecycle completion
-  status: planned
-  depends_on:
-  - PATCH-033
-  work:
-  - Replace provider test-backend labels with executable injected backends.
-  - Apply startup, loading, fresh, stale, error, disabled, shutting-down, stopped, timeout, refresh-generation, and instance-generation behavior consistently.
-  - Extract provider lifecycle ownership from the main Iced composition root.
-  - Publish bounded live provider diagnostics over the action bus and in the panel.
-  - Add provider replacement and refresh-churn soak tests.
-  - Add a native Linux AArch64 release lane whose publication is conditional on native artifact tests.
-  - Record a musl feasibility ADR without promising an artifact.
-  acceptance:
-  - Ordinary provider tests require no physical battery, input device, NetworkManager, audio daemon, tmux server, compositor, or desktop session.
-  - Replaced providers cannot publish stale results or overwrite newer registry state.
-  - Provider shutdown invokes backend cleanup within a bound and ends in stopped state.
-  - Provider health, generations, age, timeout, and bounded errors are available through live introspection and a panel surface.
-  - Repeated replacement and refresh churn do not leak tasks, gauges, refresh permits, or unbounded logs.
+  title: Provider lifecycle completion release candidate
+  status: candidate
+  implementation_commit: 50ed55c
+  completed:
+  - All production providers use shared bounded lifecycle, timeout, cancellation, generation, status, and shutdown helpers.
+  - Built-in audio, network, and system ownership moved from main.rs to provider_runtime.rs.
+  - Executable fixture backends cover Clock, Battery, Tmux, Audio, Network, and System.
+  - Provider health, generations, age, refresh policy, and bounded errors are visible over the action bus and panel.
+  - Provider refresh/shutdown failure and timeout counters are live runtime metrics.
+  - A 128-generation replacement regression proves stale status and refresh permits do not leak.
+  - Native AArch64 archive validation gates multi-architecture publication.
+  - ADR 0001 rejects a musl artifact for 0.4.x.
+  local_evidence:
+  - cargo fmt --all -- --check
+  - scripts/test_safe.sh
+  - scripts/test_i3_hotkeys.sh
+  - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
+  - CARGO_INCREMENTAL=0 cargo check --workspace --all-features
+  - independent OpenCode review 6f05520c-4721-456e-b6c4-5f2e26d31fc1 recommended local release with no blockers
+  remote_condition:
+  - The native ubuntu-24.04-arm workflow must execute successfully before GitHub Release publication.
 - id: STABLE-100
   target: 1.0.0
   title: Stable desktop-control contract
   status: planned
   work:
   - Inventory and classify all public compatibility surfaces.
-  - Thin the binary composition root and stabilize only intentional Rust/plugin APIs.
+  - Thin the remaining menu/action Iced composition root and stabilize only intentional Rust/plugin APIs.
   - Complete package-quality install, migration, upgrade, rollback, provenance, and removal evidence.
   - Decide the 1.x policy for the unilii compatibility layer.
-completed: []
+completed:
+- id: PATCH-033
+  target: 0.3.3
+  status: complete
+  tag: v0.3.3
+  revision: c2daa0a1a09cb1b739c2a588945d11efdb9f10f4
+  evidence:
+  - Deterministic x86-64 archive and checksum.
+  - Source-tree-independent installation, command smoke, runtime contract, and removal verification.
+  - Exact IPC boundary and durable-write failure-phase tests.
+  - Executable Clock, Battery, and Tmux fixture sources.
+  - Historical task ledger archived and tracked backup sources removed.

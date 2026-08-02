@@ -171,10 +171,11 @@ impl Module for Battery {
     {
         match SysfsBatterySource::discover().await {
             Ok(source) => Self::with_source(Arc::new(source)).await,
-            Err(error) => Ok(Self::from_source(
+            Err(error) if error == "No battery device found" => Ok(Self::from_source(
                 Arc::new(UnavailableBatterySource::new(error)),
                 0.0,
             )),
+            Err(error) => Err(error.into()),
         }
     }
 

@@ -59,8 +59,7 @@ resolved:
   - docs/project-renaming.md
 - id: HK-I3-010
   status: complete
-  summary: Recursively scan the active i3 configuration, includes, variables, modes, and generated-binding
-    collisions.
+  summary: Recursively scan the active i3 configuration, includes, variables, modes, and generated-binding collisions.
   evidence:
   - unilii/core/src/i3_config.rs
   - docs/i3-active-audit-2026-07-18.md
@@ -84,8 +83,8 @@ resolved:
   - .github/workflows/ci.yml
 - id: NAME-010
   status: complete
-  summary: Adopt DeskHalloumi package and command identities while retaining unilii compatibility aliases
-    and path/environment fallbacks.
+  summary: Adopt DeskHalloumi package and command identities while retaining unilii compatibility aliases and path/environment
+    fallbacks.
   evidence:
   - Cargo.toml
   - unilii/bin/Cargo.toml
@@ -108,7 +107,8 @@ resolved:
   - docs/versioning.md
 - id: SXHKD-010
   status: complete
-  summary: Import exact sxhkd sequence syntax including same-class alphanumeric ranges, underscore empty elements, escaped braces, and pairwise command expansion.
+  summary: Import exact sxhkd sequence syntax including same-class alphanumeric ranges, underscore empty elements, escaped
+    braces, and pairwise command expansion.
   evidence:
   - unilii/core/src/key_import_sxhkd.rs
   - unilii/core/tests/sxhkd_import_tests.rs
@@ -128,7 +128,8 @@ resolved:
   - unilii/core/src/hotkey_control.rs
 - id: BAR-HARDEN-022
   status: complete
-  summary: Implement live bar reload, module visibility, module focus, bounded action channels, and conditional animation ticks.
+  summary: Implement live bar reload, module visibility, module focus, bounded action channels, and conditional animation
+    ticks.
   evidence:
   - unilii/bin/src/bar_control.rs
   - unilii/bin/src/main.rs
@@ -182,38 +183,46 @@ resolved:
   - bridge.yml
 - id: REL-TAG-030
   status: complete
-  summary: Represent all seven coordinated workspace packages with one annotated local v0.3.2 tag after the complete release gate passed.
+  summary: Represent all seven coordinated workspace packages with one annotated local v0.3.2 tag after the complete release
+    gate passed.
   evidence:
   - tag v0.3.2 points to 84e9ca856a25a7988373d3622d4be9cb51646974
   - scripts/test_safe.sh
   - scripts/test_i3_hotkeys.sh
   - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
   - python3 scripts/check_release_metadata.py --release --require-clean
-remaining:
 - id: PATCH-033
-  status: in_progress
-  target_release: 0.3.3
-  priority: P0
-  gap: The tagged release needs narrow follow-up verification and repository-state cleanup without consuming 0.4.0 feature scope.
-  task: Verify installation and removal from the assembled archive, close exact boundary regressions, add plugin test seams, remove tracked archival source files, and separate active from historical task evidence.
-  acceptance_criteria:
-  - No public CLI, config, IPC, service, application-ID, or path compatibility change.
-  - Archive checksum, extraction, temporary-prefix installation, command smoke, and clean removal pass.
-  - Plugin unit tests require no battery hardware or tmux server and can control clock time where necessary.
-  - No tracked .bak file remains in the active source tree.
-  - Release-state documentation distinguishes local tags, pushes, remote releases, assets, and crates.io publication.
-  suggested_files:
-  - unilii/core/src/ipc_frame.rs
-  - unilii/bin/src/hotkeyd_main.rs
-  - unilii/plugins/Clock/src/lib.rs
-  - unilii/plugins/Battery/src/lib.rs
-  - unilii/plugins/Tmux/src/lib.rs
-  - tasks.yml
+  status: complete
+  summary: Ship the backwards-compatible 0.3.3 release follow-up and repository-hygiene slice.
+  evidence:
+  - annotated local tag v0.3.3 at c2daa0a1a09cb1b739c2a588945d11efdb9f10f4
+  - scripts/smoke_release_archive.py
+  - docs/atomic-file-replacement.md
+  - docs/history/tasks-through-0.3.2.yml
+  - no tracked .bak source remains
+- id: PROVIDER-040
+  status: candidate_complete
+  target_release: 0.4.0
+  summary: Complete the shared production provider lifecycle, live status, churn coverage, native AArch64 publication gate,
+    and musl decision.
+  evidence:
+  - 'commit 50ed55c feat: complete provider lifecycle runtime'
+  - unilii/core/src/runtime/provider.rs
+  - unilii/bin/src/provider_runtime.rs
+  - deskhalloumi provider-status text and JSON diagnostics
+  - 128-generation provider replacement regression
+  - .github/workflows/release.yml native ubuntu-24.04-arm gate
+  - docs/adr/0001-no-musl-release-artifact-for-0.4.md
+  - safe workspace tests, isolated i3/X11 integration, and strict Clippy pass
+  remaining_release_condition: Remote publication remains blocked until the native AArch64 hosted lane executes successfully.
+remaining:
 - id: SXHKD-011
   status: pending
   priority: P1
-  gap: sxhkd line continuations, chord chains/modes, replay, and synchronous execution are not equivalent to the current action model.
-  task: Extend migration only where semantics can be represented exactly; retain explicit approximate/unsupported classifications otherwise.
+  gap: sxhkd line continuations, chord chains/modes, replay, and synchronous execution are not equivalent to the current action
+    model.
+  task: Extend migration only where semantics can be represented exactly; retain explicit approximate/unsupported classifications
+    otherwise.
   acceptance_criteria:
   - No unsupported construct becomes an active literal chord.
   - Multi-line syntax is either imported exactly or rejected with source-located diagnostics.
@@ -242,23 +251,14 @@ remaining:
   - Repeated reloads retain the last-known-good generation.
   - Idle CPU and memory budgets are measured.
   - Action failure volume cannot create unbounded logs or child processes.
-- id: PROVIDER-040
-  status: pending
-  target_release: 0.4.0
-  priority: P0
-  gap: Provider contracts and generations exist, but some plugins still access live clock, sysfs, or tmux services directly and only name hypothetical test backends.
-  task: Complete executable backend injection, end-to-end lifecycle states, live health introspection, and provider-churn soak tests for all production providers.
-  acceptance_criteria:
-  - Ordinary provider tests require no battery, input device, NetworkManager, audio daemon, tmux server, compositor, or desktop session.
-  - Refresh and instance generations reject stale results for every provider class.
-  - Provider health, generation, last-update age, and bounded errors are visible over live introspection and one panel surface.
-  - Repeated replacement does not leak tasks, retain stale updates, or grow logs without bound.
 - id: STABLE-100
   status: pending
   target_release: 1.0.0
   priority: P1
-  gap: The workspace has not selected and classified the exact stable CLI, configuration, IPC, service, package, state, Rust, and plugin-facing surfaces.
-  task: Define the stable compatibility inventory, thin the binary composition root, remove transitional production allowances, and prove package-quality installation, migration, upgrade, rollback, and removal.
+  gap: The workspace has not selected and classified the exact stable CLI, configuration, IPC, service, package, state, Rust,
+    and plugin-facing surfaces.
+  task: Define the stable compatibility inventory, thin the binary composition root, remove transitional production allowances,
+    and prove package-quality installation, migration, upgrade, rollback, and removal.
   acceptance_criteria:
   - Every inventoried surface is stable, deprecated with a horizon, experimental, or internal.
   - Selected stable surfaces have compatibility tests and migration documentation.

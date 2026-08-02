@@ -10,162 +10,115 @@ The roadmap defines acceptance boundaries, not dates. A capability belongs to a
 release only after its exit criteria pass. Every first-party crate inherits one
 workspace version and is represented by one annotated workspace tag.
 
-## Tagged baseline: 0.3.2
+## Tagged baseline: 0.3.3
 
-The local annotated tag `v0.3.2` points to
-`84e9ca856a25a7988373d3622d4be9cb51646974`. The safe workspace tests, isolated
-i3/X11 integration, strict Clippy, release metadata validation, artifact smoke
-tests, and an independent review all passed before tagging. The tag and branch
-have not been pushed and no remote publication is implied.
+The local annotated tag `v0.3.3` points to
+`c2daa0a1a09cb1b739c2a588945d11efdb9f10f4`. The complete safe workspace tests,
+isolated i3/X11 integration, strict Clippy, deterministic x86-64 archive,
+installation/removal smoke, and independent review passed before tagging. The
+tag and branch have not been pushed and no remote publication is implied.
 
-The baseline already includes:
-
-- supervised Tokio runtime ownership and bounded shutdown;
-- bounded action execution, IPC frames, connections, queues, output, and
-  timeouts;
-- typed provider contracts and snapshots with refresh and instance generations;
-- last-known-good provider retention and health metadata;
-- renderer-neutral menu, typed action, quick-select, history, and introspection
-  foundations;
-- generated i3 bindings, recursive conflict audit, transactional rollback, and
-  selective native X11 advanced hotkeys;
-- dynamic evdev keyboard hot-plug;
-- deterministic Linux x86-64 release archives and checksums.
-
-Later releases complete migration and prove these foundations under churn. They
-must not create parallel runtimes, provider stacks, menu models, or action buses.
+The baseline already includes bounded runtime/action/IPC behavior, transactional
+i3 generation, selective X11 hotkeys, hardware-free plugin seams, exact frame
+limits, durable-file failure semantics, deterministic release archives, and
+explicit separation of local tags from remote publication.
 
 ## Workspace-wide responsibility map
 
-| member | next patch: 0.3.3 | next minor: 0.4.0 | stable-major requirement: 1.0.0 |
+| member | 0.4.0 completion | next convergence work | stable-major requirement |
 | --- | --- | --- | --- |
-| `deskhalloumi` | clarify facade documentation and legacy naming | decide whether it is a supported facade or internal convenience crate | expose an intentional, tested public facade or mark it non-publishable/internal |
-| `deskhalloumi-core` | boundary regressions and API inventory | complete renderer-neutral provider lifecycle and diagnostics contracts | stabilize selected config, action, menu, hotkey, IPC, and plugin-facing APIs with compatibility policy |
-| `deskhalloumi-lib` | remove stale docs and improve hardware-free seams | provide injected Linux/CalDAV backends and deterministic fixtures | define stable OS-adapter contracts, error semantics, and supported feature combinations |
-| `deskhalloumi-bin` | release-state docs, regression closure, archival cleanup | extract provider/runtime ownership and expose live health end to end | become a thin composition root with one authoritative menu/action/provider state path |
-| clock plugin | injectable time seam tests | publish through the shared provider adapter without direct lifecycle shortcuts | conform to the supported compile-time plugin API and compatibility tests |
-| battery plugin | constructor/subscription fixture seams | remove mandatory live-sysfs discovery from ordinary construction and tests | stable provider behavior on battery, desktop, and battery-less hosts |
-| Tmux plugin | command fixture and failure-path coverage | inject command backend and expose stale/error/disabled state consistently | stable bounded action/provider behavior without requiring a live tmux server in tests |
+| `deskhalloumi` | unchanged facade/helpers | decide supported facade versus internal convenience crate | expose an intentional tested facade or mark it non-publishable/internal |
+| `deskhalloumi-core` | shared provider runner, status registry, metrics, churn tests | continue API boundary inventory | stabilize selected config, action, menu, hotkey, IPC, and plugin-facing APIs |
+| `deskhalloumi-lib` | existing Linux/CalDAV adapters remain provider inputs | make remaining adapter errors and fixtures uniform | define stable OS-adapter contracts and supported feature combinations |
+| `deskhalloumi-bin` | built-in provider ownership extracted to `provider_runtime.rs`; live status CLI/panel | continue menu/action and Iced composition-root extraction | become a thin composition root with one authoritative state path |
+| clock plugin | shared timed lifecycle with injectable clock | no separate lifecycle stack | conform to the selected stable compile-time plugin API |
+| battery plugin | battery-less hosts become explicit disabled state | refine richer charging/state fixtures | stable behavior on battery and battery-less hosts |
+| Tmux plugin | shared refresh/shutdown helpers plus bounded selection operations | standardize menu/action presentation | stable bounded behavior without requiring a live tmux server in tests |
 
-Dynamic plugin loading is not a roadmap promise. The current plugin model is
-compile-time optional crates; 1.0 may stabilize that model without introducing a
-runtime ABI.
+Dynamic plugin loading is not promised. The current model remains compile-time
+optional crates and may be the stable 1.0 model.
 
-## 0.3.3 — Release follow-up and regression closure
+## 0.3.3 — Tagged regression and hygiene baseline
 
-This patch remains backwards compatible and deliberately narrow. It may not
-consume the provider-convergence feature scope assigned to 0.4.0.
+Version 0.3.3 is complete and locally tagged. It added archive installation and
+removal smoke tests, exact IPC frame boundaries, explicit generated-file failure
+phases, executable Clock/Battery/Tmux fixture sources, historical task-ledger
+archiving, and removal of tracked backup sources without changing compatibility
+contracts.
 
-### Primary work
+## 0.4.0 — Provider lifecycle completion candidate
 
-- Reconcile repository documentation with the locally tagged 0.3.2 state while
-  keeping push and publication state explicit.
-- Verify the exact assembled 0.3.2 archive can be checksum-verified, extracted,
-  installed into a temporary prefix, smoke-tested, and removed without using the
-  source tree.
-- Add exact boundary regressions for maximum-size IPC frames and the intended
-  durable-write failure contract after rename and parent-directory sync.
-- Replace contract-name-only plugin tests with small injectable seams where this
-  can be done without changing public behavior.
-- Remove tracked archival `.bak` source files after proving that no build,
-  fixture, or documentation path references them.
-- Correct stale `unilii` prose in active crate-level documentation while
-  retaining intentional compatibility names.
-- Split current historical tasks from active tasks so new reviews do not treat
-  old line counts and completed migration notes as current state.
+The 0.4.0 implementation is complete locally and is undergoing release-candidate
+validation. It does not introduce a parallel provider subsystem; it finishes the
+migration to the typed runtime contracts introduced in 0.3.0.
 
-### Exit criteria
+### Shared lifecycle
 
-- No public CLI, config, IPC, service, application-ID, or path compatibility
-  change.
-- All seven packages inherit `0.3.3` from the workspace and the lockfile agrees.
-- Safe tests, isolated i3/X11 integration, strict Clippy, and release metadata
-  validation pass.
-- Plugin unit tests require neither battery hardware nor a tmux server and can
-  control clock time where time-dependent behavior is tested.
-- No tracked `*.bak` file remains in the active source tree.
-- Release notes distinguish local tagging, remote push, artifact publication,
-  and crates.io publication.
-
-### Non-goals
-
-- No Wayland shortcut parity.
-- No dynamic plugin ABI.
-- No removal of `unilii-*` compatibility launchers.
-- No broad menu or provider rewrite.
-
-## 0.4.0 — Provider hardening and target expansion
-
-This minor completes the provider lifecycle migration introduced in 0.3.0 and
-hardened in 0.3.2.
-
-### Shared provider contract
-
-Clock, battery, network, audio, system, and optional Tmux providers must use one
-end-to-end contract for:
+Clock, battery, network, audio, system, and optional Tmux providers now share:
 
 - startup, loading, fresh, stale, error, disabled, shutting-down, and stopped
   states;
-- refresh interval, timeout, staleness threshold, and startup-refresh policy;
 - keyed bounded refresh admission and coalescing;
+- refresh timeout and cancellation;
 - refresh-generation and provider-instance-generation acceptance;
-- last-known-good retention;
-- bounded graceful shutdown;
-- a real fixture or in-memory backend selected without live hardware or service
-  access.
+- last-known-good retention and UTF-8-safe bounded error detail;
+- bounded backend shutdown with failure/timeout metrics;
+- executable hardware- or service-free backends for ordinary tests.
 
-`ProviderContract` declarations must correspond to executable behavior. A string
-naming a hypothetical test backend is not sufficient acceptance evidence.
+Battery-less hosts and unavailable tmux servers publish explicit disabled states
+rather than failing startup. A process-wide diagnostic status registry records
+only bounded lifecycle metadata and rejects stale provider instances; typed
+watch channels remain the authoritative provider values.
 
-### Component work
+### Binary ownership and operator visibility
 
-- **Core:** separate provider data/lifecycle contracts from Iced rendering and
-  define one adapter boundary from provider snapshots to module/UI updates.
-- **Library:** make sysfs, evdev/udev, process, and CalDAV access injectable or
-  fixture-driven at the provider boundary, with structured errors rather than
-  silent environmental assumptions.
-- **Binary:** extract provider creation, replacement, cancellation, and health
-  aggregation from `main.rs`; remove fixed or provider-specific state paths.
-- **Clock:** inject a clock source for deterministic behavior and missed-tick
-  tests.
-- **Battery:** support battery-less hosts as an explicit disabled/unavailable
-  state and test live-device replacement without physical hardware.
-- **Tmux:** inject command execution, distinguish no server from malformed
-  output, and retain last-known-good pane state on transient failure.
+Built-in audio, network, and system lifecycle ownership moved from `main.rs` to
+`unilii/bin/src/provider_runtime.rs`. The Iced layer requests operations and
+applies typed snapshots but no longer owns admission, timeout, or generation
+policy.
 
-### Operator visibility
+`deskhalloumi provider-status [--json]` reports provider id, health, active
+instance generation, refresh generation, refresh policy, last-update age, and
+bounded errors over the existing action bus. The panel displays a compact badge
+for the worst live provider. Runtime metrics additionally count provider refresh
+failures/timeouts and shutdown failures/timeouts.
 
-Expose provider id, lifecycle state, active instance generation, refresh
-generation, last successful update, last-update age, last bounded error, and
-refresh pressure through live action-bus introspection and at least one panel
-surface.
+### Churn and architecture targets
 
-### Soak and target validation
+A 128-generation replacement regression verifies that stopped old instances
+cannot overwrite active status and every refresh permit is returned.
 
-- Repeated provider replacement and overlapping refresh attempts must not leak
-  tasks, apply stale results, grow logs without bound, or leave nonzero gauges.
-- Record reference idle CPU, resident memory, task, file-descriptor, and log
-  budgets for provider churn.
-- Add native Linux AArch64 build, archive, installation, runtime-smoke, and
-  removal validation. Publish AArch64 assets only after the native lane passes.
-- Complete a musl feasibility ADR that may explicitly reject publication.
+The release workflow configures a native `ubuntu-24.04-arm` lane that builds the
+same twelve binaries, assembles a deterministic AArch64 GNU/Linux archive,
+installs it into a temporary prefix, smoke-tests every command, verifies its
+checksum, and removes it. GitHub Release publication waits for both x86-64 and
+AArch64 jobs. This native lane cannot be executed by the local x86-64 release
+host, so local evidence must not claim it passed.
 
-### Exit criteria
+ADR 0001 intentionally rejects a 0.4.x musl artifact. A future reconsideration
+requires a named native musl environment and complete build, installation,
+runtime-smoke, and removal evidence.
 
-- Every named production provider uses the shared lifecycle and snapshot path.
-- Ordinary tests require no battery, input device, NetworkManager, audio daemon,
-  tmux server, compositor, or desktop session.
-- Stale refresh and stale provider-instance results are rejected by tests across
-  all provider classes.
-- Live diagnostics expose provider health and age without revealing secrets.
-- `main.rs` no longer owns provider-specific lifecycle policy.
-- AArch64 publication remains conditional on native artifact testing.
+### Candidate exit criteria
+
+- All named providers use the shared lifecycle and snapshot path.
+- No provider-specific mutable state registry remains; the global status registry
+  is diagnostic-only and stale-instance-safe.
+- Ordinary tests require no physical battery, input device, NetworkManager,
+  audio daemon, tmux server, compositor, or desktop session.
+- Live provider health is available through the action bus and panel.
+- Repeated replacement does not leak refresh permits or stale status.
+- Local formatting, safe tests, isolated i3/X11 integration, strict Clippy,
+  deterministic x86-64 archive, and installation/removal smoke pass.
+- Remote publication remains blocked until the native AArch64 lane succeeds.
+- No musl artifact is promised or published.
 
 ### Non-goals
 
-- Cross-compilation alone is not publication evidence.
-- A static musl artifact is not promised.
-- Sway/Wayland global-hotkey parity remains outside this release.
+- No Wayland global-shortcut parity claim.
+- No dynamic plugin ABI.
+- No removal of `unilii-*` compatibility launchers.
+- No claim that local x86-64 validation substitutes for native AArch64 evidence.
 
 ## Intermediate minors toward 1.0
 
