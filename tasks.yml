@@ -5,14 +5,25 @@ project:
   coordinated_workspace_version: 0.4.0
   historical_ledger: docs/history/tasks-through-0.3.2.yml
 principles:
-- Preserve every released CLI, configuration, IPC, path, application-ID, service, generated-i3, and compatibility contract unless a future release documents a migration.
+- Preserve every released CLI, configuration, IPC, path, application-ID, service, generated-i3, and compatibility contract
+  unless a future release documents a migration.
 - Add behavior through the existing runtime, provider, menu, action, and hotkey contracts rather than parallel stacks.
 - Require focused regression evidence and full local release gates before tagging.
 active:
+- id: STABLE-100
+  target: 1.0.0
+  title: Stable desktop-control contract
+  status: planned
+  work:
+  - Inventory and classify all public compatibility surfaces.
+  - Thin the remaining menu/action Iced composition root and stabilize only intentional Rust/plugin APIs.
+  - Complete package-quality install, migration, upgrade, rollback, provenance, and removal evidence.
+  - Decide the 1.x policy for the unilii compatibility layer.
+completed:
 - id: PROVIDER-040
   target: 0.4.0
   title: Provider lifecycle completion release candidate
-  status: candidate
+  status: complete
   implementation_commit: 50ed55c
   completed:
   - All production providers use shared bounded lifecycle, timeout, cancellation, generation, status, and shutdown helpers.
@@ -32,16 +43,8 @@ active:
   - independent OpenCode review 6f05520c-4721-456e-b6c4-5f2e26d31fc1 recommended local release with no blockers
   remote_condition:
   - The native ubuntu-24.04-arm workflow must execute successfully before GitHub Release publication.
-- id: STABLE-100
-  target: 1.0.0
-  title: Stable desktop-control contract
-  status: planned
-  work:
-  - Inventory and classify all public compatibility surfaces.
-  - Thin the remaining menu/action Iced composition root and stabilize only intentional Rust/plugin APIs.
-  - Complete package-quality install, migration, upgrade, rollback, provenance, and removal evidence.
-  - Decide the 1.x policy for the unilii compatibility layer.
-completed:
+  tag: v0.4.0
+  revision: 373ce47911869fa63b847433bd9f0272f46ada4f
 - id: PATCH-033
   target: 0.3.3
   status: complete

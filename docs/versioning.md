@@ -4,9 +4,9 @@
 
 The active Cargo workspace declares the coordinated version `0.4.0` in the root
 `Cargo.toml`, and all seven first-party packages inherit it with
-`version.workspace = true`. A local `0.4.0` release candidate follows the reviewed annotated `v0.3.3`
-tag. Version `0.3.0` remains the latest remotely published release; later tags
-and the branch have not been pushed. The canonical remote is
+`version.workspace = true`. A local annotated `v0.4.0` tag points to the reviewed provider-lifecycle
+release commit. Version `0.3.0` remains the latest remotely published release;
+the `v0.4.0` tag and branch have not been pushed. The canonical remote is
 `https://github.com/fkr-0/deskhalloumi`.
 
 This document defines the contract; a local version or tag alone does not claim
@@ -181,11 +181,11 @@ publication remains an explicit maintainer action.
 ## Current release state
 
 Version `0.3.0` remains the latest remotely published release. Annotated local
-tag `v0.3.3` identifies the preceding patch baseline. Version `0.4.0` is the
-current coordinated minor candidate and completes provider lifecycle migration,
-live provider health diagnostics, replacement churn coverage, the native
-AArch64 publication gate, and the 0.4 musl decision without changing released
-compatibility contracts. The AArch64 lane is configured but cannot be executed
-on the local x86-64 host; remote publication remains conditional on that native
-lane passing. No branch push, GitHub Release, asset upload, or crates.io
-publication has been performed.
+tag `v0.4.0` points to commit
+`373ce47911869fa63b847433bd9f0272f46ada4f` and records the completed provider
+lifecycle migration, live provider health diagnostics, replacement churn
+coverage, native AArch64 publication gate, and the 0.4 musl decision without
+changing released compatibility contracts. The native AArch64 lane is
+configured but has not executed locally; remote publication remains conditional
+on that hosted lane passing. No branch push, GitHub Release, asset upload, or
+crates.io publication has been performed.

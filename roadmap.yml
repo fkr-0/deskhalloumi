@@ -5,10 +5,10 @@ project:
   name: DeskHalloumi
   slug: deskhalloumi
   repository: https://github.com/fkr-0/deskhalloumi
-  current_version: 0.3.3
-  current_candidate: 0.4.0
-  current_tag: v0.3.3
-  release_state: minor_candidate
+  current_version: 0.4.0
+  current_candidate: null
+  current_tag: v0.4.0
+  release_state: locally_tagged_unpublished
   supported_session: i3/X11
   compatibility_boundary:
   - unilii command aliases remain available during 0.x
@@ -26,8 +26,8 @@ planning_principles:
 - Publish a new architecture target only after native installation and runtime smoke tests pass on that target.
 current_baseline:
   release:
-    tag: v0.3.3
-    target_revision: c2daa0a1a09cb1b739c2a588945d11efdb9f10f4
+    tag: v0.4.0
+    target_revision: 373ce47911869fa63b847433bd9f0272f46ada4f
     source_status: locally_tagged
     branch_push: not_requested
     github_release: not_published
@@ -154,7 +154,9 @@ release_targets:
   - No broad menu or provider rewrite.
 - version: 0.4.0
   theme: provider hardening and target expansion
-  status: candidate
+  status: tagged_local
+  tag: v0.4.0
+  target_revision: 373ce47911869fa63b847433bd9f0272f46ada4f
   foundation_status:
   - 0.3.0 introduced ProviderContract, ProviderSnapshot, Tokio watch channels, generation suppression, test backends, and provider health.
   - 0.4.0 completes the production migration, soak coverage, operator visibility, and architecture-target release gate.
@@ -280,6 +282,7 @@ workstreams:
   - annotated v0.3.0 tag
   - local annotated v0.3.2 tag at the reviewed release commit
   - local annotated v0.3.3 tag at the reviewed release commit
+  - local annotated v0.4.0 tag at the reviewed release commit
   - deterministic Linux x86-64 archive
   - SHA-256 checksum
   - public GitHub Release assets

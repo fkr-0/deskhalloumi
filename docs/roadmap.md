@@ -46,10 +46,11 @@ phases, executable Clock/Battery/Tmux fixture sources, historical task-ledger
 archiving, and removal of tracked backup sources without changing compatibility
 contracts.
 
-## 0.4.0 — Provider lifecycle completion candidate
+## 0.4.0 — Locally tagged provider lifecycle release
 
-The 0.4.0 implementation is complete locally and is undergoing release-candidate
-validation. It does not introduce a parallel provider subsystem; it finishes the
+The annotated local tag `v0.4.0` points to
+`373ce47911869fa63b847433bd9f0272f46ada4f`. The implementation and all local
+release gates are complete. It does not introduce a parallel provider subsystem; it finishes the
 migration to the typed runtime contracts introduced in 0.3.0.
 
 ### Shared lifecycle
@@ -99,7 +100,7 @@ ADR 0001 intentionally rejects a 0.4.x musl artifact. A future reconsideration
 requires a named native musl environment and complete build, installation,
 runtime-smoke, and removal evidence.
 
-### Candidate exit criteria
+### Release evidence
 
 - All named providers use the shared lifecycle and snapshot path.
 - No provider-specific mutable state registry remains; the global status registry

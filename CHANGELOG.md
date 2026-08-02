@@ -5,11 +5,16 @@ recorded in this file. The project follows Semantic Versioning as described in
 [`docs/versioning.md`](docs/versioning.md).
 
 Version `0.3.0` is the latest remotely published release and is identified by
-the annotated `v0.3.0` tag. Versions through `0.3.3` are represented by local
+the annotated `v0.3.0` tag. Versions through `0.4.0` are represented by local
 annotated tags, but no later tag or branch push, remote asset upload, or crate
 publication is implied.
 
 ## [Unreleased]
+
+### Changed
+
+- Recorded the local annotated `v0.4.0` tag and its still-unpublished native
+  AArch64 workflow condition in active release documentation.
 
 ## [0.4.0] - 2026-08-02
 

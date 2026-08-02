@@ -13,7 +13,8 @@ Canonical repository: <https://github.com/fkr-0/deskhalloumi>
 
 ## Release 0.4.0
 
-`0.4.0` completes the shared provider lifecycle migration. Clock, battery,
+`0.4.0` is represented by the local annotated tag `v0.4.0` and completes the
+shared provider lifecycle migration. Clock, battery,
 network, audio, system, and optional Tmux now share bounded admission, timeout,
 cancellation, refresh and instance generations, disabled/stale/error states,
 last-known-good retention, bounded shutdown, metrics, and live status

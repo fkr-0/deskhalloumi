@@ -201,7 +201,7 @@ resolved:
   - docs/history/tasks-through-0.3.2.yml
   - no tracked .bak source remains
 - id: PROVIDER-040
-  status: candidate_complete
+  status: complete
   target_release: 0.4.0
   summary: Complete the shared production provider lifecycle, live status, churn coverage, native AArch64 publication gate,
     and musl decision.
@@ -215,6 +215,8 @@ resolved:
   - docs/adr/0001-no-musl-release-artifact-for-0.4.md
   - safe workspace tests, isolated i3/X11 integration, and strict Clippy pass
   remaining_release_condition: Remote publication remains blocked until the native AArch64 hosted lane executes successfully.
+  tag: v0.4.0
+  revision: 373ce47911869fa63b847433bd9f0272f46ada4f
 remaining:
 - id: SXHKD-011
   status: pending
