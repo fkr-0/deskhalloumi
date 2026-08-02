@@ -18,6 +18,7 @@ operators, contributors, and maintainers who need more detail.
 - [Async runtime and subprocess policy](async-runtime.md)
 - [Atomic generated-file replacement](atomic-file-replacement.md)
 - [Quick-select, provider, menu, and typed-action contracts](runtime-contracts.md)
+- [ADR 0001: no musl release artifact for 0.4](adr/0001-no-musl-release-artifact-for-0.4.md)
 - [Bar architecture](bar-architecture.md)
 - [Hotkey daemon architecture](hotkeyd-architecture.md)
 - [Shared menu design system](menu-design-system.md)

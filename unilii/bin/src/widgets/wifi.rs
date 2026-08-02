@@ -30,7 +30,7 @@ pub fn provider_contract() -> ProviderContract {
             stale_after: Duration::from_secs(15),
             refresh_on_start: true,
         },
-        "TestProviderBackend<WifiSnapshot>",
+        "FixedWifiProviderBackend",
     )
 }
 
@@ -439,6 +439,6 @@ mod tests {
     fn lifecycle_contract_requires_no_network_manager() {
         let contract = provider_contract();
         assert_eq!(contract.id, "network");
-        assert!(contract.test_backend.contains("WifiSnapshot"));
+        assert_eq!(contract.test_backend, "FixedWifiProviderBackend");
     }
 }

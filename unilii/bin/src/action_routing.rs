@@ -3,7 +3,7 @@
 use deskhalloumi_core::{
     action_bus::{ActionBusResponse, DesktopAction},
     keys::KeybindingResult,
-    runtime::global_runtime_metrics,
+    runtime::{global_provider_status_registry, global_runtime_metrics},
 };
 
 pub enum ActionBusRoute {
@@ -25,6 +25,19 @@ pub fn route_action_bus_request(
         return Ok(ActionBusRoute::Respond(ActionBusResponse::ok_with_data(
             request_id,
             "runtime metrics",
+            data,
+        )));
+    }
+    if matches!(
+        &action,
+        DesktopAction::Bar(command)
+            if command == "provider-status" || command == "diagnostics:provider-status"
+    ) {
+        let data = serde_json::to_value(global_provider_status_registry().snapshots())
+            .map_err(|error| format!("failed to serialize provider status: {error}"))?;
+        return Ok(ActionBusRoute::Respond(ActionBusResponse::ok_with_data(
+            request_id,
+            "provider status",
             data,
         )));
     }
@@ -84,5 +97,21 @@ mod tests {
         assert!(data.get("active_tasks").is_some());
         assert!(data.get("active_actions").is_some());
         assert!(data.get("queued_actions").is_some());
+    }
+
+    #[test]
+    fn provider_status_is_answered_without_queueing_an_action() {
+        let registry = global_provider_status_registry();
+        registry.clear();
+        let route = route_action_bus_request(
+            "providers-1".to_string(),
+            DesktopAction::Bar("provider-status".to_string()),
+        )
+        .unwrap();
+        let ActionBusRoute::Respond(response) = route else {
+            panic!("provider status must be answered synchronously");
+        };
+        assert!(response.ok);
+        assert_eq!(response.data.unwrap(), serde_json::json!([]));
     }
 }

@@ -16,7 +16,7 @@ use deskhalloumi_core::{
     },
     config::Config,
     menu::{MenuLifecycle, MenuModel, MenuSource},
-    runtime::{ProviderContract, RuntimeMetricsSnapshot},
+    runtime::{ProviderContract, ProviderStatusSnapshot, RuntimeMetricsSnapshot},
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -50,6 +50,58 @@ pub fn query_runtime_metrics(socket: Option<&Path>) -> Result<RuntimeMetricsSnap
         .ok_or_else(|| "runtime metrics response did not contain structured data".to_string())?;
     serde_json::from_value(data)
         .map_err(|error| format!("invalid runtime metrics response: {error}"))
+}
+
+pub fn query_provider_status(socket: Option<&Path>) -> Result<Vec<ProviderStatusSnapshot>, String> {
+    let request = ActionBusRequest::new(
+        format!("providers-cli-{}", std::process::id()),
+        DesktopAction::Bar("provider-status".to_string()),
+    );
+    let response = send_action_request(
+        socket
+            .map(Path::to_path_buf)
+            .unwrap_or_else(default_action_bus_socket_path),
+        &request,
+    )?;
+    if !response.ok {
+        return Err(response.message);
+    }
+    let data = response
+        .data
+        .ok_or_else(|| "provider status response did not contain structured data".to_string())?;
+    serde_json::from_value(data)
+        .map_err(|error| format!("invalid provider status response: {error}"))
+}
+
+pub fn print_provider_status(
+    providers: &[ProviderStatusSnapshot],
+    json: bool,
+) -> Result<(), String> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(providers)
+                .map_err(|error| format!("failed to serialize provider status: {error}"))?
+        );
+        return Ok(());
+    }
+    for provider in providers {
+        let error = provider.error.as_deref().unwrap_or("-");
+        let age = provider
+            .last_update_age_ms
+            .map(|age| age.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        println!(
+            "id={} health={:?} instance_generation={} generation={} age_ms={} error={}",
+            provider.id,
+            provider.health,
+            provider.instance_generation,
+            provider.generation,
+            age,
+            error
+        );
+    }
+    Ok(())
 }
 
 pub fn print_runtime_metrics(metrics: &RuntimeMetricsSnapshot, json: bool) -> Result<(), String> {
@@ -91,6 +143,22 @@ pub fn print_runtime_metrics(metrics: &RuntimeMetricsSnapshot, json: bool) -> Re
         (
             "provider_refreshes_saturated",
             metrics.provider_refreshes_saturated,
+        ),
+        (
+            "provider_refreshes_failed",
+            metrics.provider_refreshes_failed,
+        ),
+        (
+            "provider_refreshes_timed_out",
+            metrics.provider_refreshes_timed_out,
+        ),
+        (
+            "provider_shutdown_failures",
+            metrics.provider_shutdown_failures,
+        ),
+        (
+            "provider_shutdown_timeouts",
+            metrics.provider_shutdown_timeouts,
         ),
         ("updates_coalesced", metrics.updates_coalesced),
         ("updates_dropped", metrics.updates_dropped),
@@ -262,6 +330,14 @@ pub fn actions(config: &Config) -> Vec<ActionInfo> {
             "Query live runtime metrics",
             "bar",
             "runtime-metrics",
+            "diagnostics",
+            true,
+        ),
+        action(
+            "bar:provider-status",
+            "Query live provider status",
+            "bar",
+            "provider-status",
             "diagnostics",
             true,
         ),

@@ -47,8 +47,11 @@ wait for bounded cleanup during shutdown or reload.
   `JoinSet`, cancellation, panic observation, and bounded shutdown;
 - `ProviderRefreshRegistry` for global concurrency limits and per-provider
   in-flight coalescing;
-- latest-value `ModuleSubscription` channels whose producers are returned to
-  the owning supervisor instead of spawning themselves;
+- latest-value `ModuleSubscription` channels whose runtime-aware worker
+  factories receive the owning supervisor's cancellation token and shared
+  provider refresh registry;
+- a common provider operation/runner path for admission, timeout, generations,
+  disabled/stale/error publication, bounded shutdown, and status registration;
 - `RuntimeMetrics` and `RuntimeMetricsSnapshot` for task, action, timeout,
   truncation, refresh-pressure, and update-pressure counters.
 
@@ -163,9 +166,12 @@ The runtime implements two concrete pressure policies:
   refreshes and allows only one in-flight refresh for each provider key.
   Duplicate requests are coalesced; global saturation is reported separately.
 
-Clock, battery, and Tmux producers publish through latest-value watch channels.
-If a producer overwrites an unread value, that is recorded as a coalesced update;
-sending after receiver closure is recorded as dropped.
+Clock, battery, Tmux, audio, network, and system providers publish through
+latest-value watch channels and the shared lifecycle helpers. If a producer
+overwrites an unread value, that is recorded as a coalesced update; sending after
+receiver closure is recorded as dropped. Repeated provider replacement tests
+verify that stale stopped states cannot replace the active instance and that all
+refresh permits are returned.
 
 ## Blocking boundaries
 
@@ -275,13 +281,16 @@ action_timeouts
 action_duration_ms_total / action_duration_ms_max
 truncated_outputs / truncated_bytes
 provider_refreshes_started / completed / coalesced / saturated
+provider_refreshes_failed / provider_refreshes_timed_out
+provider_shutdown_failures / provider_shutdown_timeouts
 updates_coalesced / updates_dropped
 ```
 
 Each action also emits a structured completion event containing its menu,
 action, duration, result class, output byte counts, and truncation flags. The
-bar logs the aggregate snapshot during supervised shutdown. A live diagnostic
-query is planned as `ASYNC-08` in `roadmap.yml`.
+bar logs the aggregate snapshot during supervised shutdown. Live
+`runtime-metrics` and `provider-status` queries use the bounded action bus and do
+not enqueue UI work.
 
 ## Review checklist
 

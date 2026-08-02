@@ -29,6 +29,10 @@ pub struct RuntimeMetrics {
     provider_refreshes_completed: AtomicU64,
     provider_refreshes_coalesced: AtomicU64,
     provider_refreshes_saturated: AtomicU64,
+    provider_refreshes_failed: AtomicU64,
+    provider_refreshes_timed_out: AtomicU64,
+    provider_shutdown_failures: AtomicU64,
+    provider_shutdown_timeouts: AtomicU64,
     updates_coalesced: AtomicU64,
     updates_dropped: AtomicU64,
 }
@@ -91,6 +95,14 @@ pub struct RuntimeMetricsSnapshot {
     pub provider_refreshes_completed: u64,
     pub provider_refreshes_coalesced: u64,
     pub provider_refreshes_saturated: u64,
+    #[serde(default)]
+    pub provider_refreshes_failed: u64,
+    #[serde(default)]
+    pub provider_refreshes_timed_out: u64,
+    #[serde(default)]
+    pub provider_shutdown_failures: u64,
+    #[serde(default)]
+    pub provider_shutdown_timeouts: u64,
     pub updates_coalesced: u64,
     pub updates_dropped: u64,
 }
@@ -190,6 +202,26 @@ impl RuntimeMetrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn record_provider_refresh_failed(&self) {
+        self.provider_refreshes_failed
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_provider_refresh_timed_out(&self) {
+        self.provider_refreshes_timed_out
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_provider_shutdown_failed(&self) {
+        self.provider_shutdown_failures
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_provider_shutdown_timed_out(&self) {
+        self.provider_shutdown_timeouts
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn record_update_coalesced(&self) {
         self.updates_coalesced.fetch_add(1, Ordering::Relaxed);
     }
@@ -221,6 +253,10 @@ impl RuntimeMetrics {
             provider_refreshes_completed: self.provider_refreshes_completed.load(Ordering::Relaxed),
             provider_refreshes_coalesced: self.provider_refreshes_coalesced.load(Ordering::Relaxed),
             provider_refreshes_saturated: self.provider_refreshes_saturated.load(Ordering::Relaxed),
+            provider_refreshes_failed: self.provider_refreshes_failed.load(Ordering::Relaxed),
+            provider_refreshes_timed_out: self.provider_refreshes_timed_out.load(Ordering::Relaxed),
+            provider_shutdown_failures: self.provider_shutdown_failures.load(Ordering::Relaxed),
+            provider_shutdown_timeouts: self.provider_shutdown_timeouts.load(Ordering::Relaxed),
             updates_coalesced: self.updates_coalesced.load(Ordering::Relaxed),
             updates_dropped: self.updates_dropped.load(Ordering::Relaxed),
         }
@@ -258,6 +294,10 @@ mod tests {
         metrics.record_provider_refresh_completed();
         metrics.record_provider_refresh_coalesced();
         metrics.record_provider_refresh_saturated();
+        metrics.record_provider_refresh_failed();
+        metrics.record_provider_refresh_timed_out();
+        metrics.record_provider_shutdown_failed();
+        metrics.record_provider_shutdown_timed_out();
         metrics.record_update_coalesced();
         metrics.record_update_dropped();
 
@@ -281,6 +321,10 @@ mod tests {
         assert_eq!(snapshot.provider_refreshes_completed, 1);
         assert_eq!(snapshot.provider_refreshes_coalesced, 1);
         assert_eq!(snapshot.provider_refreshes_saturated, 1);
+        assert_eq!(snapshot.provider_refreshes_failed, 1);
+        assert_eq!(snapshot.provider_refreshes_timed_out, 1);
+        assert_eq!(snapshot.provider_shutdown_failures, 1);
+        assert_eq!(snapshot.provider_shutdown_timeouts, 1);
         assert_eq!(snapshot.updates_coalesced, 1);
         assert_eq!(snapshot.updates_dropped, 1);
         drop(queued);

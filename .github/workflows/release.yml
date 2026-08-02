@@ -146,6 +146,149 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  package-aarch64:
+    name: Build and smoke native Linux AArch64 archive
+    needs: validate-build-package
+    runs-on: ubuntu-24.04-arm
+    env:
+      DESKHALLOUMI_MIN_FREE_GIB: "8"
+    steps:
+      - name: Check out tagged commit
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ env.RELEASE_REF }}
+
+      - name: Install release Rust toolchain
+        run: rustup toolchain install "$RELEASE_RUST" --profile minimal
+
+      - name: Select release Rust toolchain
+        run: rustup default "$RELEASE_RUST"
+
+      - name: Install native desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            pkg-config
+
+      - name: Validate release metadata and annotated tag
+        run: python3 scripts/check_release_metadata.py --release --require-clean
+
+      - name: Check native build space
+        run: python3 scripts/check_build_space.py
+
+      - name: Build native AArch64 release binaries
+        run: |
+          cargo build --release -p deskhalloumi-bin \
+            --bin deskhalloumi \
+            --bin deskhalloumi-bar \
+            --bin deskhalloumi-copyq \
+            --bin deskhalloumi-filter-tab \
+            --bin deskhalloumi-i3-vis \
+            --bin deskhalloumi-hotkeyd \
+            --bin unilii \
+            --bin unilii-bar \
+            --bin unilii-copyq \
+            --bin unilii-filter-tab \
+            --bin unilii-i3-vis \
+            --bin unilii-hotkeyd
+
+      - name: Assemble deterministic native AArch64 archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_REF#v}"
+          platform="aarch64-unknown-linux-gnu"
+          package="deskhalloumi-${version}-${platform}"
+          stage="dist/${package}"
+          mkdir -p "${stage}/bin" "${stage}/share/doc/deskhalloumi"
+
+          for binary in \
+            deskhalloumi \
+            deskhalloumi-bar \
+            deskhalloumi-copyq \
+            deskhalloumi-filter-tab \
+            deskhalloumi-i3-vis \
+            deskhalloumi-hotkeyd \
+            unilii \
+            unilii-bar \
+            unilii-copyq \
+            unilii-filter-tab \
+            unilii-i3-vis \
+            unilii-hotkeyd
+          do
+            install -m755 "target/release/${binary}" "${stage}/bin/${binary}"
+          done
+
+          install -m644 README.md CHANGELOG.md CONFIGURATION.md KEYBINDINGS.md LICENSE \
+            "${stage}/share/doc/deskhalloumi/"
+          cp -R docs contrib examples "${stage}/share/doc/deskhalloumi/"
+
+          tar --sort=name \
+            --mtime="UTC 1970-01-01" \
+            --owner=0 --group=0 --numeric-owner \
+            -C dist -czf "dist/${package}.tar.gz" "${package}"
+          (
+            cd dist
+            sha256sum "${package}.tar.gz" > "${package}.tar.gz.sha256"
+          )
+
+      - name: Smoke installed native AArch64 archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_REF#v}"
+          archive="dist/deskhalloumi-${version}-aarch64-unknown-linux-gnu.tar.gz"
+          python3 scripts/smoke_release_archive.py \
+            "$archive" \
+            --checksum "${archive}.sha256"
+
+      - name: Upload native AArch64 release archive
+        uses: actions/upload-artifact@v6
+        with:
+          name: deskhalloumi-${{ env.RELEASE_REF }}-linux-aarch64
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-release:
+    name: Publish validated multi-architecture release
+    needs:
+      - validate-build-package
+      - package-aarch64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out tagged release notes
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ env.RELEASE_REF }}
+
+      - name: Download validated archives
+        uses: actions/download-artifact@v5
+        with:
+          pattern: deskhalloumi-${{ env.RELEASE_REF }}-linux-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify downloaded checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd dist
+            for checksum in *.tar.gz.sha256; do
+              sha256sum -c "$checksum"
+            done
+          )
+
       - name: Publish GitHub release assets
         shell: bash
         env:
@@ -154,8 +297,8 @@ jobs:
           set -euo pipefail
           version="${RELEASE_REF#v}"
           notes="docs/releases/${version}.md"
-          archive="dist/deskhalloumi-${version}-x86_64-unknown-linux-gnu.tar.gz"
-          checksum="${archive}.sha256"
+          x86_archive="dist/deskhalloumi-${version}-x86_64-unknown-linux-gnu.tar.gz"
+          arm_archive="dist/deskhalloumi-${version}-aarch64-unknown-linux-gnu.tar.gz"
 
           if gh release view "$RELEASE_REF" >/dev/null 2>&1; then
             gh release edit "$RELEASE_REF" \
@@ -167,4 +310,7 @@ jobs:
               --notes-file "$notes"
           fi
 
-          gh release upload "$RELEASE_REF" "$archive" "$checksum" --clobber
+          gh release upload "$RELEASE_REF" \
+            "$x86_archive" "${x86_archive}.sha256" \
+            "$arm_archive" "${arm_archive}.sha256" \
+            --clobber

@@ -29,7 +29,7 @@ pub fn provider_contract() -> ProviderContract {
             stale_after: Duration::from_secs(45),
             refresh_on_start: true,
         },
-        "TestProviderBackend<AudioSnapshot>",
+        "FixedAudioProviderBackend",
     )
 }
 
@@ -345,6 +345,6 @@ mod tests {
     fn lifecycle_contract_uses_fixture_backend() {
         let contract = provider_contract();
         assert_eq!(contract.id, "audio");
-        assert!(contract.test_backend.contains("AudioSnapshot"));
+        assert_eq!(contract.test_backend, "FixedAudioProviderBackend");
     }
 }

@@ -9,8 +9,9 @@ use std::{
 use deskhalloumi_core::{
     Module, ModuleConfig, ModuleUpdate, Result,
     runtime::{
-        ActionCommand, ActionRunner, ModuleSubscription, ProviderContract, ProviderRefreshPolicy,
-        global_runtime_metrics,
+        ActionCommand, ActionRunner, ModuleSubscription, ProviderBackend, ProviderContract,
+        ProviderRefreshOutcome, ProviderRefreshPolicy, global_runtime_metrics,
+        refresh_provider_once, shutdown_provider_backend,
     },
 };
 use iced::{
@@ -18,7 +19,7 @@ use iced::{
     widget::{button, column, container, text},
 };
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 /// Represents a tmux pane.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -164,6 +165,49 @@ impl TmuxSource for FixedTmuxSource {
             .map_err(|error| format!("fixed tmux source lock poisoned: {error}"))?
             .push(pane.id);
         Ok(())
+    }
+}
+
+fn tmux_unavailable_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("no server running")
+        || error.contains("failed to connect to server")
+        || error.contains("connection refused")
+        || error.contains("no such file or directory")
+}
+
+fn panes_update(panes: Vec<TmuxPane>) -> ModuleUpdate {
+    ModuleUpdate::Custom(
+        serde_json::json!({
+            "action": "update_panes",
+            "panes": panes,
+        })
+        .to_string(),
+    )
+}
+
+struct TmuxProviderBackend {
+    source: Arc<dyn TmuxSource>,
+}
+
+#[async_trait::async_trait]
+impl ProviderBackend for TmuxProviderBackend {
+    type Value = ModuleUpdate;
+
+    async fn refresh(&self) -> std::result::Result<Self::Value, String> {
+        self.source.list_panes().await.map(panes_update)
+    }
+
+    async fn refresh_outcome(
+        &self,
+    ) -> std::result::Result<ProviderRefreshOutcome<Self::Value>, String> {
+        match self.source.list_panes().await {
+            Ok(panes) => Ok(ProviderRefreshOutcome::Fresh(panes_update(panes))),
+            Err(error) if tmux_unavailable_error(&error) => {
+                Ok(ProviderRefreshOutcome::Disabled(error))
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -324,15 +368,31 @@ impl Module for Tmux {
     async fn subscribe(&mut self) -> Result<Option<ModuleSubscription>> {
         let (control_tx, mut control_rx) = mpsc::channel(8);
         self.control_tx = Some(control_tx);
-        let source = Arc::clone(&self.source);
+        let backend = Arc::new(TmuxProviderBackend {
+            source: Arc::clone(&self.source),
+        });
 
-        Ok(Some(ModuleSubscription::with_contract(
+        Ok(Some(ModuleSubscription::with_runtime_worker(
             provider_contract(),
-            move |updates| async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(2));
+            move |updates, cancellation, refreshes| async move {
+                let contract = updates.contract();
+                let mut interval = tokio::time::interval(contract.refresh.interval);
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                interval.tick().await;
+                if contract.refresh.refresh_on_start {
+                    let _ = refresh_provider_once(
+                        &updates,
+                        backend.as_ref(),
+                        &refreshes,
+                        &cancellation,
+                    )
+                    .await;
+                }
+
                 loop {
                     let command = tokio::select! {
+                        _ = cancellation.cancelled() => break,
+                        _ = updates.closed() => break,
                         _ = interval.tick() => TmuxCommand::Refresh,
                         command = control_rx.recv() => {
                             let Some(command) = command else { break; };
@@ -340,28 +400,41 @@ impl Module for Tmux {
                         }
                     };
 
-                    match command {
-                        TmuxCommand::Refresh => {}
-                        TmuxCommand::Select(pane) => {
-                            if let Err(error) = source.select_pane(&pane).await {
+                    if let TmuxCommand::Select(pane) = command {
+                        match tokio::time::timeout(
+                            contract.refresh.timeout,
+                            backend.source.select_pane(&pane),
+                        )
+                        .await
+                        {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => {
+                                global_runtime_metrics().record_provider_refresh_failed();
+                                updates.mark_stale(error.clone());
+                                error!(%error, "failed to switch tmux pane");
+                            }
+                            Err(_) => {
+                                global_runtime_metrics().record_provider_refresh_timed_out();
+                                let error = format!(
+                                    "tmux pane selection timed out after {:?}",
+                                    contract.refresh.timeout
+                                );
+                                updates.mark_stale(error.clone());
                                 error!(%error, "failed to switch tmux pane");
                             }
                         }
                     }
 
-                    match source.list_panes().await {
-                        Ok(panes) => {
-                            let json = serde_json::json!({
-                                "action": "update_panes",
-                                "panes": panes,
-                            });
-                            if !updates.send(ModuleUpdate::Custom(json.to_string())) {
-                                break;
-                            }
-                        }
-                        Err(error) => warn!(%error, "failed to refresh tmux panes"),
-                    }
+                    let _ = refresh_provider_once(
+                        &updates,
+                        backend.as_ref(),
+                        &refreshes,
+                        &cancellation,
+                    )
+                    .await;
                 }
+
+                shutdown_provider_backend(&updates, backend.as_ref()).await;
             },
         )))
     }

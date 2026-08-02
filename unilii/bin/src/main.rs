@@ -10,6 +10,7 @@ mod enhanced_tray;
 mod introspection;
 mod menus;
 mod module_loader;
+mod provider_runtime;
 mod startup;
 mod subscription_manager;
 mod tray;
@@ -40,8 +41,8 @@ use deskhalloumi_core::{
     },
     quick_select::{QuickSelectResolution, QuickSelectSession},
     runtime::{
-        ActionCommand, ActionRunner, ProviderRefreshRegistry, ProviderSnapshot, RuntimeSupervisor,
-        TaskSpawner, global_runtime_metrics, provider_channel,
+        ActionCommand, ActionRunner, ProviderHealth, ProviderRefreshRegistry, RuntimeSupervisor,
+        TaskSpawner, global_provider_status_registry, global_runtime_metrics,
     },
 };
 use iced::futures::SinkExt;
@@ -80,6 +81,7 @@ use menus::system::{
     build_system_menu_model, button_label, parse_internal_action,
 };
 use module_loader::ModuleManager;
+use provider_runtime::LegacyProviderRuntime;
 use startup::{build_window_settings, default_panel_config};
 use subscription_manager::{
     ManagedModuleProvider, iced_subscription as module_iced_subscription,
@@ -104,12 +106,12 @@ use update::tray_view::{
 };
 use widgets::{
     Audio, Power, SysMonitor, Video, Widget, WidgetMessage, Wifi,
-    audio::{apply_audio_selection, parse_audio_selection_action, read_audio_snapshot},
+    audio::parse_audio_selection_action,
     key_char_digit,
     power::{PowerAction, execute_power_action, read_power_snapshot},
     render_modules,
     video::{apply_video_preset, read_video_snapshot},
-    wifi::{read_wifi_snapshot, set_wifi_enabled},
+    wifi::set_wifi_enabled,
 };
 
 static KEYBINDING_ACTION_RECEIVER: OnceLock<
@@ -131,42 +133,73 @@ fn install_keybinding_action_receiver(
 }
 
 fn begin_runtime_shutdown(bar: &mut UniliiBar) -> Task<Message> {
-    bar.audio_provider.shutdown();
-    bar.network_provider.shutdown();
-    bar.system_provider.shutdown();
     bar.runtime_spawner.cancellation_token().cancel();
+    let providers = bar.legacy_providers.clone();
     let supervisor = Arc::clone(&bar.runtime_supervisor);
     Task::perform(
-        async move { supervisor.shutdown(Duration::from_secs(2)).await },
+        async move {
+            providers.shutdown().await;
+            supervisor.shutdown(Duration::from_secs(2)).await
+        },
         Message::RuntimeShutdownComplete,
     )
 }
 
-fn provider_health_badge<T>(
-    prefix: &str,
-    snapshot: &ProviderSnapshot<T>,
-) -> Element<'static, Message> {
-    let age = snapshot
-        .last_update_age(std::time::SystemTime::now())
-        .map(|age| format!("{}s", age.as_secs()))
+fn provider_health_rank(health: ProviderHealth) -> u8 {
+    match health {
+        ProviderHealth::Error => 7,
+        ProviderHealth::Stale => 6,
+        ProviderHealth::Loading => 5,
+        ProviderHealth::Startup => 4,
+        ProviderHealth::Disabled => 3,
+        ProviderHealth::ShuttingDown => 2,
+        ProviderHealth::Stopped => 1,
+        ProviderHealth::Fresh => 0,
+    }
+}
+
+fn provider_registry_badge() -> Element<'static, Message> {
+    let snapshots = global_provider_status_registry().snapshots();
+    let Some(worst) = snapshots
+        .iter()
+        .max_by_key(|snapshot| provider_health_rank(snapshot.health))
+    else {
+        return text("providers:—")
+            .size(9)
+            .color(iced::Color::from_rgb(0.62, 0.66, 0.73))
+            .into();
+    };
+    let age = worst
+        .last_update_age_ms
+        .map(|age| format!("{}s", age / 1000))
         .unwrap_or_else(|| "—".to_string());
-    let health = snapshot.health();
-    let color = match health {
-        deskhalloumi_core::runtime::ProviderHealth::Fresh => {
-            iced::Color::from_rgb(0.55, 0.78, 0.60)
-        }
-        deskhalloumi_core::runtime::ProviderHealth::Stale => {
-            iced::Color::from_rgb(0.90, 0.72, 0.35)
-        }
-        deskhalloumi_core::runtime::ProviderHealth::Error => {
-            iced::Color::from_rgb(0.92, 0.42, 0.42)
-        }
+    let error = worst
+        .error
+        .as_deref()
+        .map(|error| {
+            let mut value = error.chars().take(28).collect::<String>();
+            if error.chars().count() > 28 {
+                value.push('…');
+            }
+            format!(" {value}")
+        })
+        .unwrap_or_default();
+    let color = match worst.health {
+        ProviderHealth::Fresh => iced::Color::from_rgb(0.55, 0.78, 0.60),
+        ProviderHealth::Stale | ProviderHealth::Loading => iced::Color::from_rgb(0.90, 0.72, 0.35),
+        ProviderHealth::Error => iced::Color::from_rgb(0.92, 0.42, 0.42),
         _ => iced::Color::from_rgb(0.62, 0.66, 0.73),
     };
-    text(format!("{prefix}:{} {age}", health.label()))
-        .size(9)
-        .color(color)
-        .into()
+    text(format!(
+        "p:{}:{} i{} g{} {age}{error}",
+        worst.id,
+        worst.health.label(),
+        worst.instance_generation,
+        worst.generation,
+    ))
+    .size(9)
+    .color(color)
+    .into()
 }
 
 struct StartupState {
@@ -357,9 +390,6 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             }
         }
         Message::RuntimeShutdownComplete(result) => {
-            bar.audio_provider.stopped();
-            bar.network_provider.stopped();
-            bar.system_provider.stopped();
             if let Err(error) = result {
                 warn!(%error, "runtime supervisor required forced shutdown");
             }
@@ -1088,9 +1118,9 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
                 Ok(message) => message,
                 Err(error) => format!("{action_id} failed: {error}"),
             });
-            refresh_system_provider(bar);
             rebuild_system_menu_if_open(bar);
             return Task::batch([
+                start_system_refresh(bar),
                 Task::done(Message::LegacyWidgetTick("wifi".to_string())),
                 Task::done(Message::LegacyWidgetTick("video".to_string())),
                 Task::done(Message::LegacyWidgetTick("power".to_string())),
@@ -1152,37 +1182,57 @@ fn update(bar: &mut UniliiBar, message: Message) -> Task<Message> {
             WidgetMessage::Tray(_) => {}
         },
         Message::LegacyWidgetTick(name) => match name.as_str() {
-            "sysmonitor" => refresh_system_provider(bar),
+            "sysmonitor" => return start_system_refresh(bar),
             "wifi" => return start_wifi_refresh(bar, None),
             "audio" => return start_audio_refresh(bar, None),
             "video" => return start_video_refresh(bar, None),
             "power" => return start_power_refresh(bar),
             _ => {}
         },
-        Message::AudioRefreshDone { generation, result } => {
-            if bar
-                .audio_provider
-                .publish_result(generation, result.clone())
-            {
-                match result {
-                    Ok(snapshot) => bar.audio.apply_snapshot(snapshot),
-                    Err(error) => warn!(%error, "audio widget refresh failed"),
+        Message::AudioProviderState(snapshot) => {
+            if bar.legacy_providers.audio.accepts(&snapshot) {
+                if let Some(value) = snapshot.value().cloned() {
+                    bar.audio.apply_snapshot(value);
+                }
+                if let Some(error) = snapshot.error() {
+                    warn!(%error, "audio provider is degraded");
                 }
             } else {
-                info!(generation, "ignored stale audio provider result");
+                info!(
+                    instance_generation = snapshot.instance_generation,
+                    "ignored replaced audio provider snapshot"
+                );
             }
         }
-        Message::WifiRefreshDone { generation, result } => {
-            if bar
-                .network_provider
-                .publish_result(generation, result.clone())
-            {
-                match result {
-                    Ok(snapshot) => bar.wifi.apply_snapshot(snapshot),
-                    Err(error) => warn!(%error, "WiFi widget refresh failed"),
+        Message::WifiProviderState(snapshot) => {
+            if bar.legacy_providers.network.accepts(&snapshot) {
+                if let Some(value) = snapshot.value().cloned() {
+                    bar.wifi.apply_snapshot(value);
+                }
+                if let Some(error) = snapshot.error() {
+                    warn!(%error, "network provider is degraded");
                 }
             } else {
-                info!(generation, "ignored stale network provider result");
+                info!(
+                    instance_generation = snapshot.instance_generation,
+                    "ignored replaced network provider snapshot"
+                );
+            }
+        }
+        Message::SystemProviderState(snapshot) => {
+            if bar.legacy_providers.system.accepts(&snapshot) {
+                if let Some(value) = snapshot.value().cloned() {
+                    bar.sysmonitor.apply_snapshot(value);
+                    rebuild_system_menu_if_open(bar);
+                }
+                if let Some(error) = snapshot.error() {
+                    warn!(%error, "system provider is degraded");
+                }
+            } else {
+                info!(
+                    instance_generation = snapshot.instance_generation,
+                    "ignored replaced system provider snapshot"
+                );
             }
         }
         Message::VideoRefreshDone(result) => match result {
@@ -1209,53 +1259,41 @@ fn start_audio_refresh(
     bar: &mut UniliiBar,
     selection: Option<widgets::audio::AudioSelectionAction>,
 ) -> Task<Message> {
-    let permit = match bar.provider_refreshes.try_start("legacy-audio") {
-        Ok(permit) => permit,
-        Err(error) => {
-            info!(%error, "audio widget refresh coalesced or saturated");
-            return Task::none();
-        }
-    };
-    let generation = bar.audio_provider.begin_refresh();
+    let providers = bar.legacy_providers.clone();
+    let refreshes = bar.provider_refreshes.clone();
+    let cancellation = bar.runtime_spawner.cancellation_token();
     Task::perform(
         async move {
-            let _permit = permit;
-            match selection {
-                Some(selection) => apply_audio_selection("pactl".to_string(), selection).await,
-                None => read_audio_snapshot("pactl".to_string()).await,
-            }
+            providers
+                .refresh_audio(selection, refreshes, cancellation)
+                .await
         },
-        move |result| Message::AudioRefreshDone { generation, result },
+        Message::AudioProviderState,
     )
 }
 
 fn start_wifi_refresh(bar: &mut UniliiBar, enabled: Option<bool>) -> Task<Message> {
-    let permit = match bar.provider_refreshes.try_start("legacy-wifi") {
-        Ok(permit) => permit,
-        Err(error) => {
-            info!(%error, "WiFi widget refresh coalesced or saturated");
-            return Task::none();
-        }
-    };
-    let generation = bar.network_provider.begin_refresh();
-    let nmcli = bar.run_options.nmcli_path.clone();
+    let providers = bar.legacy_providers.clone();
+    let refreshes = bar.provider_refreshes.clone();
+    let cancellation = bar.runtime_spawner.cancellation_token();
     Task::perform(
         async move {
-            let _permit = permit;
-            match enabled {
-                Some(enabled) => set_wifi_enabled(nmcli, enabled).await,
-                None => read_wifi_snapshot(nmcli).await,
-            }
+            providers
+                .refresh_wifi(enabled, refreshes, cancellation)
+                .await
         },
-        move |result| Message::WifiRefreshDone { generation, result },
+        Message::WifiProviderState,
     )
 }
 
-fn refresh_system_provider(bar: &mut UniliiBar) {
-    let generation = bar.system_provider.begin_refresh();
-    bar.sysmonitor.update_stats();
-    let snapshot = bar.sysmonitor.snapshot().clone();
-    let _ = bar.system_provider.publish_result(generation, Ok(snapshot));
+fn start_system_refresh(bar: &mut UniliiBar) -> Task<Message> {
+    let providers = bar.legacy_providers.clone();
+    let refreshes = bar.provider_refreshes.clone();
+    let cancellation = bar.runtime_spawner.cancellation_token();
+    Task::perform(
+        async move { providers.refresh_system(refreshes, cancellation).await },
+        Message::SystemProviderState,
+    )
 }
 
 fn start_video_refresh(
@@ -1385,18 +1423,7 @@ fn view(bar: &UniliiBar, window_id: window::Id) -> Element<'_, Message> {
         right_widgets.push(bar.power.view().map(Message::LegacyWidget));
     }
     right_widgets.push(bar.audio.view().map(Message::LegacyWidget));
-    right_widgets.push(provider_health_badge(
-        "sys",
-        &bar.system_provider_state.current(),
-    ));
-    right_widgets.push(provider_health_badge(
-        "net",
-        &bar.network_provider_state.current(),
-    ));
-    right_widgets.push(provider_health_badge(
-        "aud",
-        &bar.audio_provider_state.current(),
-    ));
+    right_widgets.push(provider_registry_badge());
 
     // Tray icons — show digit hints when shift is held
     let tray_row = bar.tray_icons.iter().enumerate().fold(
@@ -1618,6 +1645,13 @@ fn main() -> iced::Result {
             let metrics = introspection::query_runtime_metrics(socket.as_deref())
                 .map_err(|error| iced::Error::WindowCreationFailed(error.into()))?;
             introspection::print_runtime_metrics(&metrics, *json)
+                .map_err(|error| iced::Error::WindowCreationFailed(error.into()))?;
+            return Ok(());
+        }
+        Some(Commands::ProviderStatus { json, socket }) => {
+            let providers = introspection::query_provider_status(socket.as_deref())
+                .map_err(|error| iced::Error::WindowCreationFailed(error.into()))?;
+            introspection::print_provider_status(&providers, *json)
                 .map_err(|error| iced::Error::WindowCreationFailed(error.into()))?;
             return Ok(());
         }
@@ -1913,8 +1947,12 @@ fn main() -> iced::Result {
             warn!("No module subscriptions available, continuing without real-time updates");
             HashMap::new()
         } else {
-            let providers = initialize_module_subscriptions(module_subscriptions, &runtime_spawner)
-                .map_err(std::io::Error::other)?;
+            let providers = initialize_module_subscriptions(
+                module_subscriptions,
+                &runtime_spawner,
+                &provider_refreshes,
+            )
+            .map_err(std::io::Error::other)?;
             info!(providers = providers.len(), "typed module providers initialized");
             providers
         };
@@ -1991,8 +2029,7 @@ fn main() -> iced::Result {
             .borrow_mut()
             .take()
             .unwrap_or_else(|| ProviderRefreshRegistry::new(4));
-        let mut sysmonitor = SysMonitor::new();
-        sysmonitor.update_stats();
+        let sysmonitor = SysMonitor::new();
         let wifi = Wifi::new();
         let audio = Audio::new();
         let power = Power::new();
@@ -2005,15 +2042,7 @@ fn main() -> iced::Result {
                 .or_else(|| app_config.app.xrandr_presets_yaml.clone())
                 .map(PathBuf::from),
         );
-        let metrics = global_runtime_metrics();
-        let (audio_provider, audio_provider_state) =
-            provider_channel(widgets::audio::provider_contract(), Arc::clone(&metrics));
-        let (network_provider, network_provider_state) =
-            provider_channel(widgets::wifi::provider_contract(), Arc::clone(&metrics));
-        let (system_provider, system_provider_state) =
-            provider_channel(widgets::sysmonitor::provider_contract(), metrics);
-        let generation = system_provider.begin_refresh();
-        let _ = system_provider.publish_result(generation, Ok(sysmonitor.snapshot().clone()));
+        let legacy_providers = LegacyProviderRuntime::new(run_options.nmcli_path.clone());
         let (main_window_id, open_main_window) = window::open(window_settings);
 
         (
@@ -2033,12 +2062,7 @@ fn main() -> iced::Result {
                 runtime_supervisor,
                 runtime_spawner,
                 provider_refreshes,
-                audio_provider,
-                audio_provider_state,
-                network_provider,
-                network_provider_state,
-                system_provider,
-                system_provider_state,
+                legacy_providers,
                 system_menu: SystemMenuRuntime::default(),
                 action_history: ActionHistory::default(),
                 shift_held: false,
@@ -2050,6 +2074,7 @@ fn main() -> iced::Result {
             },
             Task::batch([
                 open_main_window.map(Message::WindowOpened),
+                Task::done(Message::LegacyWidgetTick("sysmonitor".to_string())),
                 Task::done(Message::LegacyWidgetTick("wifi".to_string())),
                 Task::done(Message::LegacyWidgetTick("audio".to_string())),
                 Task::done(Message::LegacyWidgetTick("video".to_string())),
@@ -2832,7 +2857,6 @@ fn open_system_menu(bar: &mut UniliiBar, section: &str) -> Task<Message> {
         }
         return resize_window_task(bar, false);
     }
-    refresh_system_provider(bar);
     let path = if section == "root" {
         Vec::new()
     } else {
@@ -2840,6 +2864,7 @@ fn open_system_menu(bar: &mut UniliiBar, section: &str) -> Task<Message> {
     };
     rebuild_system_menu_with_path(bar, path);
     Task::batch([
+        start_system_refresh(bar),
         resize_window_task(bar, true),
         Task::done(Message::LegacyWidgetTick("wifi".to_string())),
         Task::done(Message::LegacyWidgetTick("video".to_string())),
@@ -3183,10 +3208,9 @@ fn handle_system_internal_action(
             run_system_shell_command(bar, &format!("display-preset:{key}"), &title, command)
         }
         SystemInternalAction::RefreshStats => {
-            refresh_system_provider(bar);
-            bar.system_menu.last_status = Some("System statistics refreshed".to_string());
+            bar.system_menu.last_status = Some("System statistics refresh requested".to_string());
             rebuild_system_menu_if_open(bar);
-            Task::none()
+            start_system_refresh(bar)
         }
         SystemInternalAction::RunConfigured(id) => match system_command_for(bar, &id) {
             Some((title, command)) => run_system_shell_command(bar, &id, &title, command),
@@ -3437,10 +3461,7 @@ fn handle_keybinding_action(bar: &mut UniliiBar, action: KeybindingResult) -> Ta
                 "power" => Task::done(Message::LegacyWidget(WidgetMessage::Power(
                     action.to_string(),
                 ))),
-                "sysmonitor" | "system" if action == "refresh" => {
-                    refresh_system_provider(bar);
-                    Task::none()
-                }
+                "sysmonitor" | "system" if action == "refresh" => start_system_refresh(bar),
                 unknown => {
                     warn!("unsupported widget action target '{unknown}': {command}");
                     Task::none()

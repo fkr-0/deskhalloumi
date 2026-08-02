@@ -1,6 +1,9 @@
 use deskhalloumi_core::{
     Module, ModuleConfig, ModuleUpdate, Result,
-    runtime::{ModuleSubscription, ProviderContract, ProviderRefreshPolicy},
+    runtime::{
+        ModuleSubscription, ProviderBackend, ProviderContract, ProviderRefreshOutcome,
+        ProviderRefreshPolicy,
+    },
 };
 use deskhalloumi_lib::sysfs::power::{BatteryPowerDevice, PowerDevice, PowerDeviceKind};
 use iced::{
@@ -12,6 +15,10 @@ use std::{sync::Arc, time::Duration};
 #[async_trait::async_trait]
 pub trait BatterySource: Send + Sync {
     async fn read_charge(&self) -> std::result::Result<f32, String>;
+
+    fn disabled_reason(&self) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Clone)]
@@ -65,6 +72,55 @@ impl BatterySource for FixedBatterySource {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct UnavailableBatterySource {
+    reason: String,
+}
+
+impl UnavailableBatterySource {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl BatterySource for UnavailableBatterySource {
+    async fn read_charge(&self) -> std::result::Result<f32, String> {
+        Err(self.reason.clone())
+    }
+
+    fn disabled_reason(&self) -> Option<String> {
+        Some(self.reason.clone())
+    }
+}
+
+struct BatteryProviderBackend {
+    source: Arc<dyn BatterySource>,
+}
+
+#[async_trait::async_trait]
+impl ProviderBackend for BatteryProviderBackend {
+    type Value = ModuleUpdate;
+
+    async fn refresh(&self) -> std::result::Result<Self::Value, String> {
+        self.source
+            .read_charge()
+            .await
+            .map(|charge| ModuleUpdate::ProgressBar(charge.clamp(0.0, 1.0)))
+    }
+
+    async fn refresh_outcome(
+        &self,
+    ) -> std::result::Result<ProviderRefreshOutcome<Self::Value>, String> {
+        if let Some(reason) = self.source.disabled_reason() {
+            return Ok(ProviderRefreshOutcome::Disabled(reason));
+        }
+        self.refresh().await.map(ProviderRefreshOutcome::Fresh)
+    }
+}
+
 pub struct Battery {
     percentage: f32,
     is_charging: bool,
@@ -73,14 +129,18 @@ pub struct Battery {
 }
 
 impl Battery {
-    pub async fn with_source(source: Arc<dyn BatterySource>) -> Result<Self> {
-        let charge = source.read_charge().await?;
-        Ok(Self {
+    fn from_source(source: Arc<dyn BatterySource>, charge: f32) -> Self {
+        Self {
             percentage: charge.clamp(0.0, 1.0) * 100.0,
             is_charging: false,
             name: "battery".to_string(),
             source,
-        })
+        }
+    }
+
+    pub async fn with_source(source: Arc<dyn BatterySource>) -> Result<Self> {
+        let charge = source.read_charge().await?;
+        Ok(Self::from_source(source, charge))
     }
 }
 
@@ -109,7 +169,13 @@ impl Module for Battery {
     where
         Self: Sized,
     {
-        Self::with_source(Arc::new(SysfsBatterySource::discover().await?)).await
+        match SysfsBatterySource::discover().await {
+            Ok(source) => Self::with_source(Arc::new(source)).await,
+            Err(error) => Ok(Self::from_source(
+                Arc::new(UnavailableBatterySource::new(error)),
+                0.0,
+            )),
+        }
     }
 
     fn name(&self) -> &str {
@@ -148,24 +214,11 @@ impl Module for Battery {
     }
 
     async fn subscribe(&mut self) -> Result<Option<ModuleSubscription>> {
-        let source = Arc::clone(&self.source);
-        Ok(Some(ModuleSubscription::with_contract(
+        Ok(Some(ModuleSubscription::with_backend(
             provider_contract(),
-            move |updates| async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(5));
-                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                loop {
-                    interval.tick().await;
-                    match source.read_charge().await {
-                        Ok(charge) => {
-                            if !updates.send(ModuleUpdate::ProgressBar(charge.clamp(0.0, 1.0))) {
-                                break;
-                            }
-                        }
-                        Err(error) => tracing::warn!(%error, "failed to refresh battery charge"),
-                    }
-                }
-            },
+            Arc::new(BatteryProviderBackend {
+                source: Arc::clone(&self.source),
+            }),
         )))
     }
 
@@ -194,6 +247,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(battery.percentage, 42.0);
+    }
+
+    #[tokio::test]
+    async fn unavailable_source_maps_to_disabled_provider_state() {
+        let backend = BatteryProviderBackend {
+            source: Arc::new(UnavailableBatterySource::new("no battery present")),
+        };
+        assert!(matches!(
+            backend.refresh_outcome().await.unwrap(),
+            ProviderRefreshOutcome::Disabled(reason) if reason == "no battery present"
+        ));
     }
 
     #[test]

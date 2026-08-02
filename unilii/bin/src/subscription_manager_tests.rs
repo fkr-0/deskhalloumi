@@ -4,12 +4,16 @@ use deskhalloumi_core::{
     ModuleUpdate,
     runtime::{
         ModuleSubscription as RuntimeModuleSubscription, ProviderContract, ProviderHealth,
-        ProviderRefreshPolicy, RuntimeMetrics, RuntimeSupervisor,
+        ProviderRefreshPolicy, ProviderRefreshRegistry, RuntimeMetrics, RuntimeSupervisor,
     },
 };
 
 use crate::module_loader::ModuleSubscription;
 use super::{initialize_module_subscriptions, snapshot_matches_active_provider};
+
+fn refreshes() -> ProviderRefreshRegistry {
+    ProviderRefreshRegistry::new(8)
+}
 
 fn contract(name: &str) -> ProviderContract {
     ProviderContract::new(
@@ -32,6 +36,7 @@ async fn replacement_provider_rejects_queued_snapshot_from_old_instance() {
             subscription: old,
         }],
         &first_supervisor.spawner(),
+        &refreshes(),
     )
     .unwrap();
     let mut old_receiver = old_providers.get("clock").unwrap().receiver.clone();
@@ -47,6 +52,7 @@ async fn replacement_provider_rejects_queued_snapshot_from_old_instance() {
             subscription: new,
         }],
         &second_supervisor.spawner(),
+        &refreshes(),
     )
     .unwrap();
     let active = new_providers.get("clock").unwrap();
@@ -72,6 +78,7 @@ async fn initialization_returns_typed_watch_receivers() {
             subscription: provider,
         }],
         &supervisor.spawner(),
+        &refreshes(),
     )
     .unwrap();
     let mut receiver = providers.get("clock").unwrap().receiver.clone();
@@ -100,7 +107,8 @@ async fn providers_are_independent_and_hardware_free() {
             ),
         })
         .collect();
-    let providers = initialize_module_subscriptions(providers, &supervisor.spawner()).unwrap();
+    let providers =
+        initialize_module_subscriptions(providers, &supervisor.spawner(), &refreshes()).unwrap();
     for name in ["clock", "battery", "tmux"] {
         let mut receiver = providers.get(name).unwrap().receiver.clone();
         let snapshot = receiver.changed().await.unwrap();

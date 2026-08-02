@@ -109,6 +109,14 @@ pub enum Commands {
         socket: Option<PathBuf>,
     },
 
+    /// Query live provider lifecycle and health from the running bar
+    ProviderStatus {
+        #[arg(long)]
+        json: bool,
+        #[arg(long, value_name = "SOCKET")]
+        socket: Option<PathBuf>,
+    },
+
     /// Show current configuration
     ShowConfig,
 
@@ -293,6 +301,11 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::RuntimeMetrics { json: true, .. })
+        ));
+        let cli = Cli::try_parse_from(["deskhalloumi", "provider-status", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::ProviderStatus { json: true, .. })
         ));
     }
 }

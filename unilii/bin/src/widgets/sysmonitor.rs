@@ -28,7 +28,7 @@ pub fn provider_contract() -> ProviderContract {
             stale_after: Duration::from_secs(6),
             refresh_on_start: true,
         },
-        "TestProviderBackend<SystemStatsSnapshot>",
+        "FixedSystemStatsBackend",
     )
 }
 
@@ -66,6 +66,10 @@ impl SysMonitor {
 
     pub fn snapshot(&self) -> &SystemStatsSnapshot {
         &self.snapshot
+    }
+
+    pub fn apply_snapshot(&mut self, snapshot: SystemStatsSnapshot) {
+        self.snapshot = snapshot;
     }
 
     pub fn compact_label(&self) -> String {
@@ -256,6 +260,6 @@ mod tests {
     fn lifecycle_contract_uses_proc_fixture_backend() {
         let contract = provider_contract();
         assert_eq!(contract.id, "system");
-        assert!(contract.test_backend.contains("SystemStatsSnapshot"));
+        assert_eq!(contract.test_backend, "FixedSystemStatsBackend");
     }
 }

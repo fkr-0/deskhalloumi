@@ -1064,6 +1064,7 @@ dependencies = [
 name = "deskhalloumi-bin"
 version = "0.3.3"
 dependencies = [
+ "async-trait",
  "chrono",
  "clap",
  "deskhalloumi-battery",
@@ -1079,6 +1080,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-util",
  "toml",
  "tracing",
  "tracing-subscriber",

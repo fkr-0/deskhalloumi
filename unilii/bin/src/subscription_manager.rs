@@ -5,7 +5,7 @@ use std::hash::{Hash, Hasher};
 
 use deskhalloumi_core::{
     ModuleUpdate,
-    runtime::{ModuleProviderReceiver, ProviderSnapshot, TaskSpawner},
+    runtime::{ModuleProviderReceiver, ProviderRefreshRegistry, ProviderSnapshot, TaskSpawner},
 };
 use iced::{Subscription, futures::SinkExt};
 use tracing::{info, warn};
@@ -81,6 +81,7 @@ pub fn iced_subscription(provider: &ManagedModuleProvider) -> Subscription<Messa
 pub fn initialize_module_subscriptions(
     module_subscriptions: Vec<ModuleSubscription>,
     spawner: &TaskSpawner,
+    provider_refreshes: &ProviderRefreshRegistry,
 ) -> Result<HashMap<String, ManagedModuleProvider>, String> {
     info!(
         modules = module_subscriptions.len(),
@@ -92,22 +93,20 @@ pub fn initialize_module_subscriptions(
         let name = module.name.clone();
         let receiver = module.subscription.receiver();
         let instance_generation = receiver.instance_generation();
+        let producer_token = spawner.cancellation_token();
         let producer = module
             .subscription
-            .take_worker()
+            .take_worker_with_runtime(producer_token.clone(), provider_refreshes.clone())
             .ok_or_else(|| format!("module '{name}' subscription has no producer"))?;
         let producer_name = format!("module:{name}:producer");
-        let producer_token = spawner.cancellation_token();
         let producer_name_for_log = producer_name.clone();
         spawner
             .try_spawn(producer_name, async move {
-                tokio::select! {
-                    _ = producer_token.cancelled() => {
-                        info!(module = %name, "module provider cancelled");
-                    }
-                    _ = producer => {
-                        warn!(module = %name, task = %producer_name_for_log, "module provider stopped without process cancellation");
-                    }
+                producer.await;
+                if producer_token.is_cancelled() {
+                    info!(module = %name, "module provider stopped after cancellation");
+                } else {
+                    warn!(module = %name, task = %producer_name_for_log, "module provider stopped without process cancellation");
                 }
             })
             .map_err(|error| format!("failed to supervise module provider: {error}"))?;

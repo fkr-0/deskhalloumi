@@ -5,6 +5,7 @@ use crate::{
     cli::RunOptions,
     enhanced_tray,
     module_loader::LoadedModule,
+    provider_runtime::LegacyProviderRuntime,
     subscription_manager::ManagedModuleProvider,
     tray,
     widgets::{
@@ -18,7 +19,7 @@ use deskhalloumi_core::{
     config::Config,
     keys::KeybindingResult,
     quick_select::QuickSelectSession,
-    runtime::{ProviderRefreshRegistry, RuntimeSupervisor, TaskSpawner},
+    runtime::{ProviderRefreshRegistry, ProviderSnapshot, RuntimeSupervisor, TaskSpawner},
 };
 use iced::window;
 use std::path::PathBuf;
@@ -47,16 +48,7 @@ pub struct UniliiBar {
     pub runtime_supervisor: Arc<RuntimeSupervisor>,
     pub runtime_spawner: TaskSpawner,
     pub provider_refreshes: ProviderRefreshRegistry,
-    pub audio_provider: deskhalloumi_core::runtime::ProviderPublisher<AudioSnapshot>,
-    pub audio_provider_state: deskhalloumi_core::runtime::ProviderReceiver<AudioSnapshot>,
-    pub network_provider: deskhalloumi_core::runtime::ProviderPublisher<WifiSnapshot>,
-    pub network_provider_state: deskhalloumi_core::runtime::ProviderReceiver<WifiSnapshot>,
-    pub system_provider: deskhalloumi_core::runtime::ProviderPublisher<
-        crate::widgets::sysmonitor::SystemStatsSnapshot,
-    >,
-    pub system_provider_state: deskhalloumi_core::runtime::ProviderReceiver<
-        crate::widgets::sysmonitor::SystemStatsSnapshot,
-    >,
+    pub legacy_providers: LegacyProviderRuntime,
     pub system_menu: crate::menus::system::SystemMenuRuntime,
     pub action_history: ActionHistory,
     pub shift_held: bool,
@@ -136,14 +128,9 @@ pub enum Message {
     // Legacy widget events
     LegacyWidget(WidgetMessage),
     LegacyWidgetTick(String),
-    AudioRefreshDone {
-        generation: u64,
-        result: Result<AudioSnapshot, String>,
-    },
-    WifiRefreshDone {
-        generation: u64,
-        result: Result<WifiSnapshot, String>,
-    },
+    AudioProviderState(ProviderSnapshot<AudioSnapshot>),
+    WifiProviderState(ProviderSnapshot<WifiSnapshot>),
+    SystemProviderState(ProviderSnapshot<crate::widgets::sysmonitor::SystemStatsSnapshot>),
     VideoRefreshDone(Result<VideoSnapshot, String>),
     PowerRefreshDone(Result<PowerSnapshot, String>),
     PowerActionDone(Result<Option<PowerSnapshot>, String>),

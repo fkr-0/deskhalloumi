@@ -1,20 +1,28 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     future::Future,
     pin::Pin,
     sync::{
-        Arc,
+        Arc, OnceLock, RwLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::{Duration, SystemTime},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
-use tokio::sync::{Mutex, watch};
+use serde::{Deserialize, Serialize};
+use tokio::{
+    sync::{Mutex, watch},
+    time::{self, MissedTickBehavior},
+};
+use tokio_util::sync::CancellationToken;
 
 use crate::ModuleUpdate;
 
-use super::metrics::{RuntimeMetrics, global_runtime_metrics};
+use super::{
+    metrics::{RuntimeMetrics, global_runtime_metrics},
+    refresh::{ProviderRefreshRegistry, RefreshRejected},
+};
 
 pub type BoxWorker = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
@@ -90,7 +98,8 @@ impl ProviderContract {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProviderHealth {
     Startup,
     Loading,
@@ -175,6 +184,9 @@ pub struct ProviderSnapshot<T> {
     pub state: ProviderState<T>,
     pub refresh_started_at: Option<SystemTime>,
     pub last_updated_at: Option<SystemTime>,
+    /// Most recent bounded provider error, retained across shutdown/stopped
+    /// transitions so diagnostics do not lose the reason a provider degraded.
+    pub last_error: Option<String>,
 }
 
 impl<T> ProviderSnapshot<T> {
@@ -186,6 +198,7 @@ impl<T> ProviderSnapshot<T> {
             state: ProviderState::Startup,
             refresh_started_at: None,
             last_updated_at: None,
+            last_error: None,
         }
     }
 
@@ -198,7 +211,7 @@ impl<T> ProviderSnapshot<T> {
     }
 
     pub fn error(&self) -> Option<&str> {
-        self.state.error()
+        self.state.error().or(self.last_error.as_deref())
     }
 
     pub fn last_update_age(&self, now: SystemTime) -> Option<Duration> {
@@ -216,12 +229,141 @@ impl<T> ProviderSnapshot<T> {
     }
 }
 
+const PROVIDER_ERROR_MAX_BYTES: usize = 4096;
+
+fn bounded_provider_error(error: impl Into<String>) -> String {
+    let error = error.into();
+    if error.len() <= PROVIDER_ERROR_MAX_BYTES {
+        return error;
+    }
+    let mut end = PROVIDER_ERROR_MAX_BYTES.saturating_sub("…".len());
+    while !error.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    format!("{}…", &error[..end])
+}
+
+fn system_time_millis(value: SystemTime) -> u64 {
+    value
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
+
+fn duration_millis(value: Duration) -> u64 {
+    value.as_millis().min(u64::MAX as u128) as u64
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderStatusSnapshot {
+    pub id: String,
+    pub display_name: String,
+    pub instance_generation: u64,
+    pub generation: u64,
+    pub health: ProviderHealth,
+    pub refresh_started_unix_ms: Option<u64>,
+    pub last_updated_unix_ms: Option<u64>,
+    pub last_update_age_ms: Option<u64>,
+    pub error: Option<String>,
+    pub interval_ms: u64,
+    pub timeout_ms: u64,
+    pub stale_after_ms: u64,
+}
+
+impl ProviderStatusSnapshot {
+    fn from_snapshot<T>(snapshot: &ProviderSnapshot<T>, now: SystemTime) -> Self {
+        Self {
+            id: snapshot.contract.id.clone(),
+            display_name: snapshot.contract.display_name.clone(),
+            instance_generation: snapshot.instance_generation,
+            generation: snapshot.generation,
+            health: snapshot.health(),
+            refresh_started_unix_ms: snapshot.refresh_started_at.map(system_time_millis),
+            last_updated_unix_ms: snapshot.last_updated_at.map(system_time_millis),
+            last_update_age_ms: snapshot.last_update_age(now).map(duration_millis),
+            error: snapshot.error().map(bounded_provider_error),
+            interval_ms: duration_millis(snapshot.contract.refresh.interval),
+            timeout_ms: duration_millis(snapshot.contract.refresh.timeout),
+            stale_after_ms: duration_millis(snapshot.contract.refresh.stale_after),
+        }
+    }
+
+    fn refresh_age(&mut self, now: SystemTime) {
+        self.last_update_age_ms = self
+            .last_updated_unix_ms
+            .map(|updated| system_time_millis(now).saturating_sub(updated));
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct ProviderStatusRegistry {
+    entries: Arc<RwLock<HashMap<String, ProviderStatusSnapshot>>>,
+}
+
+impl ProviderStatusRegistry {
+    pub fn record<T>(&self, snapshot: &ProviderSnapshot<T>) -> bool {
+        let candidate = ProviderStatusSnapshot::from_snapshot(snapshot, SystemTime::now());
+        let mut entries = self
+            .entries
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(active) = entries.get(&candidate.id)
+            && (active.instance_generation > candidate.instance_generation
+                || (active.instance_generation == candidate.instance_generation
+                    && active.generation > candidate.generation))
+        {
+            return false;
+        }
+        entries.insert(candidate.id.clone(), candidate);
+        true
+    }
+
+    pub fn snapshots(&self) -> Vec<ProviderStatusSnapshot> {
+        let now = SystemTime::now();
+        let mut snapshots = self
+            .entries
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for snapshot in &mut snapshots {
+            snapshot.refresh_age(now);
+        }
+        snapshots.sort_by(|left, right| left.id.cmp(&right.id));
+        snapshots
+    }
+
+    pub fn get(&self, id: &str) -> Option<ProviderStatusSnapshot> {
+        self.snapshots()
+            .into_iter()
+            .find(|snapshot| snapshot.id == id)
+    }
+
+    pub fn clear(&self) {
+        self.entries
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+    }
+}
+
+static GLOBAL_PROVIDER_STATUS: OnceLock<ProviderStatusRegistry> = OnceLock::new();
+
+pub fn global_provider_status_registry() -> ProviderStatusRegistry {
+    GLOBAL_PROVIDER_STATUS
+        .get_or_init(ProviderStatusRegistry::default)
+        .clone()
+}
+
 #[derive(Clone)]
 pub struct ProviderPublisher<T> {
     sender: watch::Sender<ProviderSnapshot<T>>,
     current_generation: Arc<AtomicU64>,
     pending: Arc<AtomicBool>,
     metrics: Arc<RuntimeMetrics>,
+    status: ProviderStatusRegistry,
 }
 
 impl<T: Clone> ProviderPublisher<T> {
@@ -244,6 +386,7 @@ impl<T: Clone> ProviderPublisher<T> {
             state: ProviderState::Loading { previous },
             refresh_started_at: Some(SystemTime::now()),
             last_updated_at: current.last_updated_at,
+            last_error: current.last_error,
         });
         generation
     }
@@ -256,12 +399,21 @@ impl<T: Clone> ProviderPublisher<T> {
         let current = self.sender.borrow().clone();
         let previous = current.state.value().cloned();
         let now = SystemTime::now();
-        let state = match result {
-            Ok(value) => ProviderState::Fresh { value },
-            Err(error) => match previous {
-                Some(value) => ProviderState::Stale { value, error },
-                None => ProviderState::Error { error },
-            },
+        let (state, last_error) = match result {
+            Ok(value) => (ProviderState::Fresh { value }, None),
+            Err(error) => {
+                let error = bounded_provider_error(error);
+                let state = match previous {
+                    Some(value) => ProviderState::Stale {
+                        value,
+                        error: error.clone(),
+                    },
+                    None => ProviderState::Error {
+                        error: error.clone(),
+                    },
+                };
+                (state, Some(error))
+            }
         };
         let last_updated_at = matches!(&state, ProviderState::Fresh { .. })
             .then_some(now)
@@ -273,6 +425,7 @@ impl<T: Clone> ProviderPublisher<T> {
             state,
             refresh_started_at: None,
             last_updated_at,
+            last_error,
         });
         true
     }
@@ -291,35 +444,43 @@ impl<T: Clone> ProviderPublisher<T> {
         let Some(value) = current.state.value().cloned() else {
             return false;
         };
+        let reason = bounded_provider_error(reason.into());
         self.publish_snapshot(ProviderSnapshot {
             contract: current.contract,
             instance_generation: current.instance_generation,
             generation: current.generation,
             state: ProviderState::Stale {
                 value,
-                error: reason.into(),
+                error: reason.clone(),
             },
             refresh_started_at: None,
             last_updated_at: current.last_updated_at,
+            last_error: Some(reason),
         });
         true
     }
 
     pub fn disable(&self, reason: impl Into<String>) {
         let current = self.sender.borrow().clone();
+        let reason = bounded_provider_error(reason.into());
         self.publish_snapshot(ProviderSnapshot {
             contract: current.contract,
             instance_generation: current.instance_generation,
             generation: current.generation,
             state: ProviderState::Disabled {
-                reason: reason.into(),
+                reason: reason.clone(),
             },
             refresh_started_at: None,
             last_updated_at: current.last_updated_at,
+            last_error: Some(reason),
         });
     }
 
     pub fn shutdown(&self) {
+        self.shutdown_with_error(None);
+    }
+
+    pub fn shutdown_with_error(&self, error: Option<String>) {
         let current = self.sender.borrow().clone();
         self.publish_snapshot(ProviderSnapshot {
             contract: current.contract,
@@ -328,6 +489,7 @@ impl<T: Clone> ProviderPublisher<T> {
             state: ProviderState::ShuttingDown,
             refresh_started_at: None,
             last_updated_at: current.last_updated_at,
+            last_error: error.map(bounded_provider_error).or(current.last_error),
         });
     }
 
@@ -340,6 +502,7 @@ impl<T: Clone> ProviderPublisher<T> {
             state: ProviderState::Stopped,
             refresh_started_at: None,
             last_updated_at: current.last_updated_at,
+            last_error: current.last_error,
         });
     }
 
@@ -347,7 +510,12 @@ impl<T: Clone> ProviderPublisher<T> {
         self.sender.is_closed()
     }
 
+    pub async fn closed(&self) {
+        self.sender.closed().await;
+    }
+
     fn publish_snapshot(&self, snapshot: ProviderSnapshot<T>) {
+        self.status.record(&snapshot);
         if self.sender.is_closed() {
             self.metrics.record_update_dropped();
             return;
@@ -386,9 +554,18 @@ pub fn provider_channel<T: Clone>(
     contract: ProviderContract,
     metrics: Arc<RuntimeMetrics>,
 ) -> (ProviderPublisher<T>, ProviderReceiver<T>) {
+    provider_channel_with_status_registry(contract, metrics, global_provider_status_registry())
+}
+
+pub fn provider_channel_with_status_registry<T: Clone>(
+    contract: ProviderContract,
+    metrics: Arc<RuntimeMetrics>,
+    status: ProviderStatusRegistry,
+) -> (ProviderPublisher<T>, ProviderReceiver<T>) {
     let instance_generation = next_provider_instance_generation();
-    let (sender, receiver) =
-        watch::channel(ProviderSnapshot::startup(contract, instance_generation));
+    let startup = ProviderSnapshot::startup(contract, instance_generation);
+    status.record(&startup);
+    let (sender, receiver) = watch::channel(startup);
     let pending = Arc::new(AtomicBool::new(false));
     (
         ProviderPublisher {
@@ -396,9 +573,27 @@ pub fn provider_channel<T: Clone>(
             current_generation: Arc::new(AtomicU64::new(0)),
             pending: Arc::clone(&pending),
             metrics,
+            status,
         },
         ProviderReceiver { receiver, pending },
     )
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProviderRefreshOutcome<T> {
+    Fresh(T),
+    Disabled(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderRefreshAttempt {
+    Published,
+    Disabled,
+    Coalesced,
+    Saturated,
+    Cancelled,
+    Failed,
+    TimedOut,
 }
 
 #[async_trait]
@@ -407,9 +602,140 @@ pub trait ProviderBackend: Send + Sync + 'static {
 
     async fn refresh(&self) -> Result<Self::Value, String>;
 
+    async fn refresh_outcome(&self) -> Result<ProviderRefreshOutcome<Self::Value>, String> {
+        self.refresh().await.map(ProviderRefreshOutcome::Fresh)
+    }
+
     async fn shutdown(&self) -> Result<(), String> {
         Ok(())
     }
+}
+
+pub async fn run_provider_operation<T, F, Fut>(
+    publisher: &ProviderPublisher<T>,
+    refreshes: &ProviderRefreshRegistry,
+    cancellation: &CancellationToken,
+    operation: F,
+) -> ProviderRefreshAttempt
+where
+    T: Clone,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<ProviderRefreshOutcome<T>, String>>,
+{
+    if cancellation.is_cancelled() {
+        return ProviderRefreshAttempt::Cancelled;
+    }
+    let key = format!(
+        "{}:{}",
+        publisher.contract().id,
+        publisher.instance_generation()
+    );
+    let _permit = match refreshes.try_start(key) {
+        Ok(permit) => permit,
+        Err(RefreshRejected::Coalesced) => return ProviderRefreshAttempt::Coalesced,
+        Err(RefreshRejected::Saturated) => return ProviderRefreshAttempt::Saturated,
+    };
+    let generation = publisher.begin_refresh();
+    let timeout = publisher.contract().refresh.timeout;
+    let result = tokio::select! {
+        _ = cancellation.cancelled() => return ProviderRefreshAttempt::Cancelled,
+        result = time::timeout(timeout, operation()) => result,
+    };
+    match result {
+        Ok(Ok(ProviderRefreshOutcome::Fresh(value))) => {
+            publisher.publish_result(generation, Ok(value));
+            ProviderRefreshAttempt::Published
+        }
+        Ok(Ok(ProviderRefreshOutcome::Disabled(reason))) => {
+            publisher.disable(reason);
+            ProviderRefreshAttempt::Disabled
+        }
+        Ok(Err(error)) => {
+            publisher.metrics.record_provider_refresh_failed();
+            publisher.publish_result(generation, Err(error));
+            ProviderRefreshAttempt::Failed
+        }
+        Err(_) => {
+            publisher.metrics.record_provider_refresh_timed_out();
+            publisher.publish_result(
+                generation,
+                Err(format!("provider refresh timed out after {timeout:?}")),
+            );
+            ProviderRefreshAttempt::TimedOut
+        }
+    }
+}
+
+pub async fn refresh_provider_once<B>(
+    publisher: &ProviderPublisher<B::Value>,
+    backend: &B,
+    refreshes: &ProviderRefreshRegistry,
+    cancellation: &CancellationToken,
+) -> ProviderRefreshAttempt
+where
+    B: ProviderBackend,
+{
+    run_provider_operation(publisher, refreshes, cancellation, || {
+        backend.refresh_outcome()
+    })
+    .await
+}
+
+pub async fn shutdown_provider_backend<B>(publisher: &ProviderPublisher<B::Value>, backend: &B)
+where
+    B: ProviderBackend,
+{
+    let contract = publisher.contract();
+    publisher.shutdown();
+    let shutdown_timeout = contract.shutdown.graceful_timeout;
+    match time::timeout(shutdown_timeout, backend.shutdown()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            publisher.metrics.record_provider_shutdown_failed();
+            publisher.shutdown_with_error(Some(error));
+        }
+        Err(_) => {
+            publisher.metrics.record_provider_shutdown_timed_out();
+            publisher.shutdown_with_error(Some(format!(
+                "provider shutdown timed out after {shutdown_timeout:?}"
+            )));
+        }
+    }
+    publisher.stopped();
+}
+
+pub async fn run_provider_backend<B>(
+    publisher: ProviderPublisher<B::Value>,
+    backend: Arc<B>,
+    refreshes: ProviderRefreshRegistry,
+    cancellation: CancellationToken,
+) where
+    B: ProviderBackend,
+{
+    let contract = publisher.contract();
+    let mut interval = time::interval(contract.refresh.interval.max(Duration::from_millis(1)));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    interval.tick().await;
+    if contract.refresh.refresh_on_start {
+        let _ =
+            refresh_provider_once(&publisher, backend.as_ref(), &refreshes, &cancellation).await;
+    }
+    loop {
+        tokio::select! {
+            _ = cancellation.cancelled() => break,
+            _ = publisher.closed() => break,
+            _ = interval.tick() => {
+                let _ = refresh_provider_once(
+                    &publisher,
+                    backend.as_ref(),
+                    &refreshes,
+                    &cancellation,
+                ).await;
+            }
+        }
+    }
+
+    shutdown_provider_backend(&publisher, backend.as_ref()).await;
 }
 
 #[derive(Debug)]
@@ -451,16 +777,18 @@ impl<T: Clone + Send + Sync + 'static> ProviderBackend for TestProviderBackend<T
 
 pub type ModuleUpdateSender = ProviderPublisher<ModuleUpdate>;
 pub type ModuleProviderReceiver = ProviderReceiver<ModuleUpdate>;
+type BoxWorkerFactory =
+    Box<dyn FnOnce(CancellationToken, ProviderRefreshRegistry) -> BoxWorker + Send + 'static>;
 
 pub struct ModuleSubscription {
     receiver: ModuleProviderReceiver,
-    worker: Option<BoxWorker>,
+    worker_factory: Option<BoxWorkerFactory>,
 }
 
 impl ModuleSubscription {
     pub fn new<F, Fut>(worker: F) -> Self
     where
-        F: FnOnce(ModuleUpdateSender) -> Fut,
+        F: FnOnce(ModuleUpdateSender) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         Self::with_contract(
@@ -476,7 +804,7 @@ impl ModuleSubscription {
 
     pub fn with_contract<F, Fut>(contract: ProviderContract, worker: F) -> Self
     where
-        F: FnOnce(ModuleUpdateSender) -> Fut,
+        F: FnOnce(ModuleUpdateSender) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         Self::with_metrics(contract, worker, global_runtime_metrics())
@@ -488,18 +816,87 @@ impl ModuleSubscription {
         metrics: Arc<RuntimeMetrics>,
     ) -> Self
     where
-        F: FnOnce(ModuleUpdateSender) -> Fut,
+        F: FnOnce(ModuleUpdateSender) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         let (publisher, receiver) = provider_channel(contract, metrics);
+        let worker_factory = Box::new(move |cancellation: CancellationToken, _refreshes| {
+            Box::pin(async move {
+                let future = worker(publisher.clone());
+                tokio::select! {
+                    _ = cancellation.cancelled() => {
+                        publisher.shutdown();
+                        publisher.stopped();
+                    }
+                    _ = future => {}
+                }
+            }) as BoxWorker
+        });
         Self {
             receiver,
-            worker: Some(Box::pin(worker(publisher))),
+            worker_factory: Some(worker_factory),
         }
     }
 
+    pub fn with_backend<B>(contract: ProviderContract, backend: Arc<B>) -> Self
+    where
+        B: ProviderBackend<Value = ModuleUpdate>,
+    {
+        Self::with_backend_and_metrics(contract, backend, global_runtime_metrics())
+    }
+
+    pub fn with_backend_and_metrics<B>(
+        contract: ProviderContract,
+        backend: Arc<B>,
+        metrics: Arc<RuntimeMetrics>,
+    ) -> Self
+    where
+        B: ProviderBackend<Value = ModuleUpdate>,
+    {
+        let (publisher, receiver) = provider_channel(contract, metrics);
+        let worker_factory = Box::new(move |cancellation, refreshes| {
+            Box::pin(run_provider_backend(
+                publisher,
+                backend,
+                refreshes,
+                cancellation,
+            )) as BoxWorker
+        });
+        Self {
+            receiver,
+            worker_factory: Some(worker_factory),
+        }
+    }
+
+    pub fn with_runtime_worker<F, Fut>(contract: ProviderContract, worker: F) -> Self
+    where
+        F: FnOnce(ModuleUpdateSender, CancellationToken, ProviderRefreshRegistry) -> Fut
+            + Send
+            + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let (publisher, receiver) = provider_channel(contract, global_runtime_metrics());
+        let worker_factory = Box::new(move |cancellation, refreshes| {
+            Box::pin(worker(publisher, cancellation, refreshes)) as BoxWorker
+        });
+        Self {
+            receiver,
+            worker_factory: Some(worker_factory),
+        }
+    }
+
+    pub fn take_worker_with_runtime(
+        &mut self,
+        cancellation: CancellationToken,
+        refreshes: ProviderRefreshRegistry,
+    ) -> Option<BoxWorker> {
+        self.worker_factory
+            .take()
+            .map(|factory| factory(cancellation, refreshes))
+    }
+
     pub fn take_worker(&mut self) -> Option<BoxWorker> {
-        self.worker.take()
+        self.take_worker_with_runtime(CancellationToken::new(), ProviderRefreshRegistry::new(4))
     }
 
     pub fn receiver(&self) -> ModuleProviderReceiver {
@@ -602,5 +999,171 @@ mod tests {
         assert_eq!(backend.refresh().await.unwrap_err(), "fixture failure");
         backend.shutdown().await.unwrap();
         assert!(backend.shutdown_called());
+    }
+
+    #[tokio::test]
+    async fn common_runner_publishes_fresh_then_shuts_down_and_stops() {
+        let mut contract = contract();
+        contract.refresh.interval = Duration::from_secs(60);
+        contract.refresh.timeout = Duration::from_millis(50);
+        contract.shutdown.graceful_timeout = Duration::from_millis(50);
+        let metrics = Arc::new(RuntimeMetrics::default());
+        let status = ProviderStatusRegistry::default();
+        let (publisher, mut receiver) =
+            provider_channel_with_status_registry(contract, Arc::clone(&metrics), status.clone());
+        let backend = Arc::new(TestProviderBackend::new([Ok("fixture".to_string())]));
+        let cancellation = CancellationToken::new();
+        let runner = tokio::spawn(run_provider_backend(
+            publisher,
+            Arc::clone(&backend),
+            ProviderRefreshRegistry::with_metrics(2, Arc::clone(&metrics)),
+            cancellation.clone(),
+        ));
+
+        let fresh = loop {
+            let snapshot = receiver.changed().await.unwrap();
+            if snapshot.health() == ProviderHealth::Fresh {
+                break snapshot;
+            }
+        };
+        assert_eq!(fresh.value().map(String::as_str), Some("fixture"));
+        cancellation.cancel();
+        runner.await.unwrap();
+        assert_eq!(receiver.current().health(), ProviderHealth::Stopped);
+        assert!(backend.shutdown_called());
+        assert_eq!(status.get("test").unwrap().health, ProviderHealth::Stopped);
+    }
+
+    struct SlowBackend;
+
+    #[async_trait]
+    impl ProviderBackend for SlowBackend {
+        type Value = String;
+
+        async fn refresh(&self) -> Result<Self::Value, String> {
+            time::sleep(Duration::from_millis(50)).await;
+            Ok("late".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn common_runner_records_refresh_timeout_as_bounded_error() {
+        let mut contract = contract();
+        contract.refresh.timeout = Duration::from_millis(5);
+        let metrics = Arc::new(RuntimeMetrics::default());
+        let (publisher, receiver) = provider_channel::<String>(contract, Arc::clone(&metrics));
+        let attempt = refresh_provider_once(
+            &publisher,
+            &SlowBackend,
+            &ProviderRefreshRegistry::with_metrics(1, Arc::clone(&metrics)),
+            &CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(attempt, ProviderRefreshAttempt::TimedOut);
+        let snapshot = receiver.current();
+        assert_eq!(snapshot.health(), ProviderHealth::Error);
+        assert!(snapshot.error().unwrap().contains("timed out"));
+        assert_eq!(metrics.snapshot().provider_refreshes_timed_out, 1);
+    }
+
+    struct DisabledBackend;
+
+    #[async_trait]
+    impl ProviderBackend for DisabledBackend {
+        type Value = String;
+
+        async fn refresh(&self) -> Result<Self::Value, String> {
+            unreachable!("refresh_outcome supplies the disabled state")
+        }
+
+        async fn refresh_outcome(&self) -> Result<ProviderRefreshOutcome<Self::Value>, String> {
+            Ok(ProviderRefreshOutcome::Disabled(
+                "fixture service is disabled".to_string(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn common_runner_supports_explicit_disabled_state() {
+        let metrics = Arc::new(RuntimeMetrics::default());
+        let (publisher, receiver) = provider_channel::<String>(contract(), Arc::clone(&metrics));
+        let attempt = refresh_provider_once(
+            &publisher,
+            &DisabledBackend,
+            &ProviderRefreshRegistry::with_metrics(1, metrics),
+            &CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(attempt, ProviderRefreshAttempt::Disabled);
+        assert_eq!(receiver.current().health(), ProviderHealth::Disabled);
+    }
+
+    #[test]
+    fn provider_status_registry_rejects_stopped_state_from_replaced_instance() {
+        let metrics = Arc::new(RuntimeMetrics::default());
+        let status = ProviderStatusRegistry::default();
+        let (old, _) = provider_channel_with_status_registry::<String>(
+            contract(),
+            Arc::clone(&metrics),
+            status.clone(),
+        );
+        let (new, _) =
+            provider_channel_with_status_registry::<String>(contract(), metrics, status.clone());
+        assert!(new.instance_generation() > old.instance_generation());
+        old.stopped();
+        let active = status.get("test").unwrap();
+        assert_eq!(active.instance_generation, new.instance_generation());
+        assert_eq!(active.health, ProviderHealth::Startup);
+    }
+
+    #[tokio::test]
+    async fn repeated_provider_replacement_releases_refresh_permits_and_keeps_newest_status() {
+        let metrics = Arc::new(RuntimeMetrics::default());
+        let refreshes = ProviderRefreshRegistry::with_metrics(4, Arc::clone(&metrics));
+        let status = ProviderStatusRegistry::default();
+        let cancellation = CancellationToken::new();
+        let mut previous: Option<ProviderPublisher<String>> = None;
+        let mut newest_instance = 0;
+
+        for index in 0..128 {
+            let (publisher, receiver) = provider_channel_with_status_registry::<String>(
+                contract(),
+                Arc::clone(&metrics),
+                status.clone(),
+            );
+            newest_instance = publisher.instance_generation();
+            let backend = TestProviderBackend::new([Ok(format!("fixture-{index}"))]);
+            assert_eq!(
+                refresh_provider_once(&publisher, &backend, &refreshes, &cancellation).await,
+                ProviderRefreshAttempt::Published
+            );
+            assert_eq!(receiver.current().health(), ProviderHealth::Fresh);
+
+            if let Some(old) = previous.replace(publisher) {
+                old.stopped();
+                let active = status.get("test").unwrap();
+                assert_eq!(active.instance_generation, newest_instance);
+                assert_eq!(active.health, ProviderHealth::Fresh);
+            }
+        }
+
+        assert_eq!(refreshes.active_count(), 0);
+        let runtime = metrics.snapshot();
+        assert_eq!(runtime.provider_refreshes_started, 128);
+        assert_eq!(runtime.provider_refreshes_completed, 128);
+        let active = status.get("test").unwrap();
+        assert_eq!(active.instance_generation, newest_instance);
+        assert_eq!(active.health, ProviderHealth::Fresh);
+    }
+
+    #[test]
+    fn provider_errors_are_utf8_safe_and_bounded() {
+        let metrics = Arc::new(RuntimeMetrics::default());
+        let (publisher, receiver) = provider_channel::<String>(contract(), metrics);
+        let generation = publisher.begin_refresh();
+        publisher.publish_result(generation, Err("ü".repeat(5000)));
+        let error = receiver.current().error().unwrap().to_string();
+        assert!(error.len() <= PROVIDER_ERROR_MAX_BYTES);
+        assert!(error.ends_with('…'));
     }
 }

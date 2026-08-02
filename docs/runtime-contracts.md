@@ -17,17 +17,17 @@ Quick-select is a one-shot overlay over an ordered action set.
 
 Clock, battery, network, audio, system, and optional Tmux providers expose one lifecycle through `deskhalloumi_core::runtime`.
 
-This contract shipped in 0.3.0. The 0.4.0 work is migration completion and
-hardening: remove any remaining provider-specific production path, add repeated
-replacement/refresh soak tests, and expose the same health data through live
-operator-facing introspection.
+Version 0.4.0 completes the production migration to this contract. Clock,
+battery, network, audio, system, and optional Tmux refreshes now use the shared
+admission, timeout, generation, cancellation, status-registry, and bounded
+shutdown helpers instead of provider-specific lifecycle implementations.
 
 Each provider declares a `ProviderContract` containing:
 
 - stable id and display name;
 - refresh interval, timeout, stale threshold, and startup-refresh policy;
 - graceful shutdown timeout;
-- a named hardware-free test backend.
+- an executable hardware- or service-free backend used by ordinary tests.
 
 Every published `ProviderSnapshot<T>` contains both a provider-instance generation and a monotonic refresh generation, plus lifecycle state, refresh start time, last successful update time, health, error detail, and calculable last-update age.
 
@@ -43,12 +43,20 @@ Lifecycle states are:
 
 Refreshes use generation tokens. A result is accepted only when its refresh generation equals the current generation, preventing late results within one provider instance from replacing newer state. Every newly constructed provider channel also receives a unique instance generation. Iced subscription identity includes that value, and the application rejects any already-queued snapshot whose instance generation no longer matches the active provider after replacement or reload. Provider refresh admission is keyed and bounded, so duplicate refreshes coalesce and unrelated providers cannot create unbounded work.
 
-Tests use fixture or in-memory backends. Ordinary tests must not require a physical battery, evdev access, NetworkManager, PulseAudio/PipeWire, tmux, i3, X11, or a live desktop session.
+Tests use executable fixture or in-memory backends. Ordinary tests do not
+require a physical battery, evdev access, NetworkManager, PulseAudio/PipeWire,
+tmux, i3, X11, or a live desktop session. Battery-less hosts publish an explicit
+disabled state instead of failing module construction; an unavailable tmux
+server is likewise distinguished from malformed output or a transient command
+failure.
 
-Provider health is not only a rendering hint. Operator-facing diagnostics must
-be able to report the provider id, lifecycle/health state, active instance and
-refresh generations, last successful update, calculable last-update age, and
-current error without forcing a refresh.
+Provider health is not only a rendering hint. The process-wide
+`ProviderStatusRegistry` rejects stale provider instances and exposes provider
+id, lifecycle/health state, active instance and refresh generations, refresh
+policy, last successful update, calculable last-update age, and a UTF-8-safe
+bounded error without forcing a refresh. `deskhalloumi provider-status` queries
+that registry over the existing bounded action bus. The panel renders the worst
+live provider as a compact status badge.
 
 ## Menu model
 
@@ -80,11 +88,18 @@ deskhalloumi list-actions [--json]
 deskhalloumi list-hotkeys [--json]
 deskhalloumi invoke-action <bar|tray|widget> <payload> [--socket PATH]
 deskhalloumi runtime-metrics [--json] [--socket PATH]
+deskhalloumi provider-status [--json] [--socket PATH]
 ```
 
 Typed bar, tray, and widget invocations travel through the versioned local action bus. Shell and managed-menu execution remain owned by `deskhalloumi-hotkeyd` and are rejected by the bar action router.
 
-`runtime-metrics` is a synchronous diagnostic action-bus request. The running daemon answers in the same bounded response frame with structured counters; it is not queued as a UI action. This exposes active tasks, active and queued actions, completed/failed/cancelled/rejected action totals, action timing and timeouts, truncation, provider refresh pressure, and dropped/coalesced updates without stopping the bar. Active and queued gauges are guard-owned, so cancellation or queue teardown cannot leave stale non-zero values.
+`runtime-metrics` and `provider-status` are synchronous diagnostic action-bus
+requests. The running daemon answers in the same bounded response frame; neither
+request is queued as a UI action. Runtime metrics include provider refresh
+failure/timeout and shutdown failure/timeout counters. Provider status contains
+only bounded structured lifecycle data and never command output. Active and
+queued gauges are guard-owned, so cancellation or queue teardown cannot leave
+stale non-zero values.
 
 The bounded action history records sequence, action id, source, running/succeeded/failed/timed-out/cancelled status, duration, and failure detail. The system menu renders recent failures visibly.
 
@@ -93,7 +108,8 @@ The bounded action history records sequence, action id, source, running/succeede
 - `deskhalloumi-core` owns quick-select, provider, menu, action-history, and typed-action semantics.
 - `unilii/bin/src/action_routing.rs` owns pure action-bus-to-update routing.
 - `unilii/bin/src/introspection.rs` owns CLI inventories and typed invocation.
-- `unilii/bin/src/subscription_manager.rs` adapts provider watch channels into Iced subscriptions.
+- `unilii/bin/src/provider_runtime.rs` owns the built-in audio, network, and system provider backends and handles.
+- `unilii/bin/src/subscription_manager.rs` adapts provider watch channels into Iced subscriptions and passes the shared cancellation token and refresh registry to provider workers.
 - `main.rs` remains the transitional composition root and should not regain semantics extracted into these modules.
 
 ## `deskhalloumi-bar` runtime decision

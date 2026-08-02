@@ -1,7 +1,7 @@
 use chrono::Local;
 use deskhalloumi_core::{
     Module, ModuleConfig, ModuleUpdate, Result,
-    runtime::{ModuleSubscription, ProviderContract, ProviderRefreshPolicy},
+    runtime::{ModuleSubscription, ProviderBackend, ProviderContract, ProviderRefreshPolicy},
 };
 use iced::{Element, widget::text};
 use std::{sync::Arc, time::Duration};
@@ -42,6 +42,20 @@ pub struct Clock {
     format: String,
     current_time: String,
     source: Arc<dyn ClockSource>,
+}
+
+struct ClockProviderBackend {
+    format: String,
+    source: Arc<dyn ClockSource>,
+}
+
+#[async_trait::async_trait]
+impl ProviderBackend for ClockProviderBackend {
+    type Value = ModuleUpdate;
+
+    async fn refresh(&self) -> std::result::Result<Self::Value, String> {
+        Ok(ModuleUpdate::Text(self.source.formatted_now(&self.format)))
+    }
 }
 
 impl Clock {
@@ -95,22 +109,12 @@ impl Module for Clock {
     }
 
     async fn subscribe(&mut self) -> Result<Option<ModuleSubscription>> {
-        let format = self.format.clone();
-        let source = Arc::clone(&self.source);
-
-        Ok(Some(ModuleSubscription::with_contract(
+        Ok(Some(ModuleSubscription::with_backend(
             provider_contract(),
-            move |updates| async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(1));
-                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                loop {
-                    interval.tick().await;
-                    let time_str = source.formatted_now(&format);
-                    if !updates.send(ModuleUpdate::Text(time_str)) {
-                        break;
-                    }
-                }
-            },
+            Arc::new(ClockProviderBackend {
+                format: self.format.clone(),
+                source: Arc::clone(&self.source),
+            }),
         )))
     }
 
