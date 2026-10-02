@@ -20,6 +20,7 @@ pub mod menu_process;
 pub mod quick_select;
 pub mod runtime;
 pub mod x11_hotkeys;
+pub mod window;
 
 use async_trait::async_trait;
 use iced::Element;
